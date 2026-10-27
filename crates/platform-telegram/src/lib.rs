@@ -379,7 +379,7 @@ impl TelegramAdapter {
                 serde_json::to_value(SendMessageRequest {
                     chat_id,
                     text: text.clone(),
-                    parse_mode: None,
+                    parse_mode: Some("HTML".to_string()),
                     reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
                     disable_web_page_preview: Some(true),
                 }).map_err(|e| PlatformError::Internal(e.to_string()))
@@ -389,7 +389,7 @@ impl TelegramAdapter {
                     chat_id,
                     photo: url.clone(),
                     caption: caption.clone(),
-                    parse_mode: None,
+                    parse_mode: Some("HTML".to_string()),
                     reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
                 }).map_err(|e| PlatformError::Internal(e.to_string()))
             }
