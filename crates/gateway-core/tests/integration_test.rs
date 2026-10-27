@@ -369,3 +369,55 @@ async fn test_mock_agent_loop_multi_turn() {
     assert_eq!(messages.len(), 4);
     assert!(assistant_step2_msg.content.unwrap().contains("The current year is "));
 }
+
+
+#[tokio::test]
+async fn test_prompt_assembler_empty_fallback() {
+    use hermes_gateway_core::PromptAssembler;
+
+    let empty_dir = std::env::temp_dir().join("hermes_test_prompt_empty");
+    let _ = tokio::fs::create_dir_all(&empty_dir).await;
+
+    let assembler = PromptAssembler::with_overrides(Some(empty_dir.clone()), Some(empty_dir.clone()));
+    let prompt = assembler.build_system_prompt(None).await;
+    assert!(prompt.is_empty(), "Prompt should be empty when no files and no base prompt");
+
+    let prompt_with_base = assembler.build_system_prompt(Some("Base system instruction")).await;
+    assert_eq!(prompt_with_base, "# PROFILE INSTRUCTIONS\n\nBase system instruction");
+
+    let _ = tokio::fs::remove_dir_all(&empty_dir).await;
+}
+
+#[tokio::test]
+async fn test_prompt_assembler_combines_all_sections() {
+    use hermes_gateway_core::PromptAssembler;
+
+    let test_dir = std::env::temp_dir().join("hermes_test_prompt_full");
+    let hermes_dir = test_dir.join("hermes_home");
+    let memories_dir = hermes_dir.join("memories");
+    let cwd_dir = test_dir.join("cwd");
+
+    let _ = tokio::fs::create_dir_all(&memories_dir).await;
+    let _ = tokio::fs::create_dir_all(&cwd_dir).await;
+
+    tokio::fs::write(hermes_dir.join("SOUL.md"), "Alfred persona and soul definition.").await.unwrap();
+    tokio::fs::write(cwd_dir.join("AGENTS.md"), "Zero-refusal law and operational doctrine.").await.unwrap();
+    tokio::fs::write(memories_dir.join("MEMORY.md"), "Estate layout and infrastructure credentials.").await.unwrap();
+    tokio::fs::write(memories_dir.join("USER.md"), "Bear profile and preferences.").await.unwrap();
+    tokio::fs::write(cwd_dir.join("system.md"), "System level guidelines.").await.unwrap();
+
+    let assembler = PromptAssembler::with_overrides(Some(hermes_dir), Some(cwd_dir));
+    let assembled = assembler.build_system_prompt(Some("Profile base prompt")).await;
+
+    assert!(assembled.contains("# SOUL\n\nAlfred persona and soul definition."));
+    assert!(assembled.contains("# OPERATIONAL DOCTRINE (AGENTS.md)\n\nZero-refusal law and operational doctrine."));
+    assert!(assembled.contains("# MEMORY & ESTATE RULES\n\nEstate layout and infrastructure credentials."));
+    assert!(assembled.contains("# USER PROFILE\n\nBear profile and preferences."));
+    assert!(assembled.contains("# SYSTEM INSTRUCTIONS\n\nSystem level guidelines."));
+    assert!(assembled.contains("# PROFILE INSTRUCTIONS\n\nProfile base prompt"));
+
+    // Check delimiters
+    assert!(assembled.contains("\n\n---\n\n"));
+
+    let _ = tokio::fs::remove_dir_all(&test_dir).await;
+}

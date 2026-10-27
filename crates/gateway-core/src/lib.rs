@@ -1,5 +1,6 @@
 // hermes-gateway-core - Core gateway logic
 pub mod llm;
+pub mod prompt;
 pub mod tools;
 
 use hermes_config::GatewayConfig;
@@ -14,6 +15,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 pub use llm::{ChatMessage, ChatResponse, LlmClient};
+pub use prompt::PromptAssembler;
 pub use tools::{ToolCall, ToolRegistry, ToolResult};
 
 #[allow(dead_code)]
@@ -23,6 +25,7 @@ pub struct Gateway {
     session_store: Box<dyn SessionStore>,
     llm_client: Arc<LlmClient>,
     tool_registry: Arc<ToolRegistry>,
+    prompt_assembler: Arc<PromptAssembler>,
     event_tx: mpsc::UnboundedSender<PlatformEvent>,
     event_rx: Option<mpsc::UnboundedReceiver<PlatformEvent>>,
 }
@@ -64,6 +67,7 @@ impl Gateway {
 
         let llm_client = Arc::new(LlmClient::new(Some(base_url), api_key));
         let tool_registry = Arc::new(ToolRegistry::new());
+        let prompt_assembler = Arc::new(PromptAssembler::new());
 
         Ok(Self {
             config,
@@ -71,6 +75,7 @@ impl Gateway {
             session_store,
             llm_client,
             tool_registry,
+            prompt_assembler,
             event_tx,
             event_rx: Some(event_rx),
         })
@@ -120,6 +125,7 @@ impl Gateway {
 
         let llm_client = self.llm_client.clone();
         let tool_registry = self.tool_registry.clone();
+        let prompt_assembler = self.prompt_assembler.clone();
         let default_profile = self
             .config
             .profiles
@@ -134,7 +140,7 @@ impl Gateway {
             while let Some(event) = event_rx.recv().await {
                 match event {
                     PlatformEvent::Incoming(msg) => {
-                        Self::process_incoming(msg, &llm_client, &tool_registry, &default_profile, &event_loop_tg).await;
+                        Self::process_incoming(msg, &llm_client, &tool_registry, &prompt_assembler, &default_profile, &event_loop_tg).await;
                     }
                     PlatformEvent::Error { session_id, error } => {
                         warn!("Platform error for session {}: {:?}", session_id, error);
@@ -159,6 +165,7 @@ impl Gateway {
         msg: IncomingMessage,
         llm_client: &Arc<LlmClient>,
         tool_registry: &Arc<ToolRegistry>,
+        prompt_assembler: &Arc<PromptAssembler>,
         profile: &Option<hermes_config::ProfileConfig>,
         tg_adapter: &Option<Arc<TelegramAdapter>>,
     ) {
@@ -182,17 +189,18 @@ impl Gateway {
         let temperature = profile.as_ref().map(|p| p.temperature).unwrap_or(0.7);
         let max_tokens = profile.as_ref().map(|p| p.max_tokens).unwrap_or(4096);
 
+        // Build active system prompt dynamically via PromptAssembler
+        let active_system_prompt = prompt_assembler.build_system_prompt(system_prompt).await;
+
         // Tool-calling loop setup
         let mut messages = Vec::new();
-        if let Some(sys) = system_prompt {
-            if !sys.is_empty() {
-                messages.push(ChatMessage {
-                    role: "system".to_string(),
-                    content: Some(sys.to_string()),
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
-            }
+        if !active_system_prompt.is_empty() {
+            messages.push(ChatMessage {
+                role: "system".to_string(),
+                content: Some(active_system_prompt),
+                tool_calls: None,
+                tool_call_id: None,
+            });
         }
         messages.push(ChatMessage {
             role: "user".to_string(),
@@ -240,54 +248,54 @@ impl Gateway {
                             for call in calls {
                                 let result = tool_registry.execute(&call).await;
                                 messages.push(ChatMessage {
-                                role: "tool".to_string(),
-                                content: Some(result.output),
-                                tool_calls: None,
-                                tool_call_id: Some(result.tool_call_id),
-                            });
+                                    role: "tool".to_string(),
+                                    content: Some(result.output),
+                                    tool_calls: None,
+                                    tool_call_id: Some(result.tool_call_id),
+                                });
+                            }
                         }
                     }
                 }
-            }
-            Err(e) => {
-                error!("LLM chat completion with tools failed: {}. Falling back to echo.", e);
-                final_text = format!("Echo: {}", prompt_text);
-                break;
-            }
-        }
-    }
-
-    if final_text.is_empty() && iteration >= max_tool_iterations {
-        warn!("Agent loop reached maximum tool iterations ({})", max_tool_iterations);
-        final_text = "Task halted: maximum tool execution iterations reached.".to_string();
-    }
-
-    let outgoing = OutgoingMessage {
-        id: MessageId::new(),
-        session_id: msg.session_id,
-        platform: msg.platform,
-        content: MessageContent::Text { text: final_text },
-        reply_to: Some(incoming_id),
-        metadata: HashMap::new(),
-    };
-
-    match msg.platform {
-        Platform::Telegram => {
-            if let Some(adapter) = tg_adapter {
-                if let Err(e) = adapter.send(outgoing).await {
-                    error!("Failed to send Telegram reply: {:?}", e);
-                } else {
-                    info!("Telegram reply sent successfully");
+                Err(e) => {
+                    error!("LLM chat completion with tools failed: {}. Falling back to echo.", e);
+                    final_text = format!("Echo: {}", prompt_text);
+                    break;
                 }
-            } else {
-                warn!("No active Telegram adapter available to dispatch response");
             }
         }
-        platform => {
-            warn!("Platform {} not yet hooked up for outbound dispatch", platform);
+
+        if final_text.is_empty() && iteration >= max_tool_iterations {
+            warn!("Agent loop reached maximum tool iterations ({})", max_tool_iterations);
+            final_text = "Task halted: maximum tool execution iterations reached.".to_string();
+        }
+
+        let outgoing = OutgoingMessage {
+            id: MessageId::new(),
+            session_id: msg.session_id,
+            platform: msg.platform,
+            reply_to: Some(incoming_id),
+            content: MessageContent::Text { text: final_text },
+            metadata: HashMap::new(),
+        };
+
+        match msg.platform {
+            Platform::Telegram => {
+                if let Some(adapter) = tg_adapter {
+                    if let Err(e) = adapter.send(outgoing).await {
+                        error!("Failed to send Telegram reply: {:?}", e);
+                    } else {
+                        info!("Telegram reply sent successfully");
+                    }
+                } else {
+                    warn!("No active Telegram adapter available to dispatch response");
+                }
+            }
+            platform => {
+                warn!("Platform {} not yet hooked up for outbound dispatch", platform);
+            }
         }
     }
-}
 }
 
 pub use hermes_config::GatewayConfig as Config;
