@@ -1,0 +1,15 @@
+[package]
+name = "hermes-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Hermes Gateway - Shared Protocol Types"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }

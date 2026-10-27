@@ -1,0 +1,17 @@
+[package]
+name = "hermes-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "Hermes Gateway - Main Binary"
+
+[dependencies]
+hermes-gateway-core = { path = "../gateway-core" }
+hermes-config = { path = "../config" }
+hermes-session-store = { path = "../session-store" }
+hermes-relay = { path = "../relay" }
+hermes-platform-telegram = { path = "../platform-telegram" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "hermes-platform-signal"
+version = "0.1.0"
+edition = "2024"
+description = "Hermes Gateway - Signal platform adapter"
+
+[dependencies]
+hermes-platform-adapter = { path = "../platform-adapter" }
+hermes-protocol = { path = "../protocol" }
+signal-cli-jsonrpc-client = "0.1"
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["serde", "v4", "v7"] }
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+time = { workspace = true, features = ["serde", "formatting", "parsing"] }
+url = "2.5"
+base64 = "0.22"
+mime_guess = "2.0"

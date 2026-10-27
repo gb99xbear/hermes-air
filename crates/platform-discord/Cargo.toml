@@ -1,0 +1,24 @@
+[package]
+name = "hermes-platform-discord"
+version = "0.1.0"
+edition = "2021"
+description = "Hermes Gateway - platform-discord"
+
+[dependencies]
+hermes-protocol = { path = "../protocol" }
+hermes-platform-adapter = { path = "../platform-adapter" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+dashmap = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+serenity = { workspace = true }
+futures = { workspace = true }

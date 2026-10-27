@@ -1,0 +1,14 @@
+[package]
+name = "hermes-gateway-core"
+version = "0.1.0"
+edition = "2021"
+description = "Hermes Gateway - Core Logic"
+
+[dependencies]
+hermes-config = { path = "../config" }
+hermes-relay = { path = "../relay" }
+hermes-session-store = { path = "../session-store" }
+hermes-protocol = { path = "../protocol" }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

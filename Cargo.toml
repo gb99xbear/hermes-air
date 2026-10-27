@@ -1,0 +1,71 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gateway-core",
+    "crates/session-store", 
+    "crates/config",
+    "crates/protocol",
+    "crates/platform-adapter",
+    "crates/relay",
+    "crates/platform-telegram",
+    "crates/platform-discord",
+    "crates/platform-slack",
+    "crates/platform-whatsapp",
+    "crates/platform-webhook",
+    "crates/platform-email",
+    "crates/platform-sms",
+    "crates/mcp",
+    "crates/cron",
+    "crates/plugin-host",
+    "crates/skills",
+    "crates/dashboard-api",
+    "crates/tui-gateway",
+    "crates/acp-adapter",
+    "crates/desktop-backend",
+    "crates/gateway-bin",
+]
+
+[workspace.dependencies]
+tokio = { version = "1.54", features = ["full"] }
+tokio-sync = { version = "1.40", package = "tokio", features = ["sync"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["arbitrary_precision", "raw_value"] }
+toml = "0.8"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1.8", features = ["serde", "v4", "v7"] }
+dashmap = "6.1"
+parking_lot = "0.12"
+async-trait = "0.1.80"
+bytes = "1.5"
+futures = "0.3"
+itertools = "0.12"
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+config = { version = "0.14", features = ["toml"] }
+notify = "6.1"
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+axum = { version = "0.7", features = ["ws", "json", "multipart"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+rustls = "0.23"
+wasmtime = { version = "25.0", features = ["async"] }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+tokio-cron-scheduler = { version = "0.11", features = ["signal"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+mockall = "0.12"
+proptest = "1.0"
+tokio-test = "0.4"
+clap = { version = "4.5", features = ["derive", "env"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+telegram-bot = "0.12"
+serenity = { version = "0.12", features = ["model", "gateway", "rustls_backend", "voice", "cache", "http", "framework", "utils"] }
+slack = { version = "0.25", features = ["with_rustls"] }
+matrix-sdk = { version = "0.7", features = ["e2e-encryption", "sqlite"] }
+whatsapp-rs = "0.3"
+signal-cli-jsonrpc-client = "0.1"
+http = "1.1"
+
+
