@@ -9,6 +9,10 @@ hermes-config = { path = "../config" }
 hermes-relay = { path = "../relay" }
 hermes-session-store = { path = "../session-store" }
 hermes-protocol = { path = "../protocol" }
+hermes-platform-telegram = { path = "../platform-telegram" }
+hermes-platform-adapter = { path = "../platform-adapter" }
+hermes-cron = { path = "../cron" }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
