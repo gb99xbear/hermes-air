@@ -380,7 +380,7 @@ impl TelegramAdapter {
                     chat_id,
                     text: text.clone(),
                     parse_mode: Some("Markdown".to_string()),
-                    reply_to_message_id: msg.reply_to.map(|id| id.0.as_u64_pair().0 as i64),
+                    reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
                     disable_web_page_preview: Some(true),
                 }).map_err(|e| PlatformError::Internal(e.to_string()))
             }
@@ -390,7 +390,7 @@ impl TelegramAdapter {
                     photo: url.clone(),
                     caption: caption.clone(),
                     parse_mode: Some("Markdown".to_string()),
-                    reply_to_message_id: msg.reply_to.map(|id| id.0.as_u64_pair().0 as i64),
+                    reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
                 }).map_err(|e| PlatformError::Internal(e.to_string()))
             }
             MessageContent::File { url, filename: _, mime_type: _ } => {
@@ -398,7 +398,7 @@ impl TelegramAdapter {
                     chat_id,
                     document: url.clone(),
                     caption: None,
-                    reply_to_message_id: msg.reply_to.map(|id| id.0.as_u64_pair().0 as i64),
+                    reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
                 }).map_err(|e| PlatformError::Internal(e.to_string()))
             }
             _ => Err(PlatformError::UnsupportedContent(format!("Content type not supported for Telegram: {:?}", msg.content))),
