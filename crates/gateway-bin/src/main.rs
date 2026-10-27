@@ -1,4 +1,5 @@
 // Hermes Gateway - Main Binary
+use hermes_gateway_core::Gateway;
 use hermes_config::ConfigLoader;
 use tracing_subscriber::{EnvFilter, fmt};
 use clap::Parser;
@@ -31,6 +32,6 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let gateway = hermes_gateway_core::Gateway::new(config).await?;
+    let gateway = Gateway::new(config).await?;
     gateway.run().await
 }
