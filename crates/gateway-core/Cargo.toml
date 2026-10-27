@@ -11,8 +11,11 @@ hermes-session-store = { path = "../session-store" }
 hermes-protocol = { path = "../protocol" }
 hermes-platform-telegram = { path = "../platform-telegram" }
 hermes-platform-adapter = { path = "../platform-adapter" }
-hermes-cron = { path = "../cron" }
+reqwest = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }

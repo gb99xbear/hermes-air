@@ -1,22 +1,27 @@
 // hermes-gateway-core - Core gateway logic
+pub mod llm;
+
 use hermes_config::GatewayConfig;
-use hermes_cron::CronScheduler;
-use hermes_platform_adapter::{BasePlatformConfig, PlatformAdapter};
+use hermes_platform_adapter::PlatformAdapter;
 use hermes_platform_telegram::{TelegramAdapter, TelegramConfig};
-use hermes_protocol::{
-    MessageContent, MessageId, OutgoingMessage, Platform, PlatformEvent,
-};
+use hermes_protocol::{IncomingMessage, MessageContent, MessageId, OutgoingMessage, Platform, PlatformEvent};
 use hermes_relay::{WsRelayConfig, WsRelayServer};
 use hermes_session_store::{SessionStore, SessionStoreFactory};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{error, info};
+use tokio::sync::mpsc;
+use tracing::{error, info, warn};
+
+pub use llm::LlmClient;
 
 #[allow(dead_code)]
 pub struct Gateway {
     config: GatewayConfig,
     relay_server: Arc<WsRelayServer>,
     session_store: Box<dyn SessionStore>,
+    llm_client: Arc<LlmClient>,
+    event_tx: mpsc::UnboundedSender<PlatformEvent>,
+    event_rx: Option<mpsc::UnboundedReceiver<PlatformEvent>>,
 }
 
 impl Gateway {
@@ -30,8 +35,8 @@ impl Gateway {
             connection_timeout_secs: 60,
         };
 
-        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
-        let relay_server = Arc::new(WsRelayServer::new(relay_config, event_tx));
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let relay_server = Arc::new(WsRelayServer::new(relay_config, event_tx.clone()));
 
         let session_store = SessionStoreFactory::create(
             config.session_store.backend,
@@ -41,243 +46,171 @@ impl Gateway {
         )
         .await?;
 
+        // Initialize LLM client:
+        // Priority: environment variables -> 9Router default fallback
+        // base_url: LLM_BASE_URL or OPENAI_BASE_URL or fallback to http://100.75.163.92:20128/v1
+        // api_key: HERMES_CUSTOM_100_75_163_92_20128_API_KEY or HERMES_CUSTOM_100_77_223_11_20128_API_KEY or OPENAI_API_KEY
+        let base_url = std::env::var("LLM_BASE_URL")
+            .or_else(|_| std::env::var("OPENAI_BASE_URL"))
+            .unwrap_or_else(|_| "http://100.75.163.92:20128/v1".to_string());
+
+        let api_key = std::env::var("HERMES_CUSTOM_100_75_163_92_20128_API_KEY")
+            .or_else(|_| std::env::var("HERMES_CUSTOM_100_77_223_11_20128_API_KEY"))
+            .or_else(|_| std::env::var("OPENAI_API_KEY"))
+            .ok();
+
+        let llm_client = Arc::new(LlmClient::new(Some(base_url), api_key));
+
         Ok(Self {
             config,
             relay_server,
             session_store,
+            llm_client,
+            event_tx,
+            event_rx: Some(event_rx),
         })
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         info!("Starting Hermes Gateway");
 
         // Start relay server
         let relay = self.relay_server.clone();
         tokio::spawn(async move {
             if let Err(e) = relay.run().await {
-                tracing::error!("Relay server error: {}", e);
+                error!("Relay server error: {}", e);
             }
         });
 
-        // 1. Unbounded channel for incoming platform events
-        let (platform_tx, mut platform_rx) =
-            tokio::sync::mpsc::unbounded_channel::<PlatformEvent>();
-
-        // 2. Start platform adapters
-        let mut telegram_adapter_opt: Option<Arc<TelegramAdapter>> = None;
-        if let Some(telegram_cfg) = self.config.platforms.get("telegram") {
-            if telegram_cfg.enabled {
-                info!("Initializing Telegram adapter");
-                let mut map = telegram_cfg.config.clone();
-                map.insert("enabled".to_string(), serde_json::Value::Bool(telegram_cfg.enabled));
-                if let Some(ref rl) = telegram_cfg.rate_limit {
-                    map.insert(
-                        "rate_limit".to_string(),
-                        serde_json::to_value(rl).unwrap_or(serde_json::Value::Null),
-                    );
-                }
-                if let Some(ref wh) = telegram_cfg.webhook {
-                    map.insert(
-                        "webhook".to_string(),
-                        serde_json::to_value(wh).unwrap_or(serde_json::Value::Null),
-                    );
-                }
-
-                let tg_config: TelegramConfig = match serde_json::from_value(serde_json::Value::Object(map)) {
-                    Ok(parsed) => parsed,
-                    Err(err) => {
-                        error!("Failed to parse telegram configuration: {}", err);
-                        let base = BasePlatformConfig {
-                            enabled: telegram_cfg.enabled,
-                            rate_limit: telegram_cfg.rate_limit.as_ref().map(|rl| {
-                                hermes_platform_adapter::RateLimitConfig {
-                                    requests_per_second: rl.requests_per_second,
-                                    burst: rl.burst,
-                                }
-                            }),
-                            webhook: telegram_cfg.webhook.as_ref().map(|wh| {
-                                hermes_platform_adapter::WebhookConfig {
-                                    path: wh.path.clone(),
-                                    secret: wh.secret.clone(),
-                                    verify_signature: wh.verify_signature,
-                                }
-                            }),
-                            custom: serde_json::Value::Object(telegram_cfg.config.clone()),
-                        };
-                        let bot_token = telegram_cfg
-                            .config
-                            .get("bot_token")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        let webhook_url = telegram_cfg
-                            .config
-                            .get("webhook_url")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let timeout_secs = telegram_cfg
-                            .config
-                            .get("timeout_secs")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(30);
-
-                        TelegramConfig {
-                            bot_token,
-                            webhook_url,
-                            allowed_updates: vec![],
-                            drop_pending_updates: false,
-                            timeout_secs,
-                            base,
-                        }
-                    }
-                };
-
-                let mut adapter = TelegramAdapter::new();
-                match adapter.initialize(tg_config).await {
-                    Ok(_) => {
-                        if let Err(e) = adapter.start(platform_tx.clone()).await {
+        // Initialize platform adapters if configured
+        let mut telegram_adapter: Option<Arc<TelegramAdapter>> = None;
+        if let Some(tg_config_entry) = self.config.platforms.get("telegram") {
+            if tg_config_entry.enabled {
+                match serde_json::from_value::<TelegramConfig>(
+                    serde_json::Value::Object(tg_config_entry.config.clone()),
+                ) {
+                    Ok(parsed_cfg) => {
+                        let mut adapter = TelegramAdapter::new();
+                        if let Err(e) = adapter.initialize(parsed_cfg).await {
+                            error!("Failed to initialize Telegram adapter: {}", e);
+                        } else if let Err(e) = adapter.start(self.event_tx.clone()).await {
                             error!("Failed to start Telegram adapter: {}", e);
                         } else {
+                            telegram_adapter = Some(Arc::new(adapter));
                             info!("Telegram adapter started successfully");
-                            telegram_adapter_opt = Some(Arc::new(adapter));
                         }
                     }
                     Err(e) => {
-                        error!("Failed to initialize Telegram adapter: {}", e);
+                        error!("Failed to parse telegram config: {}", e);
                     }
                 }
             }
         }
 
-        // 3. Start turn processing
-        let tg_adapter_for_turn = telegram_adapter_opt.clone();
-        let default_profile_name = self.config.gateway.default_profile.clone();
-        let profiles = self.config.profiles.clone();
+        // Setup event loop receiver
+        let mut event_rx = self
+            .event_rx
+            .take()
+            .expect("event_rx can only be taken once");
+
+        let llm_client = self.llm_client.clone();
+        let default_profile = self
+            .config
+            .profiles
+            .get(&self.config.gateway.default_profile)
+            .cloned()
+            .or_else(|| self.config.profiles.values().next().cloned());
+
+        let event_loop_tg = telegram_adapter.clone();
 
         tokio::spawn(async move {
-            info!("Turn processing loop started");
-            while let Some(event) = platform_rx.recv().await {
+            info!("TurnProcessor event loop started");
+            while let Some(event) = event_rx.recv().await {
                 match event {
                     PlatformEvent::Incoming(msg) => {
-                        let prompt_text = match &msg.content {
-                            MessageContent::Text { text } => text.clone(),
-                            MessageContent::Image { caption, .. } => {
-                                caption.clone().unwrap_or_default()
-                            }
-                            MessageContent::File { filename, .. } => {
-                                format!("[File: {}]", filename)
-                            }
-                            _ => format!("[Event: {:?}]", msg.content),
-                        };
-
-                        info!(
-                            session_id = %msg.session_id,
-                            platform = %msg.platform,
-                            prompt = %prompt_text,
-                            "Incoming platform message received"
-                        );
-
-                        // Generate response text
-                        let response_text = if let Some(profile) = profiles.get(&default_profile_name) {
-                            format!(
-                                "[Profile: {} | Model: {}] Received: {}",
-                                profile.name, profile.model, prompt_text
-                            )
-                        } else {
-                            format!("Echo: {}", prompt_text)
-                        };
-
-                        let outgoing = OutgoingMessage {
-                            id: MessageId::new(),
-                            session_id: msg.session_id,
-                            platform: msg.platform,
-                            content: MessageContent::Text {
-                                text: response_text,
-                            },
-                            reply_to: Some(msg.id),
-                            metadata: HashMap::new(),
-                        };
-
-                        match msg.platform {
-                            Platform::Telegram => {
-                                if let Some(ref adapter) = tg_adapter_for_turn {
-                                    if let Err(e) = adapter.send(outgoing).await {
-                                        error!("Failed to send Telegram response: {}", e);
-                                    } else {
-                                        info!(
-                                            session_id = %msg.session_id,
-                                            "Sent Telegram response successfully"
-                                        );
-                                    }
-                                } else {
-                                    error!("Telegram adapter not available for sending response");
-                                }
-                            }
-                            other => {
-                                info!(
-                                    platform = %other,
-                                    "No platform adapter registered for outgoing routing"
-                                );
-                            }
-                        }
-                    }
-                    PlatformEvent::Outgoing(msg) => {
-                        info!(session_id = %msg.session_id, platform = %msg.platform, "Outgoing event queued");
-                    }
-                    PlatformEvent::Ack { message_id, success } => {
-                        info!(?message_id, success, "Platform message ACK");
+                        Self::process_incoming(msg, &llm_client, &default_profile, &event_loop_tg).await;
                     }
                     PlatformEvent::Error { session_id, error } => {
-                        error!(%session_id, %error, "Platform event error");
+                        warn!("Platform error for session {}: {:?}", session_id, error);
                     }
-                    PlatformEvent::SessionCreated(session) => {
-                        info!(session_id = %session.id, platform = %session.platform, "Session created");
-                    }
-                    PlatformEvent::SessionUpdated(session) => {
-                        info!(session_id = %session.id, "Session updated");
-                    }
-                    PlatformEvent::SessionDeleted(id) => {
-                        info!(session_id = %id, "Session deleted");
+                    other => {
+                        info!("Received event: {:?}", other);
                     }
                 }
             }
-            info!("Turn processing loop terminated");
         });
-
-        // 4. Start cron scheduler
-        let cron = match CronScheduler::new(None).await {
-            Ok(c) => {
-                if let Err(e) = c.start().await {
-                    error!("Failed to start cron scheduler: {}", e);
-                    None
-                } else {
-                    info!("Cron scheduler started");
-                    Some(c)
-                }
-            }
-            Err(e) => {
-                error!("Failed to initialize cron scheduler: {}", e);
-                None
-            }
-        };
-
-        // 5. Dashboard API placeholder
-        if self.config.dashboard.enabled {
-            info!(
-                host = %self.config.dashboard.host,
-                port = self.config.dashboard.port,
-                "Dashboard API ready"
-            );
-        }
 
         info!("Hermes Gateway running");
 
-        // Keep running
+        // Keep running until shutdown signal
         tokio::signal::ctrl_c().await?;
         info!("Shutting down");
 
-        drop(cron);
         Ok(())
+    }
+
+    async fn process_incoming(
+        msg: IncomingMessage,
+        llm_client: &Arc<LlmClient>,
+        profile: &Option<hermes_config::ProfileConfig>,
+        tg_adapter: &Option<Arc<TelegramAdapter>>,
+    ) {
+        let (prompt_text, incoming_id) = match &msg.content {
+            MessageContent::Text { text } => (text.clone(), msg.id),
+            _ => {
+                info!("Ignoring non-text incoming message: {:?}", msg.id);
+                return;
+            }
+        };
+
+        info!("Processing incoming message from {}: {}", msg.platform, prompt_text);
+
+        let model = profile
+            .as_ref()
+            .map(|p| p.model.as_str())
+            .unwrap_or("gemini-2.5-flash");
+        let system_prompt = profile
+            .as_ref()
+            .and_then(|p| p.system_prompt.as_deref());
+        let temperature = profile.as_ref().map(|p| p.temperature).unwrap_or(0.7);
+        let max_tokens = profile.as_ref().map(|p| p.max_tokens).unwrap_or(4096);
+
+        let reply_text = match llm_client
+            .chat_completion(model, system_prompt, &prompt_text, temperature, max_tokens)
+            .await
+        {
+            Ok(output) => output,
+            Err(e) => {
+                error!("LLM chat completion failed: {}. Falling back to echo.", e);
+                format!("Echo: {}", prompt_text)
+            }
+        };
+
+        let outgoing = OutgoingMessage {
+            id: MessageId::new(),
+            session_id: msg.session_id,
+            platform: msg.platform,
+            content: MessageContent::Text { text: reply_text },
+            reply_to: Some(incoming_id),
+            metadata: HashMap::new(),
+        };
+
+        match msg.platform {
+            Platform::Telegram => {
+                if let Some(adapter) = tg_adapter {
+                    if let Err(e) = adapter.send(outgoing).await {
+                        error!("Failed to send Telegram reply: {:?}", e);
+                    } else {
+                        info!("Telegram reply sent successfully");
+                    }
+                } else {
+                    warn!("No active Telegram adapter available to dispatch response");
+                }
+            }
+            platform => {
+                warn!("Platform {} not yet hooked up for outbound dispatch", platform);
+            }
+        }
     }
 }
 
