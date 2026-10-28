@@ -12,7 +12,7 @@ pub enum SlashCommand {
 
 /// Parse incoming prompt or message text for slash commands.
 /// Matches commands like /start, /help, /status, /model [name], /clear, /reset.
-/// Handles Telegram bot mentions (e.g. /status@my_bot) and leading/trailing whitespace.
+/// Handles Telegram bot mentions (e.g. /status@HermesBot) and leading/trailing whitespace.
 pub fn parse_command(text: &str) -> Option<SlashCommand> {
     let trimmed = text.trim();
     if !trimmed.starts_with('/') {
@@ -23,7 +23,7 @@ pub fn parse_command(text: &str) -> Option<SlashCommand> {
     let raw_cmd = parts.next()?;
     let args = parts.next().map(str::trim).filter(|s| !s.is_empty());
 
-    // Strip bot mention if present, e.g. /status@AlfredBot -> /status
+    // Strip bot mention if present, e.g. /status@HermesBot -> /status
     let cmd_name = raw_cmd.split('@').next()?.to_lowercase();
 
     match cmd_name.as_str() {
@@ -74,10 +74,10 @@ pub struct CommandContext<'a> {
     pub memory_stats: Option<String>,
 }
 
-/// Format the Butler Greeting for /start and /help
+/// Format the Greeting for /start and /help
 pub fn handle_start_or_help(ctx: &CommandContext) -> String {
     format!(
-        "🎩 <b>Greetings, Bear.</b>\n\n        I am your loyal butler and personal gateway interface. All systems are operational.\n\n        <b>Active Model:</b> <code>{}</code>\n        <b>Profile:</b> <code>{}</code>\n\n        <b>Available Slash Commands:</b>\n        • <code>/start</code> / <code>/help</code> — Show this butler greeting & command overview\n        • <code>/status</code> — Display full system diagnostics, uptime & platform status\n        • <code>/model</code> — View current active model & provider info\n        • <code>/model &lt;name&gt;</code> — Dynamically switch active model (e.g. <code>/model ag/gemini-3.8-flash</code>)\n        • <code>/clear</code> / <code>/reset</code> — Reset conversation turn memory & session\n\n        <i>Execute any request directly — I stand ready to serve.</i>",
+        "<b>Greetings!</b>\n\nI am your Hermes Gateway assistant. All systems are operational.\n\n<b>Active Model:</b> <code>{}</code>\n<b>Profile:</b> <code>{}</code>\n\n<b>Available Slash Commands:</b>\n• <code>/start</code> / <code>/help</code> — Show this greeting & command overview\n• <code>/status</code> — Display full system diagnostics, uptime & platform status\n• <code>/model</code> — View current active model & provider info\n• <code>/model &lt;name&gt;</code> — Dynamically switch active model (e.g. <code>/model ag/gemini-3.8-flash</code>)\n• <code>/clear</code> / <code>/reset</code> — Reset conversation turn memory & session",
         ctx.active_model, ctx.active_profile
     )
 }
@@ -97,9 +97,9 @@ pub fn handle_status(ctx: &CommandContext) -> String {
     };
 
     format!(
-"🎩 <b>ALFRED GATEWAY STATUS</b>
+"<b>{} Gateway Status</b>
 
-<b>Estate Directives (One-Tap Copy):</b>
+<b>Directives (One-Tap Copy):</b>
 <code>{}</code>
 <code>{}</code>
 <code>{}</code>
@@ -115,7 +115,8 @@ pub fn handle_status(ctx: &CommandContext) -> String {
 • <b>Telegram:</b> <code>{}</code>
 • <b>Memory:</b> <code>{}</code>
 
-<i>Status: Operational | 500% Obedience Standing Active.</i>",
+<i>Status: Operational</i>",
+        ctx.gateway_name,
         format!("gateway: {} v{}", ctx.gateway_name, ctx.gateway_version),
         format!("uptime: {}", uptime_str),
         format!("profile: {}", ctx.active_profile),
@@ -130,6 +131,7 @@ pub fn handle_status(ctx: &CommandContext) -> String {
         memory_info
     )
 }
+
 /// Handle /model command
 pub fn handle_model(
     arg: &Option<String>,
@@ -139,7 +141,7 @@ pub fn handle_model(
     match arg {
         None => {
             format!(
-                "🤖 <b>Active Model Configuration</b>\n\n                • <b>Current Model:</b> <code>{}</code>\n\n                To switch models dynamically for this gateway session, run:\n                <code>/model &lt;model_name&gt;</code>\n\n                <b>Examples:</b>\n                • <code>/model ag/gemini-3.8-flash</code>\n                • <code>/model freet/claude-3-7-sonnet</code>\n                • <code>/model gpt-4o</code>",
+                "🤖 <b>Active Model Configuration</b>\n\n• <b>Current Model:</b> <code>{}</code>\n\nTo switch models dynamically for this gateway session, run:\n<code>/model &lt;model_name&gt;</code>\n\n<b>Examples:</b>\n• <code>/model ag/gemini-3.8-flash</code>\n• <code>/model freet/claude-3-7-sonnet</code>\n• <code>/model gpt-4o</code>",
                 current_model
             )
         }
@@ -152,7 +154,7 @@ pub fn handle_model(
             match on_switch(target) {
                 Ok(_) => {
                     format!(
-                        "✅ <b>Model Switched Successfully</b>\n\n                        Active model is now set to: <code>{}</code>\n                        Subsequent conversation turns will use this model.",
+                        "✅ <b>Model Switched Successfully</b>\n\nActive model is now set to: <code>{}</code>\nSubsequent conversation turns will use this model.",
                         target
                     )
                 }
@@ -166,7 +168,7 @@ pub fn handle_model(
 
 /// Handle /clear or /reset command
 pub fn handle_clear() -> String {
-    "🧹 <b>Session Reset</b>\n\n    Conversation turn memory has been cleared. Beginning a fresh session."
+    "🧹 <b>Session Reset</b>\n\nConversation turn memory has been cleared. Beginning a fresh session."
         .to_string()
 }
 
@@ -212,7 +214,7 @@ mod tests {
         assert_eq!(parse_command("  /help  "), Some(SlashCommand::Help));
         assert_eq!(parse_command("/commands"), Some(SlashCommand::Help));
         assert_eq!(parse_command("/status"), Some(SlashCommand::Status));
-        assert_eq!(parse_command("/status@AlfredBot"), Some(SlashCommand::Status));
+        assert_eq!(parse_command("/status@HermesBot"), Some(SlashCommand::Status));
         assert_eq!(parse_command("/model"), Some(SlashCommand::Model(None)));
         assert_eq!(
             parse_command("/model ag/gemini-3.8-flash"),
@@ -242,35 +244,38 @@ mod tests {
         let ctx = CommandContext {
             gateway_name: "hermes-gateway",
             gateway_version: "0.1.0",
-            active_profile: "alfred",
+            active_profile: "default",
             active_model: "ag/gemini-3.8-flash",
             telegram_connected: true,
             memory_stats: Some("42.0 MB RSS".to_string()),
         };
 
         let start_res = handle_command(SlashCommand::Start, &ctx, |_| Ok(()));
-        assert!(start_res.contains("Greetings, Bear."));
+        assert!(start_res.contains("Greetings!"));
+        assert!(start_res.contains("I am your Hermes Gateway assistant. All systems are operational."));
         assert!(start_res.contains("ag/gemini-3.8-flash"));
 
         let help_res = handle_command(SlashCommand::Help, &ctx, |_| Ok(()));
-        assert!(help_res.contains("Greetings, Bear."));
+        assert!(help_res.contains("Greetings!"));
+        assert!(help_res.contains("I am your Hermes Gateway assistant. All systems are operational."));
         assert!(help_res.contains("/status"));
     }
 
     #[test]
     fn test_handle_command_status() {
         let ctx = CommandContext {
-            gateway_name: "hermes-gateway",
+            gateway_name: "Hermes",
             gateway_version: "0.1.0",
-            active_profile: "alfred",
+            active_profile: "default",
             active_model: "ag/gemini-3.8-flash",
             telegram_connected: true,
             memory_stats: Some("15.5 MB RSS / 120.0 MB VIRT".to_string()),
         };
 
         let res = handle_command(SlashCommand::Status, &ctx, |_| Ok(()));
-        assert!(res.contains("hermes-gateway v0.1.0"));
-        assert!(res.contains("alfred"));
+        assert!(res.contains("Hermes Gateway Status"));
+        assert!(res.contains("Hermes v0.1.0"));
+        assert!(res.contains("default"));
         assert!(res.contains("Connected"));
         assert!(res.contains("15.5 MB RSS"));
     }
@@ -280,7 +285,7 @@ mod tests {
         let ctx = CommandContext {
             gateway_name: "hermes-gateway",
             gateway_version: "0.1.0",
-            active_profile: "alfred",
+            active_profile: "default",
             active_model: "gemini-2.5-flash",
             telegram_connected: true,
             memory_stats: None,
@@ -319,7 +324,7 @@ mod tests {
         let ctx = CommandContext {
             gateway_name: "hermes-gateway",
             gateway_version: "0.1.0",
-            active_profile: "alfred",
+            active_profile: "default",
             active_model: "gemini-2.5-flash",
             telegram_connected: true,
             memory_stats: None,

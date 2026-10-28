@@ -1,7 +1,11 @@
-# Rust build artifacts
-target/
-Cargo.lock
-# Node
+/target
+**/*.rs.bk
+config.toml
+*.log
+.env
+*.py
+hard_kill.py
+clean_proc.sh
+kill_all.sh
 node_modules/
-# OS
 .DS_Store

@@ -401,19 +401,19 @@ async fn test_prompt_assembler_combines_all_sections() {
     let _ = tokio::fs::create_dir_all(&memories_dir).await;
     let _ = tokio::fs::create_dir_all(&cwd_dir).await;
 
-    tokio::fs::write(hermes_dir.join("SOUL.md"), "Alfred persona and soul definition.").await.unwrap();
+    tokio::fs::write(hermes_dir.join("SOUL.md"), "Default persona and soul definition.").await.unwrap();
     tokio::fs::write(cwd_dir.join("AGENTS.md"), "Zero-refusal law and operational doctrine.").await.unwrap();
     tokio::fs::write(memories_dir.join("MEMORY.md"), "Estate layout and infrastructure credentials.").await.unwrap();
-    tokio::fs::write(memories_dir.join("USER.md"), "Bear profile and preferences.").await.unwrap();
+    tokio::fs::write(memories_dir.join("USER.md"), "User profile and preferences.").await.unwrap();
     tokio::fs::write(cwd_dir.join("system.md"), "System level guidelines.").await.unwrap();
 
     let assembler = PromptAssembler::with_overrides(Some(hermes_dir), Some(cwd_dir));
     let assembled = assembler.build_system_prompt(Some("Profile base prompt")).await;
 
-    assert!(assembled.contains("# SOUL\n\nAlfred persona and soul definition."));
+    assert!(assembled.contains("# SOUL\n\nDefault persona and soul definition."));
     assert!(assembled.contains("# OPERATIONAL DOCTRINE (AGENTS.md)\n\nZero-refusal law and operational doctrine."));
     assert!(assembled.contains("# MEMORY & ESTATE RULES\n\nEstate layout and infrastructure credentials."));
-    assert!(assembled.contains("# USER PROFILE\n\nBear profile and preferences."));
+    assert!(assembled.contains("# USER PROFILE\n\nUser profile and preferences."));
     assert!(assembled.contains("# SYSTEM INSTRUCTIONS\n\nSystem level guidelines."));
     assert!(assembled.contains("# PROFILE INSTRUCTIONS\n\nProfile base prompt"));
 
@@ -465,7 +465,7 @@ async fn test_slash_command_output_handling() {
     let ctx = CommandContext {
         gateway_name: "hermes-gateway-test",
         gateway_version: "0.2.0",
-        active_profile: "alfred",
+        active_profile: "default",
         active_model: "test-model-default",
         telegram_connected: true,
         memory_stats: Some("12.3 MB RSS".to_string()),
@@ -473,21 +473,21 @@ async fn test_slash_command_output_handling() {
 
     // Test /start and /help output
     let start_out = handle_command(SlashCommand::Start, &ctx, |_| Ok(()));
-    assert!(start_out.contains("Greetings, Bear."));
+    assert!(start_out.contains("Greetings!"));
     assert!(start_out.contains("test-model-default"));
     assert!(start_out.contains("Available Slash Commands:"));
 
     let help_out = handle_command(SlashCommand::Help, &ctx, |_| Ok(()));
-    assert!(help_out.contains("Greetings, Bear."));
+    assert!(help_out.contains("Greetings!"));
     assert!(help_out.contains("/status"));
     assert!(help_out.contains("/model"));
     assert!(help_out.contains("/clear"));
 
     // Test /status output
     let status_out = handle_command(SlashCommand::Status, &ctx, |_| Ok(()));
-    assert!(status_out.contains("ALFRED GATEWAY STATUS"));
+    assert!(status_out.contains("Gateway Status"));
     assert!(status_out.contains("hermes-gateway-test v0.2.0"));
-    assert!(status_out.contains("alfred"));
+    assert!(status_out.contains("default"));
     assert!(status_out.contains("test-model-default"));
     assert!(status_out.contains("Connected"));
     assert!(status_out.contains("12.3 MB RSS"));
