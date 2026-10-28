@@ -97,31 +97,36 @@ pub fn handle_status(ctx: &CommandContext) -> String {
     };
 
     format!(
-"🎩 *ALFRED GATEWAY STATUS*
+"🎩 <b>ALFRED GATEWAY STATUS</b>
 
-| Metric | Details |
-| :--- | :--- |
-| **Gateway** | `{}` |
-| **Uptime** | `{}` |
-| **Profile** | `{}` |
-| **Model** | `{}` |
-| **Telegram** | `{}` |
-| **RAM** | `{}` |
+<b>Estate Directives (One-Tap Copy):</b>
+<code>{}</code>
+<code>{}</code>
+<code>{}</code>
+<code>{}</code>
+<code>{}</code>
+<code>{}</code>
 
-*Estate Directive:*
-`profile`: `{}`
-`model`: `{}`
-`ram`: `{}`
+<b>Diagnostic Overview:</b>
+• <b>Gateway:</b> <code>{}</code>
+• <b>Uptime:</b> <code>{}</code>
+• <b>Profile:</b> <code>{}</code>
+• <b>Model:</b> <code>{}</code>
+• <b>Telegram:</b> <code>{}</code>
+• <b>Memory:</b> <code>{}</code>
 
-_Status: Operational | 500% Obedience Standing Active._",
+<i>Status: Operational | 500% Obedience Standing Active.</i>",
+        format!("gateway: {} v{}", ctx.gateway_name, ctx.gateway_version),
+        format!("uptime: {}", uptime_str),
+        format!("profile: {}", ctx.active_profile),
+        format!("model: {}", ctx.active_model),
+        format!("telegram: {}", tg_status),
+        format!("ram: {}", memory_info),
         format!("{} v{}", ctx.gateway_name, ctx.gateway_version),
         uptime_str,
         ctx.active_profile,
         ctx.active_model,
         tg_status,
-        memory_info,
-        ctx.active_profile,
-        ctx.active_model,
         memory_info
     )
 }
