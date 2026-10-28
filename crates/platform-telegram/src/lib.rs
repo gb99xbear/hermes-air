@@ -36,7 +36,7 @@ struct TelegramUser {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramChat {
+pub struct TelegramChat {
     id: i64,
     #[serde(rename = "type")]
     chat_type: String,
@@ -215,8 +215,8 @@ struct TelegramResponse<T> {
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
-struct SentMessage {
-    message_id: i64,
+pub struct SentMessage {
+    pub message_id: i64,
     date: i64,
     chat: TelegramChat,
 }
@@ -419,7 +419,7 @@ impl TelegramAdapter {
         Ok(())
     }
 
-    async fn send_chunk_with_fallback(
+    pub async fn send_chunk_with_fallback(
         &self,
         chat_id: i64,
         chunk: &str,

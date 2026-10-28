@@ -1,6 +1,7 @@
 // hermes-gateway-core - Core gateway logic
 pub mod commands;
 pub mod llm;
+pub mod stream;
 pub mod prompt;
 pub mod providers;
 pub mod tools;
@@ -10,6 +11,7 @@ pub use commands::{
     parse_command, CommandContext, SlashCommand,
 };
 pub use llm::{ChatMessage, ChatResponse, LlmClient, ToolCallRawExt};
+pub use stream::GatewayStreamConsumer;
 pub use prompt::PromptAssembler;
 pub use providers::{ProviderProfile, ProviderRegistry};
 pub use tools::{ToolCall, ToolRegistry, ToolResult};
@@ -367,6 +369,7 @@ impl Gateway {
         let max_tool_iterations = 10;
         let mut iteration = 0;
         let mut final_text = String::new();
+        let mut streamed_delivery = false;
 
         while iteration < max_tool_iterations {
             iteration += 1;
@@ -386,9 +389,47 @@ impl Gateway {
                 Ok((raw_msg, response)) => {
                     match response {
                         ChatResponse::Text(text) => {
-                            final_text = text.clone();
+                            let streamed_text = if iteration == 1 && tg_adapter.is_some() && msg.platform == Platform::Telegram {
+                                if let Some(adapter) = tg_adapter {
+                                    if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
+                                        match llm_client
+                                            .chat_completion_stream(&active_model, &messages, temperature, max_tokens)
+                                            .await
+                                        {
+                                            Ok(rx) => {
+                                                info!("Streaming chat response via GatewayStreamConsumer for chat_id: {}", chat_id);
+                                                let mut consumer = GatewayStreamConsumer::new(chat_id);
+                                                let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
+                                                match consumer.consume_stream(rx, adapter, reply_to_id).await {
+                                                    Ok(acc) => {
+                                                        streamed_delivery = true;
+                                                        Some(acc)
+                                                    }
+                                                    Err(e) => {
+                                                        warn!("GatewayStreamConsumer failed: {:?}, falling back to non-streamed text", e);
+                                                        None
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!("Failed to initiate LLM stream: {:?}, falling back to non-streamed text", e);
+                                                None
+                                            }
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            let resolved_text = streamed_text.unwrap_or(text);
+                            final_text = resolved_text.clone();
                             // Persist final assistant response to session store
-                            let asst_msg = ChatMessage::assistant(text);
+                            let asst_msg = ChatMessage::assistant(resolved_text);
                             if let Err(e) = session_store.append_message(msg.session_id, asst_msg).await {
                                 warn!("Failed to persist assistant message for session {}: {:?}", msg.session_id, e);
                             }
@@ -445,7 +486,9 @@ impl Gateway {
             metadata: HashMap::new(),
         };
 
-        Self::dispatch_outgoing(outgoing, tg_adapter).await;
+        if !streamed_delivery {
+            Self::dispatch_outgoing(outgoing, tg_adapter).await;
+        }
     }
 
     async fn dispatch_outgoing(outgoing: OutgoingMessage, tg_adapter: &Option<Arc<TelegramAdapter>>) {

@@ -12,6 +12,7 @@ hermes-protocol = { path = "../protocol" }
 hermes-platform-telegram = { path = "../platform-telegram" }
 hermes-platform-adapter = { path = "../platform-adapter" }
 reqwest = { workspace = true }
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

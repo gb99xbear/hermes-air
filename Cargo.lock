@@ -1527,6 +1527,7 @@ name = "hermes-gateway-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "hermes-config",
  "hermes-platform-adapter",
  "hermes-platform-telegram",

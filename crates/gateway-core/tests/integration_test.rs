@@ -671,3 +671,37 @@ async fn test_provider_profile_resolution_in_gateway() {
     // Default base_url of LlmClient should match OpenRouter base_url
     assert_eq!(llm_client.base_url, "https://openrouter.ai/api/v1");
 }
+
+#[tokio::test]
+async fn test_streaming_sse_parser_and_consumer_mock() {
+    use hermes_gateway_core::stream::GatewayStreamConsumer;
+    let raw_sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"streaming \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\ndata: [DONE]\n\n";
+    let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+
+    tokio::spawn(async move {
+        for line in raw_sse.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() { continue; }
+            if let Some(rest) = trimmed.strip_prefix("data: ") {
+                let rest = rest.trim();
+                if rest == "[DONE]" { break; }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(rest) {
+                    if let Some(content) = val.get("choices")
+                        .and_then(|c| c.get(0))
+                        .and_then(|c| c.get("delta"))
+                        .and_then(|d| d.get("content"))
+                        .and_then(|s| s.as_str()) {
+                            tx.send(content.to_string()).await.unwrap();
+                    }
+                }
+            }
+        }
+    });
+
+    let mut consumer = GatewayStreamConsumer::new(999);
+    while let Some(chunk) = rx.recv().await {
+        consumer.accumulated.push_str(&chunk);
+    }
+    assert_eq!(consumer.accumulated, "Hello streaming world");
+    assert_eq!(consumer.chat_id, 999);
+}

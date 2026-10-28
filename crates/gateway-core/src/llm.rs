@@ -1,3 +1,4 @@
+use futures::StreamExt;
 use anyhow::{Context, Result};
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::Client;
@@ -211,6 +212,98 @@ impl LlmClient {
         Ok((msg, ChatResponse::Text(text)))
     }
 
+    pub async fn chat_completion_stream(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        temperature: f32,
+        max_tokens: u32,
+    ) -> Result<tokio::sync::mpsc::Receiver<String>> {
+        let req_body = ChatCompletionRequest {
+            model: model.to_string(),
+            messages: messages.to_vec(),
+            temperature: Some(temperature),
+            max_tokens: Some(max_tokens),
+            tools: None,
+            tool_choice: None,
+            stream: true,
+        };
+
+        let url = format!("{}/chat/completions", self.base_url);
+        let mut request = self.client.post(&url).json(&req_body);
+
+        for (k, v) in &self.default_headers {
+            if let (Ok(h_name), Ok(h_val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+                request = request.header(h_name, h_val);
+            }
+        }
+
+        if let Some(ref key) = self.api_key {
+            if !key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", key));
+            }
+        }
+
+        info!("Initiating SSE chat completion stream to {} (model: {})", url, model);
+        let resp = request
+            .send()
+            .await
+            .with_context(|| format!("Failed to send streaming request to LLM endpoint: {}", url))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let error_text = resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            error!("LLM streaming endpoint returned status {}: {}", status, error_text);
+            anyhow::bail!("LLM API stream error ({}): {}", status, error_text);
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        let mut stream = resp.bytes_stream();
+
+        tokio::spawn(async move {
+            let mut buffer = String::new();
+            while let Some(chunk_res) = stream.next().await {
+                let chunk = match chunk_res {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        error!("Error reading chunk from LLM stream: {:?}", e);
+                        break;
+                    }
+                };
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(pos) = buffer.find("\n") {
+                    let line = buffer[..pos].trim_end_matches("\r").to_string();
+                    buffer.drain(..=pos);
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() { continue; }
+                    if let Some(rest) = trimmed.strip_prefix("data: ") {
+                        let rest = rest.trim();
+                        if rest == "[DONE]" {
+                            info!("LLM stream completed with [DONE]");
+                            return;
+                        }
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(rest) {
+                            if let Some(content) = val.get("choices")
+                                .and_then(|c| c.get(0))
+                                .and_then(|c| c.get("delta"))
+                                .and_then(|d| d.get("content"))
+                                .and_then(|s| s.as_str()) {
+                                    if !content.is_empty() {
+                                        if tx.send(content.to_string()).await.is_err() {
+                                            // Receiver dropped, terminate stream
+                                            return;
+                                        }
+                                    }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
     async fn send_completion(&self, req_body: &ChatCompletionRequest) -> Result<ChatCompletionResponse> {
         let url = format!("{}/chat/completions", self.base_url);
         let mut request = self.client.post(&url).json(req_body);
@@ -247,5 +340,44 @@ impl LlmClient {
             .context("Failed to deserialize ChatCompletionResponse")?;
 
         Ok(completion)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_chat_completion_stream_sse_parsing() {
+        let raw_sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"world!\"}}]}\n\ndata: [DONE]\n\n";
+        let lines: Vec<&str> = raw_sse.lines().collect();
+        let mut collected = Vec::new();
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed.is_empty() { continue; }
+            if let Some(rest) = trimmed.strip_prefix("data: ") {
+                let rest = rest.trim();
+                if rest == "[DONE]" { break; }
+                let val: serde_json::Value = serde_json::from_str(rest).unwrap();
+                if let Some(content) = val.get("choices")
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("content"))
+                    .and_then(|s| s.as_str()) {
+                        if !content.is_empty() {
+                            collected.push(content.to_string());
+                        }
+                }
+            }
+        }
+        assert_eq!(collected.join(""), "Hello world!");
+    }
+
+    #[tokio::test]
+    async fn test_chat_completion_stream_method_signature() {
+        let client = LlmClient::new(None, None);
+        let msgs = vec![ChatMessage::user("test")];
+        let _rx = client.chat_completion_stream("test-model", &msgs, 0.7, 100).await;
     }
 }

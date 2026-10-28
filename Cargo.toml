@@ -59,7 +59,7 @@ mockall = "0.12"
 proptest = "1.0"
 tokio-test = "0.4"
 clap = { version = "4.5", features = ["derive", "env"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
 telegram-bot = "0.12"
 serenity = { version = "0.12", features = ["model", "gateway", "rustls_backend", "voice", "cache", "http", "framework", "utils"] }
 slack = { version = "0.25", features = ["with_rustls"] }
