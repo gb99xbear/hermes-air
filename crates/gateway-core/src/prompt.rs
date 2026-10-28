@@ -87,53 +87,63 @@ impl PromptAssembler {
         let mut sections: Vec<String> = Vec::new();
 
         // 1. SOUL.md
-        let soul_candidates = vec![
+        let mut soul_candidates = vec![
             hermes_dir.join("SOUL.md"),
             cwd.join("SOUL.md"),
-            PathBuf::from("/home/ubuntu/.hermes/SOUL.md"),
         ];
+        if self.custom_hermes_dir.is_none() {
+            soul_candidates.push(PathBuf::from("/home/ubuntu/.hermes/SOUL.md"));
+        }
         if let Some(soul) = Self::read_first_existing(&soul_candidates).await {
             sections.push(format!("# SOUL\n\n{}", soul));
         }
 
         // 2. AGENTS.md
-        let agents_candidates = vec![
+        let mut agents_candidates = vec![
             cwd.join("AGENTS.md"),
-            PathBuf::from("/home/ubuntu/AGENTS.md"),
             hermes_dir.join("AGENTS.md"),
         ];
+        if self.custom_cwd.is_none() {
+            agents_candidates.push(PathBuf::from("/home/ubuntu/AGENTS.md"));
+        }
         if let Some(agents) = Self::read_first_existing(&agents_candidates).await {
             sections.push(format!("# OPERATIONAL DOCTRINE (AGENTS.md)\n\n{}", agents));
         }
 
         // 3. MEMORY.md
-        let memory_candidates = vec![
+        let mut memory_candidates = vec![
             hermes_dir.join("memories").join("MEMORY.md"),
             hermes_dir.join("MEMORY.md"),
             cwd.join("MEMORY.md"),
-            PathBuf::from("/home/ubuntu/.hermes/memories/MEMORY.md"),
         ];
+        if self.custom_hermes_dir.is_none() {
+            memory_candidates.push(PathBuf::from("/home/ubuntu/.hermes/memories/MEMORY.md"));
+        }
         if let Some(memory) = Self::read_first_existing(&memory_candidates).await {
             sections.push(format!("# MEMORY & ESTATE RULES\n\n{}", memory));
         }
 
         // 4. USER.md
-        let user_candidates = vec![
+        let mut user_candidates = vec![
             hermes_dir.join("memories").join("USER.md"),
             hermes_dir.join("USER.md"),
             cwd.join("USER.md"),
-            PathBuf::from("/home/ubuntu/.hermes/memories/USER.md"),
         ];
+        if self.custom_hermes_dir.is_none() {
+            user_candidates.push(PathBuf::from("/home/ubuntu/.hermes/memories/USER.md"));
+        }
         if let Some(user) = Self::read_first_existing(&user_candidates).await {
             sections.push(format!("# USER PROFILE\n\n{}", user));
         }
 
         // 5. system.md
-        let system_candidates = vec![
+        let mut system_candidates = vec![
             cwd.join("system.md"),
             hermes_dir.join("system.md"),
-            PathBuf::from("/home/ubuntu/system.md"),
         ];
+        if self.custom_cwd.is_none() && self.custom_hermes_dir.is_none() {
+            system_candidates.push(PathBuf::from("/home/ubuntu/system.md"));
+        }
         if let Some(sys_md) = Self::read_first_existing(&system_candidates).await {
             sections.push(format!("# SYSTEM INSTRUCTIONS\n\n{}", sys_md));
         }

@@ -576,3 +576,98 @@ async fn test_multi_turn_session_conversation_memory() {
     let history_after_clear = store.get_messages(session_id, Some(30)).await.unwrap();
     assert!(history_after_clear.is_empty(), "Conversation history must be completely evicted on /clear");
 }
+
+
+#[tokio::test]
+async fn test_provider_profile_resolution_in_gateway() {
+    use hermes_config::{
+        GatewayConfig, GatewaySection, ProfileConfig, PluginsConfig,
+        SessionStoreConfig, SessionStoreBackend, LoggingConfig, LogFormat, LogOutput,
+        MetricsConfig, DashboardConfig, TuiConfig, AcpConfig,
+    };
+    use hermes_gateway_core::Gateway;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "default".to_string(),
+        ProfileConfig {
+            name: "default".to_string(),
+            model_provider: "openrouter".to_string(),
+            model: "anthropic/claude-sonnet-4.6".to_string(),
+            temperature: 0.7,
+            max_tokens: 4096,
+            system_prompt: Some("Test prompt".to_string()),
+            tools: Vec::new(),
+            skills: Vec::new(),
+            mcp_servers: Vec::new(),
+            platform_overrides: HashMap::new(),
+        },
+    );
+
+    let config = GatewayConfig {
+        gateway: GatewaySection {
+            name: "test-gateway".to_string(),
+            version: "0.1.0".to_string(),
+            max_concurrent_sessions: 10,
+            default_profile: "default".to_string(),
+            shutdown_timeout_secs: 5,
+            restart_on_config_change: false,
+        },
+        profiles,
+        platforms: HashMap::new(),
+        plugins: PluginsConfig {
+            enabled: false,
+            directory: PathBuf::from("/tmp/plugins"),
+            wasm_directory: None,
+            python_plugins: false,
+            allowed_plugins: Vec::new(),
+            blocked_plugins: Vec::new(),
+        },
+        session_store: SessionStoreConfig {
+            backend: SessionStoreBackend::Memory,
+            redis: None,
+            local_cache_size: 100,
+            default_ttl_secs: 3600,
+        },
+        logging: LoggingConfig {
+            level: "info".to_string(),
+            format: LogFormat::Text,
+            output: LogOutput::Stdout,
+            file: None,
+            max_file_size_mb: 10,
+            max_files: 5,
+        },
+        metrics: MetricsConfig {
+            enabled: false,
+            port: 9090,
+            path: "/metrics".to_string(),
+        },
+        dashboard: DashboardConfig {
+            enabled: false,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            auth: None,
+        },
+        tui: TuiConfig {
+            enabled: false,
+            socket_path: None,
+            port: None,
+        },
+        acp: AcpConfig {
+            enabled: false,
+            port: 9000,
+        },
+    };
+
+    let gateway = Gateway::new(config).await.expect("Gateway should initialize");
+    let provider_reg = gateway.provider_registry();
+    let openrouter = provider_reg.get("openrouter").await.expect("openrouter profile should be present");
+    assert_eq!(openrouter.name, "openrouter");
+    assert_eq!(openrouter.base_url, "https://openrouter.ai/api/v1");
+
+    let llm_client = gateway.llm_client();
+    // Default base_url of LlmClient should match OpenRouter base_url
+    assert_eq!(llm_client.base_url, "https://openrouter.ai/api/v1");
+}

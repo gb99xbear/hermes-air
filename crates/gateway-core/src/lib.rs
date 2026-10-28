@@ -2,6 +2,7 @@
 pub mod commands;
 pub mod llm;
 pub mod prompt;
+pub mod providers;
 pub mod tools;
 
 pub use commands::{
@@ -10,6 +11,7 @@ pub use commands::{
 };
 pub use llm::{ChatMessage, ChatResponse, LlmClient, ToolCallRawExt};
 pub use prompt::PromptAssembler;
+pub use providers::{ProviderProfile, ProviderRegistry};
 pub use tools::{ToolCall, ToolRegistry, ToolResult};
 
 use hermes_config::GatewayConfig;
@@ -29,6 +31,7 @@ pub struct Gateway {
     relay_server: Arc<WsRelayServer>,
     session_store: Arc<Box<dyn SessionStore>>,
     llm_client: Arc<LlmClient>,
+    provider_registry: Arc<ProviderRegistry>,
     tool_registry: Arc<ToolRegistry>,
     prompt_assembler: Arc<PromptAssembler>,
     event_tx: mpsc::UnboundedSender<PlatformEvent>,
@@ -60,20 +63,47 @@ impl Gateway {
         )
         .await?;
 
-        // Initialize LLM client:
-        // Priority: environment variables -> 9Router default fallback
-        // base_url: LLM_BASE_URL or OPENAI_BASE_URL or fallback to http://100.75.163.92:20128/v1
-        // api_key: HERMES_CUSTOM_100_75_163_92_20128_API_KEY or HERMES_CUSTOM_100_77_223_11_20128_API_KEY or OPENAI_API_KEY
-        let base_url = std::env::var("LLM_BASE_URL")
-            .or_else(|_| std::env::var("OPENAI_BASE_URL"))
-            .unwrap_or_else(|_| "http://100.75.163.92:20128/v1".to_string());
+        // Initialize ProviderRegistry with standard catalog
+        let provider_registry = Arc::new(ProviderRegistry::new());
 
-        let api_key = std::env::var("HERMES_CUSTOM_100_75_163_92_20128_API_KEY")
+        // Determine default profile
+        let default_profile = config
+            .profiles
+            .get(&config.gateway.default_profile)
+            .cloned()
+            .or_else(|| config.profiles.values().next().cloned());
+
+        let target_provider_name = default_profile
+            .as_ref()
+            .map(|p| p.model_provider.as_str())
+            .unwrap_or("9router");
+
+        let provider_profile = provider_registry
+            .get(target_provider_name)
+            .await
+            .unwrap_or_else(|| {
+                info!("Provider {} not found in registry, falling back to 9router default", target_provider_name);
+                provider_registry
+                    .get_blocking("9router")
+                    .unwrap_or_default()
+            });
+
+        // Initialize LLM client via ProviderProfile with explicit env overrides if provided:
+        let env_base_url = std::env::var("LLM_BASE_URL")
+            .or_else(|_| std::env::var("OPENAI_BASE_URL"))
+            .ok();
+
+        let env_api_key = std::env::var("HERMES_CUSTOM_100_75_163_92_20128_API_KEY")
             .or_else(|_| std::env::var("HERMES_CUSTOM_100_77_223_11_20128_API_KEY"))
             .or_else(|_| std::env::var("OPENAI_API_KEY"))
             .ok();
 
-        let llm_client = Arc::new(LlmClient::new(Some(base_url), api_key));
+        let llm_client = Arc::new(LlmClient::from_provider_profile(
+            &provider_profile,
+            env_base_url,
+            env_api_key,
+        ));
+
         let tool_registry = Arc::new(ToolRegistry::new());
         let prompt_assembler = Arc::new(PromptAssembler::new());
         let active_model_override = Arc::new(RwLock::new(None));
@@ -83,12 +113,21 @@ impl Gateway {
             relay_server,
             session_store: Arc::new(session_store),
             llm_client,
+            provider_registry,
             tool_registry,
             prompt_assembler,
             event_tx,
             event_rx: Some(event_rx),
             active_model_override,
         })
+    }
+
+    pub fn provider_registry(&self) -> Arc<ProviderRegistry> {
+        self.provider_registry.clone()
+    }
+
+    pub fn llm_client(&self) -> Arc<LlmClient> {
+        self.llm_client.clone()
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {

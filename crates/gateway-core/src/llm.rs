@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
+use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{error, info};
 
+use crate::providers::ProviderProfile;
 use crate::tools::ToolCall;
 
 pub use hermes_protocol::{ChatMessage, ToolCallFunctionRaw, ToolCallRaw};
@@ -69,6 +72,7 @@ pub struct LlmClient {
     client: Client,
     pub base_url: String,
     pub api_key: Option<String>,
+    pub default_headers: HashMap<String, String>,
 }
 
 impl LlmClient {
@@ -86,6 +90,40 @@ impl LlmClient {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
+            default_headers: HashMap::new(),
+        }
+    }
+
+    /// Construct LlmClient resolving its base_url, api_key, and default_headers from a ProviderProfile.
+    pub fn from_provider_profile(
+        profile: &ProviderProfile,
+        base_url_override: Option<String>,
+        api_key_override: Option<String>,
+    ) -> Self {
+        let base_url = base_url_override
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                if !profile.base_url.is_empty() {
+                    profile.base_url.clone()
+                } else {
+                    "http://100.75.163.92:20128/v1".to_string()
+                }
+            });
+
+        let api_key = api_key_override
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| profile.resolve_api_key());
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .unwrap_or_default();
+
+        Self {
+            client,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key,
+            default_headers: profile.default_headers.clone(),
         }
     }
 
@@ -176,6 +214,13 @@ impl LlmClient {
     async fn send_completion(&self, req_body: &ChatCompletionRequest) -> Result<ChatCompletionResponse> {
         let url = format!("{}/chat/completions", self.base_url);
         let mut request = self.client.post(&url).json(req_body);
+
+        // Apply profile default headers if present
+        for (k, v) in &self.default_headers {
+            if let (Ok(h_name), Ok(h_val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+                request = request.header(h_name, h_val);
+            }
+        }
 
         if let Some(ref key) = self.api_key {
             if !key.is_empty() {
