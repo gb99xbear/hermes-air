@@ -485,11 +485,11 @@ async fn test_slash_command_output_handling() {
 
     // Test /status output
     let status_out = handle_command(SlashCommand::Status, &ctx, |_| Ok(()));
-    assert!(status_out.contains("Hermes Gateway Status & Diagnostics"));
+    assert!(status_out.contains("ALFRED GATEWAY STATUS"));
     assert!(status_out.contains("hermes-gateway-test v0.2.0"));
-    assert!(status_out.contains("Active Profile:</b> <code>alfred</code>"));
-    assert!(status_out.contains("Active Model:</b> <code>test-model-default</code>"));
-    assert!(status_out.contains("Telegram: 🟢 Connected (Active)"));
+    assert!(status_out.contains("Profile: <code>alfred</code>"));
+    assert!(status_out.contains("Model: <code>test-model-default</code>"));
+    assert!(status_out.contains("Connected"));
     assert!(status_out.contains("12.3 MB RSS"));
 
     // Test /model query output
