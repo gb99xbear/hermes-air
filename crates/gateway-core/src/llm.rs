@@ -55,6 +55,7 @@ pub struct ChatCompletionRequest {
     pub tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<String>,
+    pub stream: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -140,6 +141,7 @@ impl LlmClient {
             max_tokens: Some(max_tokens),
             tools: None,
             tool_choice: None,
+            stream: false,
         };
 
         let response = self.send_completion(&req_body).await?;
@@ -168,6 +170,7 @@ impl LlmClient {
             max_tokens: Some(max_tokens),
             tools,
             tool_choice,
+            stream: false,
         };
 
         let response = self.send_completion(&req_body).await?;

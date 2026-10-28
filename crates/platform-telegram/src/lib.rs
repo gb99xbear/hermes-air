@@ -489,7 +489,13 @@ impl PlatformAdapter for TelegramAdapter {
                     
                     match client.post(&url).json(&params).send().await {
                         Ok(response) => {
-                            if let Ok(tg_response) = response.json::<TelegramResponse<Vec<TelegramUpdate>>>().await {
+                            let resp_text = response.text().await.unwrap_or_default();
+                    tracing::info!("Telegram raw response for bot token {}: {}", bot_token, resp_text);
+                    if let Ok(tg_response) = serde_json::from_str::<TelegramResponse<Vec<TelegramUpdate>>>(&resp_text) {
+                                tracing::info!("Telegram updates parsed ok: {}, count: {}", tg_response.ok, tg_response.result.as_ref().map(|v| v.len()).unwrap_or(0));
+                                if !tg_response.ok {
+                                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                                }
                                 if tg_response.ok {
                                     if let Some(updates) = tg_response.result {
                                         for update in updates {

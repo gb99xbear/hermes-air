@@ -200,6 +200,7 @@ fn test_chat_completion_request_with_tools_serialization() {
         max_tokens: Some(1024),
         tools: Some(defs),
         tool_choice: Some("auto".to_string()),
+        stream: false,
     };
 
     let req_json = serde_json::to_string(&req).expect("serialize ChatCompletionRequest");
