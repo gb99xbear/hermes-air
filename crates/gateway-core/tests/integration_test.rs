@@ -1,6 +1,6 @@
 use hermes_gateway_core::llm::{
     ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ChatResponse,
-    ToolCallFunctionRaw, ToolCallRaw,
+    ToolCallFunctionRaw, ToolCallRaw, ToolCallRawExt,
 };
 use hermes_gateway_core::tools::{ToolCall, ToolRegistry};
 use serde_json::json;
@@ -516,4 +516,63 @@ async fn test_slash_command_output_handling() {
     let clear_out = handle_command(SlashCommand::Clear, &ctx, |_| Ok(()));
     assert!(clear_out.contains("Session Reset"));
     assert!(clear_out.contains("Conversation turn memory has been cleared."));
+}
+
+#[tokio::test]
+async fn test_multi_turn_session_conversation_memory() {
+    use hermes_session_store::{MemorySessionStore, SessionStore};
+    use hermes_protocol::{ChatMessage, Uuid};
+
+    let store = MemorySessionStore::new();
+    let session_id = Uuid::new_v4();
+
+    // Turn 1: User says my favorite fruit is Durian
+    let user_msg_1 = ChatMessage::user("My favorite fruit is Durian");
+    store.append_message(session_id, user_msg_1).await.unwrap();
+
+    // Assistant acknowledges in Turn 1
+    let assistant_msg_1 = ChatMessage::assistant("Got it! I will remember that your favorite fruit is Durian.");
+    store.append_message(session_id, assistant_msg_1).await.unwrap();
+
+    // Verify session store has Turn 1
+    let history_turn_1 = store.get_messages(session_id, Some(30)).await.unwrap();
+    assert_eq!(history_turn_1.len(), 2);
+    assert_eq!(history_turn_1[0].role, "user");
+    assert_eq!(history_turn_1[0].content.as_deref(), Some("My favorite fruit is Durian"));
+    assert_eq!(history_turn_1[1].role, "assistant");
+    assert_eq!(history_turn_1[1].content.as_deref(), Some("Got it! I will remember that your favorite fruit is Durian."));
+
+    // Turn 2: User asks what fruit do I like?
+    let user_msg_2 = ChatMessage::user("What fruit do I like?");
+    // When Turn 2 is processed by Gateway, it loads history_turn_1
+    let loaded_history = store.get_messages(session_id, Some(30)).await.unwrap();
+    
+    // Construct simulated LLM payload with system prompt + history + new user message
+    let mut turn_2_messages = Vec::new();
+    turn_2_messages.push(ChatMessage::system("You are Hermes assistant."));
+    for h in loaded_history {
+        if h.role != "system" {
+            turn_2_messages.push(h);
+        }
+    }
+    turn_2_messages.push(user_msg_2.clone());
+    store.append_message(session_id, user_msg_2).await.unwrap();
+
+    // Assistant answers Turn 2 recalling Durian from context
+    let assistant_msg_2 = ChatMessage::assistant("You told me earlier that your favorite fruit is Durian!");
+    store.append_message(session_id, assistant_msg_2).await.unwrap();
+
+    // Verify full chronological transcript has 4 messages
+    let full_history = store.get_messages(session_id, Some(30)).await.unwrap();
+    assert_eq!(full_history.len(), 4);
+    assert_eq!(full_history[0].role, "user");
+    assert_eq!(full_history[1].role, "assistant");
+    assert_eq!(full_history[2].role, "user");
+    assert_eq!(full_history[3].role, "assistant");
+    assert_eq!(full_history[3].content.as_deref(), Some("You told me earlier that your favorite fruit is Durian!"));
+
+    // Turn 3: User resets conversation via /clear
+    store.clear_messages(session_id).await.unwrap();
+    let history_after_clear = store.get_messages(session_id, Some(30)).await.unwrap();
+    assert!(history_after_clear.is_empty(), "Conversation history must be completely evicted on /clear");
 }

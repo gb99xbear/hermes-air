@@ -1,8 +1,8 @@
 // hermes-session-store - Session persistence with Redis backend
-use hermes_protocol::{Session, SessionState, Platform, Uuid};
+use hermes_protocol::{ChatMessage, Platform, Session, SessionState, Uuid};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use redis::{Client, aio::ConnectionManager, AsyncCommands, RedisError};
+use redis::{aio::ConnectionManager, AsyncCommands, Client, RedisError};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +17,11 @@ pub trait SessionStore: Send + Sync {
     async fn list_active(&self) -> Result<Vec<Session>, SessionStoreError>;
     async fn cleanup_expired(&self, ttl_secs: u64) -> Result<usize, SessionStoreError>;
     async fn health_check(&self) -> Result<(), SessionStoreError>;
+
+    // Multi-turn conversation memory and message history
+    async fn append_message(&self, session_id: Uuid, message: ChatMessage) -> Result<(), SessionStoreError>;
+    async fn get_messages(&self, session_id: Uuid, limit: Option<usize>) -> Result<Vec<ChatMessage>, SessionStoreError>;
+    async fn clear_messages(&self, session_id: Uuid) -> Result<(), SessionStoreError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +42,7 @@ pub enum SessionStoreError {
 pub struct RedisSessionStore {
     conn: ConnectionManager,
     local_cache: Arc<DashMap<Uuid, Session>>,
+    local_message_cache: Arc<DashMap<Uuid, Vec<ChatMessage>>>,
     max_cache_size: usize,
     key_prefix: String,
     default_ttl: Duration,
@@ -56,6 +62,7 @@ impl RedisSessionStore {
         Ok(Self {
             conn,
             local_cache: Arc::new(DashMap::new()),
+            local_message_cache: Arc::new(DashMap::new()),
             max_cache_size,
             key_prefix: key_prefix.unwrap_or_else(|| "hermes:session:".to_string()),
             default_ttl: Duration::from_secs(default_ttl_secs),
@@ -64,6 +71,10 @@ impl RedisSessionStore {
 
     fn key(&self, id: Uuid) -> String {
         format!("{}{}", self.key_prefix, id)
+    }
+
+    fn messages_key(&self, id: Uuid) -> String {
+        format!("{}messages:{}", self.key_prefix, id)
     }
 
     fn profile_index_key(&self, profile: &str) -> String {
@@ -83,6 +94,7 @@ impl RedisSessionStore {
                 .collect();
             for key in to_remove {
                 self.local_cache.remove(&key);
+                self.local_message_cache.remove(&key);
             }
         }
     }
@@ -139,6 +151,7 @@ impl SessionStore for RedisSessionStore {
     async fn delete(&self, id: Uuid) -> Result<(), SessionStoreError> {
         let mut conn = self.conn.clone();
         let key = self.key(id);
+        let msg_key = self.messages_key(id);
         
         // Get session first to update indexes
         if let Some(session) = self.get(id).await? {
@@ -150,7 +163,9 @@ impl SessionStore for RedisSessionStore {
         }
         
         conn.del::<_, ()>(&key).await?;
+        conn.del::<_, ()>(&msg_key).await?;
         self.local_cache.remove(&id);
+        self.local_message_cache.remove(&id);
         
         Ok(())
     }
@@ -195,6 +210,9 @@ impl SessionStore for RedisSessionStore {
         let mut sessions = Vec::new();
         for key in keys {
             if let Some(id_str) = key.strip_prefix(&self.key_prefix) {
+                if id_str.starts_with("messages:") || id_str.starts_with("profile:") || id_str.starts_with("platform:") {
+                    continue;
+                }
                 if let Ok(id) = Uuid::parse_str(id_str) {
                     if let Some(session) = self.get(id).await? {
                         if session.state == SessionState::Active {
@@ -237,6 +255,7 @@ impl SessionStore for RedisSessionStore {
             .collect();
         for key in expired_keys {
             self.local_cache.remove(&key);
+            self.local_message_cache.remove(&key);
         }
         
         Ok(cleaned)
@@ -247,13 +266,59 @@ impl SessionStore for RedisSessionStore {
         let _: String = redis::cmd("PING").query_async(&mut conn).await?;
         Ok(())
     }
+
+    async fn append_message(&self, session_id: Uuid, message: ChatMessage) -> Result<(), SessionStoreError> {
+        let mut conn = self.conn.clone();
+        let key = self.messages_key(session_id);
+        let json = serde_json::to_string(&message)?;
+
+        // RPUSH maintains strict chronological order (id/index 0..N) matching hermes_state_messages.py
+        let _: () = conn.rpush(&key, json).await?;
+        let _: () = conn.expire(&key, self.default_ttl.as_secs() as i64).await?;
+
+        // Update local memory cache if present
+        self.local_message_cache.entry(session_id).or_default().push(message);
+        Ok(())
+    }
+
+    async fn get_messages(&self, session_id: Uuid, limit: Option<usize>) -> Result<Vec<ChatMessage>, SessionStoreError> {
+        // Fetch chronological message list from Redis
+        let mut conn = self.conn.clone();
+        let key = self.messages_key(session_id);
+
+        let start: isize = match limit {
+            Some(lim) if lim > 0 => -(lim as isize),
+            _ => 0,
+        };
+
+        let raw_items: Vec<String> = conn.lrange(&key, start, -1).await?;
+        let mut result = Vec::with_capacity(raw_items.len());
+        for item in raw_items {
+            let msg: ChatMessage = serde_json::from_str(&item)?;
+            result.push(msg);
+        }
+
+        // Keep local cache synced
+        self.local_message_cache.insert(session_id, result.clone());
+        Ok(result)
+    }
+
+    async fn clear_messages(&self, session_id: Uuid) -> Result<(), SessionStoreError> {
+        let mut conn = self.conn.clone();
+        let key = self.messages_key(session_id);
+        let _: () = conn.del(&key).await?;
+        self.local_message_cache.remove(&session_id);
+        Ok(())
+    }
 }
 
 /// In-memory session store (for testing or single-instance)
+#[derive(Clone)]
 pub struct MemorySessionStore {
     sessions: Arc<DashMap<Uuid, Session>>,
     profile_index: Arc<DashMap<String, Vec<Uuid>>>,
     platform_index: Arc<DashMap<Platform, Vec<Uuid>>>,
+    messages: Arc<DashMap<Uuid, Vec<ChatMessage>>>,
 }
 
 impl MemorySessionStore {
@@ -262,6 +327,7 @@ impl MemorySessionStore {
             sessions: Arc::new(DashMap::new()),
             profile_index: Arc::new(DashMap::new()),
             platform_index: Arc::new(DashMap::new()),
+            messages: Arc::new(DashMap::new()),
         }
     }
 }
@@ -288,6 +354,7 @@ impl SessionStore for MemorySessionStore {
                 vec.retain(|&x| x != id);
             }
         }
+        self.messages.remove(&id);
         Ok(())
     }
 
@@ -326,6 +393,28 @@ impl SessionStore for MemorySessionStore {
     }
 
     async fn health_check(&self) -> Result<(), SessionStoreError> {
+        Ok(())
+    }
+
+    async fn append_message(&self, session_id: Uuid, message: ChatMessage) -> Result<(), SessionStoreError> {
+        // Strict chronological append matching SQLite insertion order
+        self.messages.entry(session_id).or_default().push(message);
+        Ok(())
+    }
+
+    async fn get_messages(&self, session_id: Uuid, limit: Option<usize>) -> Result<Vec<ChatMessage>, SessionStoreError> {
+        let msgs = self.messages.get(&session_id).map(|entry| entry.value().clone()).unwrap_or_default();
+        if let Some(lim) = limit {
+            if msgs.len() > lim {
+                let start = msgs.len() - lim;
+                return Ok(msgs[start..].to_vec());
+            }
+        }
+        Ok(msgs)
+    }
+
+    async fn clear_messages(&self, session_id: Uuid) -> Result<(), SessionStoreError> {
+        self.messages.remove(&session_id);
         Ok(())
     }
 }
@@ -373,5 +462,85 @@ impl SessionStoreFactory {
                 Ok(Box::new(store))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hermes_protocol::{ToolCallFunctionRaw, ToolCallRaw};
+
+    #[tokio::test]
+    async fn test_memory_session_store_message_history() {
+        let store = MemorySessionStore::new();
+        let session_id = Uuid::new_v4();
+
+        // Initially empty
+        let initial_msgs = store.get_messages(session_id, None).await.unwrap();
+        assert!(initial_msgs.is_empty());
+
+        // Append user message
+        let user_msg = ChatMessage::user("Hello Hermes");
+        store.append_message(session_id, user_msg.clone()).await.unwrap();
+
+        // Append assistant tool call message
+        let tc = ToolCallRaw {
+            id: "call_123".to_string(),
+            call_type: "function".to_string(),
+            function: ToolCallFunctionRaw {
+                name: "terminal".to_string(),
+                arguments: r#"{"command": "uptime"}"#.to_string(),
+            },
+        };
+        let assistant_msg = ChatMessage {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![tc]),
+            tool_call_id: None,
+        };
+        store.append_message(session_id, assistant_msg.clone()).await.unwrap();
+
+        // Append tool result
+        let tool_msg = ChatMessage::tool("call_123", "up 10 days");
+        store.append_message(session_id, tool_msg.clone()).await.unwrap();
+
+        // Append assistant final text
+        let final_assistant = ChatMessage::assistant("The server has been up for 10 days.");
+        store.append_message(session_id, final_assistant.clone()).await.unwrap();
+
+        // Verify all 4 messages retrieved in chronological order
+        let history = store.get_messages(session_id, None).await.unwrap();
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0].role, "user");
+        assert_eq!(history[0].content.as_deref(), Some("Hello Hermes"));
+        assert_eq!(history[1].role, "assistant");
+        assert!(history[1].tool_calls.is_some());
+        assert_eq!(history[2].role, "tool");
+        assert_eq!(history[2].tool_call_id.as_deref(), Some("call_123"));
+        assert_eq!(history[3].role, "assistant");
+        assert_eq!(history[3].content.as_deref(), Some("The server has been up for 10 days."));
+
+        // Test limit retrieval (e.g. limit 2 returns latest 2 in chronological order)
+        let limited = store.get_messages(session_id, Some(2)).await.unwrap();
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].role, "tool");
+        assert_eq!(limited[1].role, "assistant");
+
+        // Test clear messages
+        store.clear_messages(session_id).await.unwrap();
+        let cleared = store.get_messages(session_id, None).await.unwrap();
+        assert!(cleared.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_also_clears_messages() {
+        let store = MemorySessionStore::new();
+        let session_id = Uuid::new_v4();
+
+        store.append_message(session_id, ChatMessage::user("test")).await.unwrap();
+        assert_eq!(store.get_messages(session_id, None).await.unwrap().len(), 1);
+
+        store.delete(session_id).await.unwrap();
+        assert_eq!(store.get_messages(session_id, None).await.unwrap().len(), 0);
     }
 }

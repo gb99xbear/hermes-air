@@ -8,7 +8,7 @@ pub use commands::{
     handle_clear, handle_command, handle_model, handle_start_or_help, handle_status,
     parse_command, CommandContext, SlashCommand,
 };
-pub use llm::{ChatMessage, ChatResponse, LlmClient};
+pub use llm::{ChatMessage, ChatResponse, LlmClient, ToolCallRawExt};
 pub use prompt::PromptAssembler;
 pub use tools::{ToolCall, ToolRegistry, ToolResult};
 
@@ -251,7 +251,12 @@ impl Gateway {
                 if let Err(e) = session_store.delete(msg.session_id).await {
                     warn!("Failed to delete session {} on /clear: {:?}", msg.session_id, e);
                 } else {
-                    info!("Cleared session store turn memory for session {}", msg.session_id);
+                    info!("Cleared session metadata for session {}", msg.session_id);
+                }
+                if let Err(e) = session_store.clear_messages(msg.session_id).await {
+                    warn!("Failed to clear conversation history for session {} on /clear: {:?}", msg.session_id, e);
+                } else {
+                    info!("Cleared conversation turn history for session {}", msg.session_id);
                 }
             }
 
@@ -287,22 +292,37 @@ impl Gateway {
         // Build active system prompt dynamically via PromptAssembler
         let active_system_prompt = prompt_assembler.build_system_prompt(system_prompt).await;
 
-        // Tool-calling loop setup
-        let mut messages = Vec::new();
-        if !active_system_prompt.is_empty() {
-            messages.push(ChatMessage {
-                role: "system".to_string(),
-                content: Some(active_system_prompt),
-                tool_calls: None,
-                tool_call_id: None,
+        // 1. Load chronological session history from session store (up to last 30 messages)
+        let history = session_store
+            .get_messages(msg.session_id, Some(30))
+            .await
+            .unwrap_or_else(|e| {
+                warn!("Failed to load conversation history for session {}: {:?}", msg.session_id, e);
+                Vec::new()
             });
+
+        // 2. Build full LLM message turn list:
+        //    a. System prompt (active_system_prompt)
+        //    b. Historical messages (user, assistant, tool)
+        //    c. New incoming user message
+        let mut messages = Vec::with_capacity(history.len() + 2);
+        if !active_system_prompt.is_empty() {
+            messages.push(ChatMessage::system(active_system_prompt));
         }
-        messages.push(ChatMessage {
-            role: "user".to_string(),
-            content: Some(prompt_text.clone()),
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        for hist_msg in history {
+            // Do not repeat persisted system messages if any, keep prompt assembler system prompt at head
+            if hist_msg.role != "system" {
+                messages.push(hist_msg);
+            }
+        }
+
+        let new_user_msg = ChatMessage::user(prompt_text.clone());
+        messages.push(new_user_msg.clone());
+
+        // Append incoming user message to session store turn history
+        if let Err(e) = session_store.append_message(msg.session_id, new_user_msg).await {
+            warn!("Failed to persist incoming user message for session {}: {:?}", msg.session_id, e);
+        }
 
         let tool_definitions = tool_registry.get_definitions();
         let max_tool_iterations = 10;
@@ -327,27 +347,35 @@ impl Gateway {
                 Ok((raw_msg, response)) => {
                     match response {
                         ChatResponse::Text(text) => {
-                            final_text = text;
+                            final_text = text.clone();
+                            // Persist final assistant response to session store
+                            let asst_msg = ChatMessage::assistant(text);
+                            if let Err(e) = session_store.append_message(msg.session_id, asst_msg).await {
+                                warn!("Failed to persist assistant message for session {}: {:?}", msg.session_id, e);
+                            }
                             break;
                         }
                         ChatResponse::ToolCalls(calls) => {
-                            // Append assistant message with tool calls to context
-                            messages.push(ChatMessage {
+                            // Append assistant message with tool calls to context and store
+                            let asst_call_msg = ChatMessage {
                                 role: "assistant".to_string(),
                                 content: raw_msg.content,
                                 tool_calls: raw_msg.tool_calls,
                                 tool_call_id: None,
-                            });
+                            };
+                            if let Err(e) = session_store.append_message(msg.session_id, asst_call_msg.clone()).await {
+                                warn!("Failed to persist assistant tool calls for session {}: {:?}", msg.session_id, e);
+                            }
+                            messages.push(asst_call_msg);
 
-                            // Execute each tool call and append tool result
+                            // Execute each tool call and append tool result to context and store
                             for call in calls {
                                 let result = tool_registry.execute(&call).await;
-                                messages.push(ChatMessage {
-                                    role: "tool".to_string(),
-                                    content: Some(result.output),
-                                    tool_calls: None,
-                                    tool_call_id: Some(result.tool_call_id),
-                                });
+                                let tool_msg = ChatMessage::tool(result.tool_call_id, result.output);
+                                if let Err(e) = session_store.append_message(msg.session_id, tool_msg.clone()).await {
+                                    warn!("Failed to persist tool result for session {}: {:?}", msg.session_id, e);
+                                }
+                                messages.push(tool_msg);
                             }
                         }
                     }
@@ -355,6 +383,8 @@ impl Gateway {
                 Err(e) => {
                     error!("LLM chat completion with tools failed: {}. Falling back to echo.", e);
                     final_text = format!("Echo: {}", prompt_text);
+                    let fallback_msg = ChatMessage::assistant(final_text.clone());
+                    let _ = session_store.append_message(msg.session_id, fallback_msg).await;
                     break;
                 }
             }
@@ -363,6 +393,8 @@ impl Gateway {
         if final_text.is_empty() && iteration >= max_tool_iterations {
             warn!("Agent loop reached maximum tool iterations ({})", max_tool_iterations);
             final_text = "Task halted: maximum tool execution iterations reached.".to_string();
+            let halt_msg = ChatMessage::assistant(final_text.clone());
+            let _ = session_store.append_message(msg.session_id, halt_msg).await;
         }
 
         let outgoing = OutgoingMessage {

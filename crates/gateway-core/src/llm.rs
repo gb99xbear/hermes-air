@@ -6,33 +6,14 @@ use tracing::{error, info};
 
 use crate::tools::ToolCall;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ToolCallRaw>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
+pub use hermes_protocol::{ChatMessage, ToolCallFunctionRaw, ToolCallRaw};
+
+pub trait ToolCallRawExt {
+    fn to_tool_call(&self) -> ToolCall;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallFunctionRaw {
-    pub name: String,
-    pub arguments: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallRaw {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub call_type: String,
-    pub function: ToolCallFunctionRaw,
-}
-
-impl ToolCallRaw {
-    pub fn to_tool_call(&self) -> ToolCall {
+impl ToolCallRawExt for ToolCallRaw {
+    fn to_tool_call(&self) -> ToolCall {
         let args: serde_json::Value = serde_json::from_str(&self.function.arguments)
             .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
         ToolCall {
