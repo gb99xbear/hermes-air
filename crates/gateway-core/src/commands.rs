@@ -97,33 +97,32 @@ pub fn handle_status(ctx: &CommandContext) -> String {
     };
 
     format!(
-"🎩 <b>ALFRED GATEWAY STATUS</b> [RTF]
+"🎩 *ALFRED GATEWAY STATUS*
 
-<pre>
-+-------------------+------------------------------------+
-| Component         | Value                              |
-+-------------------+------------------------------------+
-| Gateway Engine    | {gateway_name:<34} |
-| Uptime            | {uptime_str:<34} |
-| Active Profile    | {active_profile:<34} |
-| Active Model      | {active_model:<34} |
-| Platform:Telegram | {tg_status:<34} |
-| RAM Allocation    | {memory_info:<34} |
-+-------------------+------------------------------------+
-</pre>
+| Metric | Details |
+| :--- | :--- |
+| **Gateway** | `{}` |
+| **Uptime** | `{}` |
+| **Profile** | `{}` |
+| **Model** | `{}` |
+| **Telegram** | `{}` |
+| **RAM** | `{}` |
 
-<b>Estate Metrics:</b>
-- Profile: <code>{active_profile}</code>
-- Model: <code>{active_model}</code>
-- Memory: <code>{memory_info}</code>
+*Estate Directive:*
+`profile`: `{}`
+`model`: `{}`
+`ram`: `{}`
 
-<i>Status: Operational | 500% Obedience Standing Active.</i>",
-        gateway_name = format!("{} v{}", ctx.gateway_name, ctx.gateway_version),
-        uptime_str = uptime_str,
-        active_profile = ctx.active_profile,
-        active_model = ctx.active_model,
-        tg_status = tg_status,
-        memory_info = memory_info
+_Status: Operational | 500% Obedience Standing Active._",
+        format!("{} v{}", ctx.gateway_name, ctx.gateway_version),
+        uptime_str,
+        ctx.active_profile,
+        ctx.active_model,
+        tg_status,
+        memory_info,
+        ctx.active_profile,
+        ctx.active_model,
+        memory_info
     )
 }
 /// Handle /model command
@@ -266,7 +265,7 @@ mod tests {
 
         let res = handle_command(SlashCommand::Status, &ctx, |_| Ok(()));
         assert!(res.contains("hermes-gateway v0.1.0"));
-        assert!(res.contains("Profile: <code>alfred</code>"));
+        assert!(res.contains("alfred"));
         assert!(res.contains("Connected"));
         assert!(res.contains("15.5 MB RSS"));
     }

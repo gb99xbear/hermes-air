@@ -1,11 +1,11 @@
-{"timestamp":"2026-10-28T06:50:32.167280Z","level":"INFO","fields":{"message":"Starting Hermes Gateway"},"target":"hermes_gateway_core"}
-{"timestamp":"2026-10-28T06:50:32.174160Z","level":"INFO","fields":{"message":"WebSocket relay listening on 127.0.0.1:8089"},"target":"hermes_relay"}
-{"timestamp":"2026-10-28T06:50:32.729809Z","level":"INFO","fields":{"message":"Telegram bot initialized: @gb99xbearPro_bot (id: 9286738144)"},"target":"hermes_platform_telegram"}
-{"timestamp":"2026-10-28T06:50:32.895258Z","level":"INFO","fields":{"message":"Telegram webhook deleted, using long polling"},"target":"hermes_platform_telegram"}
-{"timestamp":"2026-10-28T06:50:32.942160Z","level":"INFO","fields":{"message":"Telegram adapter started"},"target":"hermes_platform_telegram"}
-{"timestamp":"2026-10-28T06:50:32.942237Z","level":"INFO","fields":{"message":"Telegram adapter started successfully"},"target":"hermes_gateway_core"}
-{"timestamp":"2026-10-28T06:50:32.942706Z","level":"INFO","fields":{"message":"TurnProcessor event loop started"},"target":"hermes_gateway_core"}
-{"timestamp":"2026-10-28T06:50:32.943054Z","level":"INFO","fields":{"message":"Hermes Gateway running"},"target":"hermes_gateway_core"}
-{"timestamp":"2026-10-28T06:58:45.639042Z","level":"INFO","fields":{"message":"Processing incoming message from telegram: /status"},"target":"hermes_gateway_core"}
-{"timestamp":"2026-10-28T06:58:45.639141Z","level":"INFO","fields":{"message":"Detected slash command: Status"},"target":"hermes_gateway_core"}
-{"timestamp":"2026-10-28T06:58:46.371438Z","level":"INFO","fields":{"message":"Telegram reply sent successfully"},"target":"hermes_gateway_core"}
+{"timestamp":"2026-10-28T07:34:09.688676Z","level":"INFO","fields":{"message":"Starting Hermes Gateway"},"target":"hermes_gateway_core"}
+{"timestamp":"2026-10-28T07:34:09.695208Z","level":"INFO","fields":{"message":"WebSocket relay listening on 127.0.0.1:8089"},"target":"hermes_relay"}
+{"timestamp":"2026-10-28T07:34:10.303439Z","level":"INFO","fields":{"message":"Telegram bot initialized: @gb99xbearPro_bot (id: 9286738144)"},"target":"hermes_platform_telegram"}
+{"timestamp":"2026-10-28T07:34:10.491971Z","level":"INFO","fields":{"message":"Telegram webhook deleted, using long polling"},"target":"hermes_platform_telegram"}
+{"timestamp":"2026-10-28T07:34:10.537208Z","level":"INFO","fields":{"message":"Telegram adapter started"},"target":"hermes_platform_telegram"}
+{"timestamp":"2026-10-28T07:34:10.537285Z","level":"INFO","fields":{"message":"Telegram adapter started successfully"},"target":"hermes_gateway_core"}
+{"timestamp":"2026-10-28T07:34:10.537545Z","level":"INFO","fields":{"message":"Hermes Gateway running"},"target":"hermes_gateway_core"}
+{"timestamp":"2026-10-28T07:34:10.537787Z","level":"INFO","fields":{"message":"TurnProcessor event loop started"},"target":"hermes_gateway_core"}
+{"timestamp":"2026-10-28T07:51:54.334039Z","level":"INFO","fields":{"message":"Processing incoming message from telegram: /status"},"target":"hermes_gateway_core"}
+{"timestamp":"2026-10-28T07:51:54.334465Z","level":"INFO","fields":{"message":"Detected slash command: Status"},"target":"hermes_gateway_core"}
+{"timestamp":"2026-10-28T07:51:55.098998Z","level":"INFO","fields":{"message":"Telegram reply sent successfully"},"target":"hermes_gateway_core"}
