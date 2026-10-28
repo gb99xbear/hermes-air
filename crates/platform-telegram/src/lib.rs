@@ -167,6 +167,18 @@ struct SendMessageRequest {
     disable_web_page_preview: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EditMessageTextRequest {
+    pub chat_id: i64,
+    pub message_id: i64,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parse_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disable_web_page_preview: Option<bool>,
+}
+
+
 #[derive(Debug, Serialize)]
 struct SendPhotoRequest {
     chat_id: i64,
@@ -275,6 +287,11 @@ pub fn looks_like_polling_conflict(status_code: u16, error_desc: &str) -> bool {
         || lower.contains("another bot instance is running")
 }
 
+pub fn looks_like_message_not_modified(error_desc: &str) -> bool {
+    let lower = error_desc.to_lowercase();
+    lower.contains("message is not modified") || lower.contains("not modified")
+}
+
 pub fn looks_like_parse_error(status_code: u16, error_desc: &str) -> bool {
     let lower = error_desc.to_lowercase();
     lower.contains("can't parse")
@@ -336,6 +353,64 @@ impl TelegramAdapter {
         }
 
         tg_response.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
+    }
+
+    pub async fn edit_message_text(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+    ) -> Result<(), PlatformError> {
+        let html_req = EditMessageTextRequest {
+            chat_id,
+            message_id,
+            text: text.to_string(),
+            parse_mode: Some("HTML".to_string()),
+            disable_web_page_preview: Some(true),
+        };
+
+        match self.make_request::<serde_json::Value>("editMessageText", &html_req).await {
+            Ok(_) => Ok(()),
+            Err(PlatformError::Api { code, message }) => {
+                if looks_like_message_not_modified(&message) {
+                    return Ok(());
+                }
+                let status_code = code.parse::<u16>().unwrap_or(0);
+                if looks_like_parse_error(status_code, &message) {
+                    warn!(
+                        "[telegram] Edit with HTML formatting failed ({}: {}), retrying as plain text",
+                        code, message
+                    );
+                    let plain_text = strip_html_tags(text);
+                    let plain_req = EditMessageTextRequest {
+                        chat_id,
+                        message_id,
+                        text: plain_text,
+                        parse_mode: None,
+                        disable_web_page_preview: Some(true),
+                    };
+                    match self.make_request::<serde_json::Value>("editMessageText", &plain_req).await {
+                        Ok(_) => Ok(()),
+                        Err(PlatformError::Api { message: p_msg, .. }) if looks_like_message_not_modified(&p_msg) => {
+                            Ok(())
+                        }
+                        Err(other) => Err(other),
+                    }
+                } else {
+                    Err(PlatformError::Api { code, message })
+                }
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    pub async fn edit_text(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+    ) -> Result<(), PlatformError> {
+        self.edit_message_text(chat_id, message_id, text).await
     }
 
     pub async fn send_chat_action(&self, chat_id: i64, action: &str) -> Result<(), PlatformError> {
@@ -816,5 +891,57 @@ impl PlatformAdapter for TelegramAdapter {
 impl Default for TelegramAdapter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_edit_message_text_request_serialization() {
+        let req = EditMessageTextRequest {
+            chat_id: 123456789,
+            message_id: 42,
+            text: "<b>Hello World</b>".to_string(),
+            parse_mode: Some("HTML".to_string()),
+            disable_web_page_preview: Some(true),
+        };
+
+        let json = serde_json::to_string(&req).expect("Failed to serialize");
+        let val: serde_json::Value = serde_json::from_str(&json).expect("Failed to parse json");
+
+        assert_eq!(val["chat_id"], 123456789);
+        assert_eq!(val["message_id"], 42);
+        assert_eq!(val["text"], "<b>Hello World</b>");
+        assert_eq!(val["parse_mode"], "HTML");
+        assert_eq!(val["disable_web_page_preview"], true);
+
+        // Test optional fields omitted when None
+        let req_none = EditMessageTextRequest {
+            chat_id: 987654321,
+            message_id: 100,
+            text: "Plain message".to_string(),
+            parse_mode: None,
+            disable_web_page_preview: None,
+        };
+        let json_none = serde_json::to_string(&req_none).expect("Failed to serialize");
+        let val_none: serde_json::Value = serde_json::from_str(&json_none).expect("Failed to parse json");
+
+        assert_eq!(val_none["chat_id"], 987654321);
+        assert_eq!(val_none["message_id"], 100);
+        assert_eq!(val_none["text"], "Plain message");
+        assert!(val_none.get("parse_mode").is_none());
+        assert!(val_none.get("disable_web_page_preview").is_none());
+    }
+
+    #[test]
+    fn test_looks_like_message_not_modified() {
+        assert!(looks_like_message_not_modified("Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message"));
+        assert!(looks_like_message_not_modified("Error: Message is not modified"));
+        assert!(looks_like_message_not_modified("NOT MODIFIED"));
+        assert!(looks_like_message_not_modified("not modified"));
+        assert!(!looks_like_message_not_modified("Bad Request: chat not found"));
+        assert!(!looks_like_message_not_modified("Bad Request: message to edit not found"));
     }
 }
