@@ -179,6 +179,16 @@ impl Gateway {
 
         info!("Processing incoming message from {}: {}", msg.platform, prompt_text);
 
+        // Send chat action typing immediately if telegram
+        if let Some(ref adapter) = tg_adapter {
+            if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
+                let adapter_clone = adapter.clone();
+                tokio::spawn(async move {
+                    let _ = adapter_clone.send_chat_action(chat_id, "typing").await;
+                });
+            }
+        }
+
         let model = profile
             .as_ref()
             .map(|p| p.model.as_str())
