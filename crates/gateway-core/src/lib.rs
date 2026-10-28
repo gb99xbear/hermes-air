@@ -1,7 +1,16 @@
 // hermes-gateway-core - Core gateway logic
+pub mod commands;
 pub mod llm;
 pub mod prompt;
 pub mod tools;
+
+pub use commands::{
+    handle_clear, handle_command, handle_model, handle_start_or_help, handle_status,
+    parse_command, CommandContext, SlashCommand,
+};
+pub use llm::{ChatMessage, ChatResponse, LlmClient};
+pub use prompt::PromptAssembler;
+pub use tools::{ToolCall, ToolRegistry, ToolResult};
 
 use hermes_config::GatewayConfig;
 use hermes_platform_adapter::PlatformAdapter;
@@ -11,27 +20,26 @@ use hermes_relay::{WsRelayConfig, WsRelayServer};
 use hermes_session_store::{SessionStore, SessionStoreFactory};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
-
-pub use llm::{ChatMessage, ChatResponse, LlmClient};
-pub use prompt::PromptAssembler;
-pub use tools::{ToolCall, ToolRegistry, ToolResult};
 
 #[allow(dead_code)]
 pub struct Gateway {
     config: GatewayConfig,
     relay_server: Arc<WsRelayServer>,
-    session_store: Box<dyn SessionStore>,
+    session_store: Arc<Box<dyn SessionStore>>,
     llm_client: Arc<LlmClient>,
     tool_registry: Arc<ToolRegistry>,
     prompt_assembler: Arc<PromptAssembler>,
     event_tx: mpsc::UnboundedSender<PlatformEvent>,
     event_rx: Option<mpsc::UnboundedReceiver<PlatformEvent>>,
+    active_model_override: Arc<RwLock<Option<String>>>,
 }
 
 impl Gateway {
     pub async fn new(config: GatewayConfig) -> anyhow::Result<Self> {
+        commands::init_uptime();
+
         let relay_config = WsRelayConfig {
             host: config.dashboard.host.clone(),
             port: config.dashboard.port,
@@ -68,16 +76,18 @@ impl Gateway {
         let llm_client = Arc::new(LlmClient::new(Some(base_url), api_key));
         let tool_registry = Arc::new(ToolRegistry::new());
         let prompt_assembler = Arc::new(PromptAssembler::new());
+        let active_model_override = Arc::new(RwLock::new(None));
 
         Ok(Self {
             config,
             relay_server,
-            session_store,
+            session_store: Arc::new(session_store),
             llm_client,
             tool_registry,
             prompt_assembler,
             event_tx,
             event_rx: Some(event_rx),
+            active_model_override,
         })
     }
 
@@ -126,6 +136,10 @@ impl Gateway {
         let llm_client = self.llm_client.clone();
         let tool_registry = self.tool_registry.clone();
         let prompt_assembler = self.prompt_assembler.clone();
+        let session_store = self.session_store.clone();
+        let active_model_override = self.active_model_override.clone();
+        let config_arc = Arc::new(self.config.clone());
+
         let default_profile = self
             .config
             .profiles
@@ -140,7 +154,18 @@ impl Gateway {
             while let Some(event) = event_rx.recv().await {
                 match event {
                     PlatformEvent::Incoming(msg) => {
-                        Self::process_incoming(msg, &llm_client, &tool_registry, &prompt_assembler, &default_profile, &event_loop_tg).await;
+                        Self::process_incoming(
+                            msg,
+                            &config_arc,
+                            &llm_client,
+                            &tool_registry,
+                            &prompt_assembler,
+                            &session_store,
+                            &default_profile,
+                            &event_loop_tg,
+                            &active_model_override,
+                        )
+                        .await;
                     }
                     PlatformEvent::Error { session_id, error } => {
                         warn!("Platform error for session {}: {:?}", session_id, error);
@@ -163,11 +188,14 @@ impl Gateway {
 
     async fn process_incoming(
         msg: IncomingMessage,
+        config: &Arc<GatewayConfig>,
         llm_client: &Arc<LlmClient>,
         tool_registry: &Arc<ToolRegistry>,
         prompt_assembler: &Arc<PromptAssembler>,
+        session_store: &Arc<Box<dyn SessionStore>>,
         profile: &Option<hermes_config::ProfileConfig>,
         tg_adapter: &Option<Arc<TelegramAdapter>>,
+        active_model_override: &Arc<RwLock<Option<String>>>,
     ) {
         let (prompt_text, incoming_id) = match &msg.content {
             MessageContent::Text { text } => (text.clone(), msg.id),
@@ -179,6 +207,67 @@ impl Gateway {
 
         info!("Processing incoming message from {}: {}", msg.platform, prompt_text);
 
+        let default_model = profile
+            .as_ref()
+            .map(|p| p.model.as_str())
+            .unwrap_or("gemini-2.5-flash");
+
+        let active_model = {
+            let guard = active_model_override.read().await;
+            guard.clone().unwrap_or_else(|| default_model.to_string())
+        };
+
+        let profile_name = profile
+            .as_ref()
+            .map(|p| p.name.as_str())
+            .unwrap_or_else(|| config.gateway.default_profile.as_str());
+
+        // Check if incoming text is a Slash Command
+        if let Some(cmd) = parse_command(&prompt_text) {
+            info!("Detected slash command: {:?}", cmd);
+
+            let is_clear = matches!(cmd, SlashCommand::Clear);
+
+            let ctx = CommandContext {
+                gateway_name: &config.gateway.name,
+                gateway_version: &config.gateway.version,
+                active_profile: profile_name,
+                active_model: &active_model,
+                telegram_connected: tg_adapter.is_some(),
+                memory_stats: None,
+            };
+
+            let reply_text = match cmd {
+                SlashCommand::Model(Some(ref target)) => {
+                    let mut guard = active_model_override.write().await;
+                    *guard = Some(target.trim().to_string());
+                    info!("Active model dynamically switched to: {}", target.trim());
+                    handle_model(&Some(target.clone()), &active_model, |_| Ok(()))
+                }
+                other => handle_command(other, &ctx, |_| Ok(())),
+            };
+
+            if is_clear {
+                if let Err(e) = session_store.delete(msg.session_id).await {
+                    warn!("Failed to delete session {} on /clear: {:?}", msg.session_id, e);
+                } else {
+                    info!("Cleared session store turn memory for session {}", msg.session_id);
+                }
+            }
+
+            let outgoing = OutgoingMessage {
+                id: MessageId::new(),
+                session_id: msg.session_id,
+                platform: msg.platform,
+                reply_to: Some(incoming_id),
+                content: MessageContent::Text { text: reply_text },
+                metadata: HashMap::new(),
+            };
+
+            Self::dispatch_outgoing(outgoing, tg_adapter).await;
+            return;
+        }
+
         // Send chat action typing immediately if telegram
         if let Some(ref adapter) = tg_adapter {
             if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
@@ -189,10 +278,6 @@ impl Gateway {
             }
         }
 
-        let model = profile
-            .as_ref()
-            .map(|p| p.model.as_str())
-            .unwrap_or("gemini-2.5-flash");
         let system_prompt = profile
             .as_ref()
             .and_then(|p| p.system_prompt.as_deref());
@@ -230,7 +315,7 @@ impl Gateway {
 
             match llm_client
                 .chat_completion_with_tools(
-                    model,
+                    &active_model,
                     &messages,
                     Some(tool_definitions.clone()),
                     None,
@@ -289,7 +374,11 @@ impl Gateway {
             metadata: HashMap::new(),
         };
 
-        match msg.platform {
+        Self::dispatch_outgoing(outgoing, tg_adapter).await;
+    }
+
+    async fn dispatch_outgoing(outgoing: OutgoingMessage, tg_adapter: &Option<Arc<TelegramAdapter>>) {
+        match outgoing.platform {
             Platform::Telegram => {
                 if let Some(adapter) = tg_adapter {
                     if let Err(e) = adapter.send(outgoing).await {

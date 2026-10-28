@@ -422,3 +422,98 @@ async fn test_prompt_assembler_combines_all_sections() {
 
     let _ = tokio::fs::remove_dir_all(&test_dir).await;
 }
+
+
+#[tokio::test]
+async fn test_slash_command_parsing_suite() {
+    use hermes_gateway_core::{parse_command, SlashCommand};
+
+    assert_eq!(parse_command("/status"), Some(SlashCommand::Status));
+    assert_eq!(parse_command("  /status  "), Some(SlashCommand::Status));
+    assert_eq!(parse_command("/status@HermesGatewayBot"), Some(SlashCommand::Status));
+
+    assert_eq!(parse_command("/model"), Some(SlashCommand::Model(None)));
+    assert_eq!(
+        parse_command("/model custom/model"),
+        Some(SlashCommand::Model(Some("custom/model".to_string())))
+    );
+    assert_eq!(
+        parse_command("/model   ag/gemini-3.8-flash  "),
+        Some(SlashCommand::Model(Some("ag/gemini-3.8-flash".to_string())))
+    );
+    assert_eq!(
+        parse_command("/model@HermesBot freet/claude-5-sonnet"),
+        Some(SlashCommand::Model(Some("freet/claude-5-sonnet".to_string())))
+    );
+
+    assert_eq!(parse_command("/clear"), Some(SlashCommand::Clear));
+    assert_eq!(parse_command("/reset"), Some(SlashCommand::Clear));
+    assert_eq!(parse_command("/new"), Some(SlashCommand::Clear));
+
+    assert_eq!(parse_command("/help"), Some(SlashCommand::Help));
+    assert_eq!(parse_command("/start"), Some(SlashCommand::Start));
+    assert_eq!(parse_command("/commands"), Some(SlashCommand::Help));
+
+    assert_eq!(parse_command("hello world"), None);
+    assert_eq!(parse_command("not /a/command"), None);
+}
+
+#[tokio::test]
+async fn test_slash_command_output_handling() {
+    use hermes_gateway_core::{handle_command, CommandContext, SlashCommand};
+
+    let ctx = CommandContext {
+        gateway_name: "hermes-gateway-test",
+        gateway_version: "0.2.0",
+        active_profile: "alfred",
+        active_model: "test-model-default",
+        telegram_connected: true,
+        memory_stats: Some("12.3 MB RSS".to_string()),
+    };
+
+    // Test /start and /help output
+    let start_out = handle_command(SlashCommand::Start, &ctx, |_| Ok(()));
+    assert!(start_out.contains("Greetings, Bear."));
+    assert!(start_out.contains("test-model-default"));
+    assert!(start_out.contains("Available Slash Commands:"));
+
+    let help_out = handle_command(SlashCommand::Help, &ctx, |_| Ok(()));
+    assert!(help_out.contains("Greetings, Bear."));
+    assert!(help_out.contains("/status"));
+    assert!(help_out.contains("/model"));
+    assert!(help_out.contains("/clear"));
+
+    // Test /status output
+    let status_out = handle_command(SlashCommand::Status, &ctx, |_| Ok(()));
+    assert!(status_out.contains("Hermes Gateway Status & Diagnostics"));
+    assert!(status_out.contains("hermes-gateway-test v0.2.0"));
+    assert!(status_out.contains("Active Profile:</b> <code>alfred</code>"));
+    assert!(status_out.contains("Active Model:</b> <code>test-model-default</code>"));
+    assert!(status_out.contains("Telegram: 🟢 Connected (Active)"));
+    assert!(status_out.contains("12.3 MB RSS"));
+
+    // Test /model query output
+    let model_query_out = handle_command(SlashCommand::Model(None), &ctx, |_| Ok(()));
+    assert!(model_query_out.contains("Active Model Configuration"));
+    assert!(model_query_out.contains("Current Model:</b> <code>test-model-default</code>"));
+    assert!(model_query_out.contains("/model &lt;model_name&gt;"));
+
+    // Test /model switch output
+    let mut recorded_switch = String::new();
+    let model_switch_out = handle_command(
+        SlashCommand::Model(Some("freet/claude-5-sonnet".to_string())),
+        &ctx,
+        |target| {
+            recorded_switch = target.to_string();
+            Ok(())
+        },
+    );
+    assert_eq!(recorded_switch, "freet/claude-5-sonnet");
+    assert!(model_switch_out.contains("Model Switched Successfully"));
+    assert!(model_switch_out.contains("freet/claude-5-sonnet"));
+
+    // Test /clear output
+    let clear_out = handle_command(SlashCommand::Clear, &ctx, |_| Ok(()));
+    assert!(clear_out.contains("Session Reset"));
+    assert!(clear_out.contains("Conversation turn memory has been cleared."));
+}
