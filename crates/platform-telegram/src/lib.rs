@@ -284,6 +284,62 @@ struct SendDocumentRequest {
     reply_to_message_id: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SendVoiceRequest {
+    pub chat_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_thread_id: Option<i64>,
+    pub voice: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parse_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_to_message_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SendAudioRequest {
+    pub chat_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_thread_id: Option<i64>,
+    pub audio: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parse_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub performer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_to_message_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SendVideoRequest {
+    pub chat_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_thread_id: Option<i64>,
+    pub video: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parse_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_to_message_id: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 struct SendChatActionRequest<'a> {
     chat_id: i64,
@@ -306,6 +362,27 @@ pub struct SentMessage {
     pub message_id: i64,
     date: i64,
     chat: TelegramChat,
+}
+
+pub fn truncate_caption_1024(caption: Option<&str>) -> Option<String> {
+    caption.map(|c| {
+        let utf16_count = c.encode_utf16().count();
+        if utf16_count <= 1024 {
+            c.to_string()
+        } else {
+            let mut count = 0;
+            let mut char_idx = 0;
+            for ch in c.chars() {
+                let len16 = ch.len_utf16();
+                if count + len16 > 1024 {
+                    break;
+                }
+                count += len16;
+                char_idx += ch.len_utf8();
+            }
+            c[..char_idx].to_string()
+        }
+    })
 }
 
 #[allow(dead_code)]
@@ -734,6 +811,305 @@ impl TelegramAdapter {
         }
     }
 
+    pub async fn send_voice(
+        &self,
+        chat_id: i64,
+        message_thread_id: Option<i64>,
+        audio_path: &Path,
+        caption: Option<&str>,
+        duration: Option<u32>,
+    ) -> Result<SentMessage, PlatformError> {
+        let file_name = audio_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("voice.ogg")
+            .to_string();
+        let file_bytes = tokio::fs::read(audio_path)
+            .await
+            .map_err(|e| PlatformError::Internal(format!("Failed to read voice audio file: {}", e)))?;
+
+        let url = self.api_url("sendVoice");
+        let config = self.base.config.as_ref().expect("Not initialized");
+
+        // Format caption with 1024 char bound and HTML parse error fallback to plain text matching _send_voice_bubble
+        let truncated = truncate_caption_1024(caption);
+        let has_caption = truncated.is_some();
+        let html_caption = truncated.clone();
+        let plain_caption = truncated.as_deref().map(strip_html_tags);
+
+        // Attempt 1: with HTML parse_mode if caption is present
+        if has_caption {
+            let mut form = reqwest::multipart::Form::new()
+                .text("chat_id", chat_id.to_string());
+            if let Some(thread_id) = message_thread_id {
+                form = form.text("message_thread_id", thread_id.to_string());
+            }
+            if let Some(dur) = duration {
+                form = form.text("duration", dur.to_string());
+            }
+            if let Some(cap) = &html_caption {
+                form = form.text("caption", cap.clone());
+                form = form.text("parse_mode", "HTML");
+            }
+            let part = reqwest::multipart::Part::bytes(file_bytes.clone())
+                .file_name(file_name.clone())
+                .mime_str("audio/ogg")
+                .unwrap_or_else(|_| reqwest::multipart::Part::bytes(file_bytes.clone()).file_name(file_name.clone()));
+            form = form.part("voice", part);
+
+            let resp = self
+                .client
+                .post(&url)
+                .multipart(form)
+                .timeout(std::time::Duration::from_secs(config.timeout_secs))
+                .send()
+                .await
+                .map_err(|e| PlatformError::Network(e.to_string()))?;
+
+            let status = resp.status();
+            let tg_resp: TelegramResponse<SentMessage> = resp
+                .json()
+                .await
+                .map_err(|e| PlatformError::Internal(e.to_string()))?;
+
+            if tg_resp.ok {
+                if let Some(res) = tg_resp.result {
+                    return Ok(res);
+                }
+            } else {
+                let code_str = tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string());
+                let msg_str = tg_resp.description.unwrap_or_default();
+                let status_code = code_str.parse::<u16>().unwrap_or(0);
+                if looks_like_parse_error(status_code, &msg_str) {
+                    warn!(
+                        "[telegram] sendVoice with HTML caption failed ({}: {}), falling back to plain text caption",
+                        code_str, msg_str
+                    );
+                    // Fallback to plain caption without parse_mode
+                    let mut plain_form = reqwest::multipart::Form::new()
+                        .text("chat_id", chat_id.to_string());
+                    if let Some(thread_id) = message_thread_id {
+                        plain_form = plain_form.text("message_thread_id", thread_id.to_string());
+                    }
+                    if let Some(dur) = duration {
+                        plain_form = plain_form.text("duration", dur.to_string());
+                    }
+                    if let Some(pcap) = &plain_caption {
+                        plain_form = plain_form.text("caption", pcap.clone());
+                    }
+                    let part = reqwest::multipart::Part::bytes(file_bytes.clone())
+                        .file_name(file_name.clone())
+                        .mime_str("audio/ogg")
+                        .unwrap_or_else(|_| reqwest::multipart::Part::bytes(file_bytes.clone()).file_name(file_name.clone()));
+                    plain_form = plain_form.part("voice", part);
+
+                    let plain_resp = self
+                        .client
+                        .post(&url)
+                        .multipart(plain_form)
+                        .timeout(std::time::Duration::from_secs(config.timeout_secs))
+                        .send()
+                        .await
+                        .map_err(|e| PlatformError::Network(e.to_string()))?;
+
+                    let plain_status = plain_resp.status();
+                    let plain_tg_resp: TelegramResponse<SentMessage> = plain_resp
+                        .json()
+                        .await
+                        .map_err(|e| PlatformError::Internal(e.to_string()))?;
+
+                    if !plain_tg_resp.ok {
+                        return Err(PlatformError::Api {
+                            code: plain_tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| plain_status.to_string()),
+                            message: plain_tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string()),
+                        });
+                    }
+                    return plain_tg_resp.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()));
+                } else {
+                    return Err(PlatformError::Api { code: code_str, message: msg_str });
+                }
+            }
+        }
+
+        // Send without parse_mode (or caption is None)
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string());
+        if let Some(thread_id) = message_thread_id {
+            form = form.text("message_thread_id", thread_id.to_string());
+        }
+        if let Some(dur) = duration {
+            form = form.text("duration", dur.to_string());
+        }
+        let part = reqwest::multipart::Part::bytes(file_bytes)
+            .file_name(file_name.clone())
+            .mime_str("audio/ogg")
+            .unwrap_or_else(|_| reqwest::multipart::Part::bytes(vec![]));
+        form = form.part("voice", part);
+
+        let resp = self
+            .client
+            .post(&url)
+            .multipart(form)
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .send()
+            .await
+            .map_err(|e| PlatformError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        let tg_resp: TelegramResponse<SentMessage> = resp
+            .json()
+            .await
+            .map_err(|e| PlatformError::Internal(e.to_string()))?;
+
+        if !tg_resp.ok {
+            return Err(PlatformError::Api {
+                code: tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string()),
+                message: tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string()),
+            });
+        }
+        tg_resp.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
+    }
+
+    pub async fn send_audio(
+        &self,
+        chat_id: i64,
+        message_thread_id: Option<i64>,
+        audio_path: &Path,
+        caption: Option<&str>,
+        duration: Option<u32>,
+        title: Option<&str>,
+        performer: Option<&str>,
+    ) -> Result<SentMessage, PlatformError> {
+        let file_name = audio_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("audio.mp3")
+            .to_string();
+        let file_bytes = tokio::fs::read(audio_path)
+            .await
+            .map_err(|e| PlatformError::Internal(format!("Failed to read audio file: {}", e)))?;
+
+        let url = self.api_url("sendAudio");
+        let config = self.base.config.as_ref().expect("Not initialized");
+
+        let truncated = truncate_caption_1024(caption);
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string());
+        if let Some(thread_id) = message_thread_id {
+            form = form.text("message_thread_id", thread_id.to_string());
+        }
+        if let Some(dur) = duration {
+            form = form.text("duration", dur.to_string());
+        }
+        if let Some(t) = title {
+            form = form.text("title", t.to_string());
+        }
+        if let Some(p) = performer {
+            form = form.text("performer", p.to_string());
+        }
+        if let Some(cap) = &truncated {
+            form = form.text("caption", cap.clone());
+        }
+        let part = reqwest::multipart::Part::bytes(file_bytes)
+            .file_name(file_name.clone())
+            .mime_str("audio/mpeg")
+            .unwrap_or_else(|_| reqwest::multipart::Part::bytes(vec![]));
+        form = form.part("audio", part);
+
+        let resp = self
+            .client
+            .post(&url)
+            .multipart(form)
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .send()
+            .await
+            .map_err(|e| PlatformError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        let tg_resp: TelegramResponse<SentMessage> = resp
+            .json()
+            .await
+            .map_err(|e| PlatformError::Internal(e.to_string()))?;
+
+        if !tg_resp.ok {
+            return Err(PlatformError::Api {
+                code: tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string()),
+                message: tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string()),
+            });
+        }
+        tg_resp.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
+    }
+
+    pub async fn send_video(
+        &self,
+        chat_id: i64,
+        message_thread_id: Option<i64>,
+        video_path: &Path,
+        caption: Option<&str>,
+        duration: Option<u32>,
+        width: Option<u32>,
+        height: Option<u32>,
+    ) -> Result<SentMessage, PlatformError> {
+        let file_name = video_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("video.mp4")
+            .to_string();
+        let file_bytes = tokio::fs::read(video_path)
+            .await
+            .map_err(|e| PlatformError::Internal(format!("Failed to read video file: {}", e)))?;
+
+        let url = self.api_url("sendVideo");
+        let config = self.base.config.as_ref().expect("Not initialized");
+
+        let truncated = truncate_caption_1024(caption);
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string());
+        if let Some(thread_id) = message_thread_id {
+            form = form.text("message_thread_id", thread_id.to_string());
+        }
+        if let Some(dur) = duration {
+            form = form.text("duration", dur.to_string());
+        }
+        if let Some(w) = width {
+            form = form.text("width", w.to_string());
+        }
+        if let Some(h) = height {
+            form = form.text("height", h.to_string());
+        }
+        if let Some(cap) = &truncated {
+            form = form.text("caption", cap.clone());
+        }
+        let part = reqwest::multipart::Part::bytes(file_bytes)
+            .file_name(file_name.clone())
+            .mime_str("video/mp4")
+            .unwrap_or_else(|_| reqwest::multipart::Part::bytes(vec![]));
+        form = form.part("video", part);
+
+        let resp = self
+            .client
+            .post(&url)
+            .multipart(form)
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .send()
+            .await
+            .map_err(|e| PlatformError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        let tg_resp: TelegramResponse<SentMessage> = resp
+            .json()
+            .await
+            .map_err(|e| PlatformError::Internal(e.to_string()))?;
+
+        if !tg_resp.ok {
+            return Err(PlatformError::Api {
+                code: tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string()),
+                message: tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string()),
+            });
+        }
+        tg_resp.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
+    }
+
     pub fn should_process_message(msg: &TelegramMessage, bot_info: Option<&TelegramUser>) -> bool {
         let chat_type = msg.chat.chat_type.as_str();
         if chat_type == "private" {
@@ -1141,6 +1517,45 @@ impl TelegramAdapter {
                     reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
                 }).map_err(|e| PlatformError::Internal(e.to_string()))
             }
+            MessageContent::Audio { url, duration } => {
+                let is_voice = msg.metadata.get("is_voice").and_then(|v| v.as_bool()).unwrap_or(false);
+                if is_voice {
+                    serde_json::to_value(SendVoiceRequest {
+                        chat_id,
+                        message_thread_id: thread_id,
+                        voice: url.clone(),
+                        caption: msg.metadata.get("caption").and_then(|v| v.as_str()).map(ToString::to_string),
+                        parse_mode: Some("HTML".to_string()),
+                        duration: duration.map(|d| d as u32),
+                        reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
+                    }).map_err(|e| PlatformError::Internal(e.to_string()))
+                } else {
+                    serde_json::to_value(SendAudioRequest {
+                        chat_id,
+                        message_thread_id: thread_id,
+                        audio: url.clone(),
+                        caption: msg.metadata.get("caption").and_then(|v| v.as_str()).map(ToString::to_string),
+                        parse_mode: None,
+                        duration: duration.map(|d| d as u32),
+                        performer: msg.metadata.get("performer").and_then(|v| v.as_str()).map(ToString::to_string),
+                        title: msg.metadata.get("title").and_then(|v| v.as_str()).map(ToString::to_string),
+                        reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
+                    }).map_err(|e| PlatformError::Internal(e.to_string()))
+                }
+            }
+            MessageContent::Video { url, duration } => {
+                serde_json::to_value(SendVideoRequest {
+                    chat_id,
+                    message_thread_id: thread_id,
+                    video: url.clone(),
+                    caption: msg.metadata.get("caption").and_then(|v| v.as_str()).map(ToString::to_string),
+                    parse_mode: None,
+                    duration: duration.map(|d| d as u32),
+                    width: msg.metadata.get("width").and_then(|v| v.as_u64()).map(|w| w as u32),
+                    height: msg.metadata.get("height").and_then(|v| v.as_u64()).map(|h| h as u32),
+                    reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
+                }).map_err(|e| PlatformError::Internal(e.to_string()))
+            }
             _ => Err(PlatformError::UnsupportedContent(format!("Content type not supported for Telegram: {:?}", msg.content))),
         }
     }
@@ -1443,6 +1858,116 @@ impl PlatformAdapter for TelegramAdapter {
                     reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
                 };
                 let sent: SentMessage = self.make_request("sendDocument", &req).await?;
+
+                Ok(DeliveryReceipt {
+                    message_id: msg.id,
+                    platform: Platform::Telegram,
+                    status: DeliveryStatus::Sent,
+                    timestamp: OffsetDateTime::now_utc(),
+                    platform_message_id: Some(sent.message_id.to_string()),
+                })
+            }
+            MessageContent::Audio { url, duration } => {
+                let is_voice = msg.metadata.get("is_voice").and_then(|v| v.as_bool()).unwrap_or(false);
+                let caption = msg.metadata.get("caption").and_then(|v| v.as_str());
+                let reply_to_id = msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64());
+
+                let sent: SentMessage = if is_voice {
+                    if let Some(stripped_path) = url.strip_prefix("file://") {
+                        self.send_voice(chat_id, thread_id, Path::new(stripped_path), caption, duration.map(|d| d as u32)).await?
+                    } else if Path::new(url).exists() {
+                        self.send_voice(chat_id, thread_id, Path::new(url), caption, duration.map(|d| d as u32)).await?
+                    } else {
+                        let req = SendVoiceRequest {
+                            chat_id,
+                            message_thread_id: thread_id,
+                            voice: url.clone(),
+                            caption: truncate_caption_1024(caption),
+                            parse_mode: Some("HTML".to_string()),
+                            duration: duration.map(|d| d as u32),
+                            reply_to_message_id: reply_to_id,
+                        };
+                        match self.make_request("sendVoice", &req).await {
+                            Ok(sent) => sent,
+                            Err(PlatformError::Api { code, message }) => {
+                                let status_code = code.parse::<u16>().unwrap_or(0);
+                                if looks_like_parse_error(status_code, &message) {
+                                    warn!("[telegram] sendVoice HTML caption failed, retrying plain");
+                                    let plain_caption = caption.as_deref().map(strip_html_tags);
+                                    let plain_req = SendVoiceRequest {
+                                        chat_id,
+                                        message_thread_id: thread_id,
+                                        voice: url.clone(),
+                                        caption: truncate_caption_1024(plain_caption.as_deref()),
+                                        parse_mode: None,
+                                        duration: duration.map(|d| d as u32),
+                                        reply_to_message_id: reply_to_id,
+                                    };
+                                    self.make_request("sendVoice", &plain_req).await?
+                                } else {
+                                    return Err(PlatformError::Api { code, message });
+                                }
+                            }
+                            Err(other) => return Err(other),
+                        }
+                    }
+                } else {
+                    if let Some(stripped_path) = url.strip_prefix("file://") {
+                        let title = msg.metadata.get("title").and_then(|v| v.as_str());
+                        let performer = msg.metadata.get("performer").and_then(|v| v.as_str());
+                        self.send_audio(chat_id, thread_id, Path::new(stripped_path), caption, duration.map(|d| d as u32), title, performer).await?
+                    } else if Path::new(url).exists() {
+                        let title = msg.metadata.get("title").and_then(|v| v.as_str());
+                        let performer = msg.metadata.get("performer").and_then(|v| v.as_str());
+                        self.send_audio(chat_id, thread_id, Path::new(url), caption, duration.map(|d| d as u32), title, performer).await?
+                    } else {
+                        let req = SendAudioRequest {
+                            chat_id,
+                            message_thread_id: thread_id,
+                            audio: url.clone(),
+                            caption: truncate_caption_1024(caption),
+                            parse_mode: None,
+                            duration: duration.map(|d| d as u32),
+                            performer: msg.metadata.get("performer").and_then(|v| v.as_str()).map(ToString::to_string),
+                            title: msg.metadata.get("title").and_then(|v| v.as_str()).map(ToString::to_string),
+                            reply_to_message_id: reply_to_id,
+                        };
+                        self.make_request("sendAudio", &req).await?
+                    }
+                };
+
+                Ok(DeliveryReceipt {
+                    message_id: msg.id,
+                    platform: Platform::Telegram,
+                    status: DeliveryStatus::Sent,
+                    timestamp: OffsetDateTime::now_utc(),
+                    platform_message_id: Some(sent.message_id.to_string()),
+                })
+            }
+            MessageContent::Video { url, duration } => {
+                let caption = msg.metadata.get("caption").and_then(|v| v.as_str());
+                let reply_to_id = msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64());
+                let width = msg.metadata.get("width").and_then(|v| v.as_u64()).map(|w| w as u32);
+                let height = msg.metadata.get("height").and_then(|v| v.as_u64()).map(|h| h as u32);
+
+                let sent: SentMessage = if let Some(stripped_path) = url.strip_prefix("file://") {
+                    self.send_video(chat_id, thread_id, Path::new(stripped_path), caption, duration.map(|d| d as u32), width, height).await?
+                } else if Path::new(url).exists() {
+                    self.send_video(chat_id, thread_id, Path::new(url), caption, duration.map(|d| d as u32), width, height).await?
+                } else {
+                    let req = SendVideoRequest {
+                        chat_id,
+                        message_thread_id: thread_id,
+                        video: url.clone(),
+                        caption: truncate_caption_1024(caption),
+                        parse_mode: None,
+                        duration: duration.map(|d| d as u32),
+                        width,
+                        height,
+                        reply_to_message_id: reply_to_id,
+                    };
+                    self.make_request("sendVideo", &req).await?
+                };
 
                 Ok(DeliveryReceipt {
                     message_id: msg.id,
@@ -1788,6 +2313,163 @@ mod tests {
         assert_eq!(val_none["text"], "Plain message");
         assert!(val_none.get("parse_mode").is_none());
         assert!(val_none.get("disable_web_page_preview").is_none());
+    }
+
+    #[test]
+    fn test_truncate_caption_1024() {
+        assert_eq!(truncate_caption_1024(None), None);
+        assert_eq!(truncate_caption_1024(Some("hello")), Some("hello".to_string()));
+
+        let exactly_1024 = "a".repeat(1024);
+        assert_eq!(truncate_caption_1024(Some(&exactly_1024)), Some(exactly_1024.clone()));
+
+        let over_1024 = "a".repeat(1500);
+        let truncated = truncate_caption_1024(Some(&over_1024)).unwrap();
+        assert_eq!(truncated.len(), 1024);
+        assert_eq!(truncated, exactly_1024);
+
+        // UTF-16 characters (e.g. emoji which take 2 UTF-16 code units)
+        let emojis = "🎉".repeat(600); // 600 * 2 = 1200 UTF-16 code units
+        let truncated_emojis = truncate_caption_1024(Some(&emojis)).unwrap();
+        assert_eq!(truncated_emojis.encode_utf16().count(), 1024);
+        assert_eq!(truncated_emojis.chars().count(), 512); // exactly 512 emojis
+    }
+
+    #[test]
+    fn test_send_voice_request_serialization() {
+        let req = SendVoiceRequest {
+            chat_id: 123456789,
+            message_thread_id: Some(42),
+            voice: "file_id_voice_123".to_string(),
+            caption: Some("<b>Voice message</b>".to_string()),
+            parse_mode: Some("HTML".to_string()),
+            duration: Some(15),
+            reply_to_message_id: Some(10),
+        };
+
+        let json = serde_json::to_string(&req).expect("Failed to serialize SendVoiceRequest");
+        let val: serde_json::Value = serde_json::from_str(&json).expect("Failed to parse json");
+
+        assert_eq!(val["chat_id"], 123456789);
+        assert_eq!(val["message_thread_id"], 42);
+        assert_eq!(val["voice"], "file_id_voice_123");
+        assert_eq!(val["caption"], "<b>Voice message</b>");
+        assert_eq!(val["parse_mode"], "HTML");
+        assert_eq!(val["duration"], 15);
+        assert_eq!(val["reply_to_message_id"], 10);
+
+        // Test optional fields omitted when None
+        let req_minimal = SendVoiceRequest {
+            chat_id: 987654321,
+            message_thread_id: None,
+            voice: "voice_min".to_string(),
+            caption: None,
+            parse_mode: None,
+            duration: None,
+            reply_to_message_id: None,
+        };
+        let json_min = serde_json::to_string(&req_minimal).unwrap();
+        let val_min: serde_json::Value = serde_json::from_str(&json_min).unwrap();
+        assert_eq!(val_min["chat_id"], 987654321);
+        assert_eq!(val_min["voice"], "voice_min");
+        assert!(val_min.get("message_thread_id").is_none());
+        assert!(val_min.get("caption").is_none());
+        assert!(val_min.get("parse_mode").is_none());
+        assert!(val_min.get("duration").is_none());
+        assert!(val_min.get("reply_to_message_id").is_none());
+    }
+
+    #[test]
+    fn test_send_audio_request_serialization() {
+        let req = SendAudioRequest {
+            chat_id: 123456789,
+            message_thread_id: Some(7),
+            audio: "https://example.com/audio.mp3".to_string(),
+            caption: Some("Nice song".to_string()),
+            parse_mode: None,
+            duration: Some(180),
+            performer: Some("Artist".to_string()),
+            title: Some("Song Title".to_string()),
+            reply_to_message_id: None,
+        };
+
+        let json = serde_json::to_string(&req).expect("Failed to serialize SendAudioRequest");
+        let val: serde_json::Value = serde_json::from_str(&json).expect("Failed to parse json");
+
+        assert_eq!(val["chat_id"], 123456789);
+        assert_eq!(val["message_thread_id"], 7);
+        assert_eq!(val["audio"], "https://example.com/audio.mp3");
+        assert_eq!(val["caption"], "Nice song");
+        assert_eq!(val["duration"], 180);
+        assert_eq!(val["performer"], "Artist");
+        assert_eq!(val["title"], "Song Title");
+        assert!(val.get("parse_mode").is_none());
+        assert!(val.get("reply_to_message_id").is_none());
+    }
+
+    #[test]
+    fn test_send_video_request_serialization() {
+        let req = SendVideoRequest {
+            chat_id: 123456789,
+            message_thread_id: Some(101),
+            video: "video_file_id".to_string(),
+            caption: Some("Demo clip".to_string()),
+            parse_mode: None,
+            duration: Some(60),
+            width: Some(1920),
+            height: Some(1080),
+            reply_to_message_id: Some(50),
+        };
+
+        let json = serde_json::to_string(&req).expect("Failed to serialize SendVideoRequest");
+        let val: serde_json::Value = serde_json::from_str(&json).expect("Failed to parse json");
+
+        assert_eq!(val["chat_id"], 123456789);
+        assert_eq!(val["message_thread_id"], 101);
+        assert_eq!(val["video"], "video_file_id");
+        assert_eq!(val["caption"], "Demo clip");
+        assert_eq!(val["duration"], 60);
+        assert_eq!(val["width"], 1920);
+        assert_eq!(val["height"], 1080);
+        assert_eq!(val["reply_to_message_id"], 50);
+    }
+
+    #[test]
+    fn test_api_url_endpoints() {
+        let mut adapter = TelegramAdapter::new();
+        adapter.base.config = Some(TelegramConfig {
+            bot_token: "123456:TEST_TOKEN".to_string(),
+            webhook_url: None,
+            allowed_updates: vec![],
+            drop_pending_updates: false,
+            timeout_secs: 30,
+            base: BasePlatformConfig {
+                enabled: true,
+                rate_limit: None,
+                webhook: None,
+                custom: serde_json::Value::Null,
+            },
+        });
+
+        assert_eq!(adapter.api_url("sendVoice"), "https://api.telegram.org/bot123456:TEST_TOKEN/sendVoice");
+        assert_eq!(adapter.api_url("sendAudio"), "https://api.telegram.org/bot123456:TEST_TOKEN/sendAudio");
+        assert_eq!(adapter.api_url("sendVideo"), "https://api.telegram.org/bot123456:TEST_TOKEN/sendVideo");
+    }
+
+    #[test]
+    fn test_voice_caption_html_parse_error_fallback_logic() {
+        // Verify that strip_html_tags and truncate work as expected for fallback
+        let complex_caption = "<b>Bold title</b> with <a href=\"https://example.com\">link</a> & <tag>broken";
+        let truncated = truncate_caption_1024(Some(complex_caption)).unwrap();
+        assert_eq!(truncated, complex_caption);
+
+        let stripped = strip_html_tags(&truncated);
+        assert_eq!(stripped, "Bold title with link & broken");
+        assert_eq!(truncate_caption_1024(Some(&stripped)), Some("Bold title with link & broken".to_string()));
+
+        // Check error classification
+        assert!(looks_like_parse_error(400, "Bad Request: can't parse entities: Unexpected end tag"));
+        assert!(looks_like_parse_error(400, "Bad Request: tag 'tag' is not supported"));
     }
 
     #[test]
