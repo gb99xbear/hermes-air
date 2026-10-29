@@ -229,6 +229,52 @@ impl ToolRegistry {
                     }
                 }
             }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search query to look up on the web. You may include backend-supported operators such as site:example.com, filetype:pdf, intitle:word, -term, or \"exact phrase\"."
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of results to return. Defaults to 5.",
+                                "default": 5
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "web_extract",
+                    "description": "Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer telling you the full text's saved file path and the read_file call to page through the omitted middle. Inline images appear as [IMAGE: alt] placeholders; real image URLs are kept as links. If a URL fails or times out, use the browser tool instead.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "urls": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "List of URLs to extract content from (max 5 URLs per call)"
+                            },
+                            "char_limit": {
+                                "type": "integer",
+                                "description": "Optional per-page character budget sent back (default 15000). Pages larger than this are head+tail truncated with the full text stored to disk. Raise it when you need more of a long page inline."
+                            }
+                        },
+                        "required": ["urls"]
+                    }
+                }
+            }),
         ]
     }
 
@@ -240,6 +286,8 @@ impl ToolRegistry {
             "write_file" => self.execute_write_file(call).await,
             "patch" => self.execute_patch(call).await,
             "search_files" => self.execute_search_files(call).await,
+            "web_search" => self.execute_web_search(call).await,
+            "web_extract" => self.execute_web_extract(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown tool: {}", other),
@@ -911,4 +959,85 @@ impl ToolRegistry {
             }
         }
     }
+
+    async fn execute_web_search(&self, call: &ToolCall) -> ToolResult {
+        let query = match call.arguments.get("query").and_then(|v| v.as_str()) {
+            Some(q) => q,
+            None => {
+                return ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": "Missing query parameter for web_search"
+                    }).to_string(),
+                    success: false,
+                };
+            }
+        };
+
+        let limit = call.arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+
+        match crate::web::web_search(query, limit).await {
+            Ok(resp) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "{}".to_string()),
+                success: resp.success,
+            },
+            Err(e) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                }).to_string(),
+                success: false,
+            },
+        }
+    }
+
+    async fn execute_web_extract(&self, call: &ToolCall) -> ToolResult {
+        let urls: Vec<String> = match call.arguments.get("urls") {
+            Some(serde_json::Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| match v {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Object(map) => map
+                        .get("url")
+                        .or_else(|| map.get("href"))
+                        .and_then(|u| u.as_str())
+                        .map(|s| s.to_string()),
+                    _ => None,
+                })
+                .collect(),
+            Some(serde_json::Value::String(s)) => vec![s.clone()],
+            _ => {
+                return ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": "Missing or invalid urls parameter for web_extract (expected array of strings)"
+                    }).to_string(),
+                    success: false,
+                };
+            }
+        };
+
+        let char_limit = call.arguments.get("char_limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+
+        match crate::web::web_extract(&urls, char_limit).await {
+            Ok(resp) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "{}".to_string()),
+                success: resp.success,
+            },
+            Err(e) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                }).to_string(),
+                success: false,
+            },
+        }
+    }
+
 }

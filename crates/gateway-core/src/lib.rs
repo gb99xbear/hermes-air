@@ -6,6 +6,7 @@ pub mod prompt;
 pub mod providers;
 pub mod fuzzy_match;
 pub mod tools;
+pub mod web;
 
 pub use commands::{
     build_model_keyboard, build_provider_keyboard, default_providers_list, handle_clear,
@@ -18,6 +19,7 @@ pub use stream::GatewayStreamConsumer;
 pub use prompt::PromptAssembler;
 pub use providers::{ProviderProfile, ProviderRegistry};
 pub use tools::{ToolCall, ToolRegistry, ToolResult};
+pub use web::{web_extract, web_search, WebExtractItem, WebExtractResponse, WebSearchResponse, WebSearchResultItem};
 
 use hermes_config::GatewayConfig;
 use hermes_platform_adapter::PlatformAdapter;
@@ -834,7 +836,7 @@ impl Gateway {
             }
         }
 
-        // If not delivered via direct stream, run single-call tool loop
+// If not delivered via direct stream, run recursive tool loop
         if !streamed_delivery && final_text.is_empty() {
             while iteration < max_tool_iterations {
                 iteration += 1;
@@ -856,9 +858,25 @@ impl Gateway {
                             ChatResponse::Text(text) => {
                                 final_text = text.clone();
                                 // Persist final assistant response to session store
-                                let asst_msg = ChatMessage::assistant(text);
+                                let asst_msg = ChatMessage::assistant(text.clone());
                                 if let Err(e) = session_store.append_message(msg.session_id, asst_msg).await {
                                     warn!("Failed to persist assistant message for session {}: {:?}", msg.session_id, e);
+                                }
+
+                                // If Telegram adapter is active and we completed after tool execution, stream or send final text
+                                if tg_adapter.is_some() && msg.platform == Platform::Telegram {
+                                    if let Some(adapter) = tg_adapter {
+                                        if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
+                                            let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
+                                            let mut consumer = GatewayStreamConsumer::new(chat_id);
+                                            // Deliver final completed text smoothly via stream consumer
+                                            let (tx, rx) = tokio::sync::mpsc::channel(1);
+                                            let _ = tx.send(text).await;
+                                            drop(tx);
+                                            let _ = consumer.consume_stream(rx, adapter, reply_to_id).await;
+                                            streamed_delivery = true;
+                                        }
+                                    }
                                 }
                                 break;
                             }
@@ -875,8 +893,19 @@ impl Gateway {
                                 }
                                 messages.push(asst_call_msg);
 
+                                // Notify user via Telegram typing action while executing tools
+                                if let Some(ref adapter) = tg_adapter {
+                                    if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
+                                        let adapter_clone = adapter.clone();
+                                        tokio::spawn(async move {
+                                            let _ = adapter_clone.send_chat_action(chat_id, "typing").await;
+                                        });
+                                    }
+                                }
+
                                 // Execute each tool call and append tool result to context and store
                                 for call in calls {
+                                    info!("Executing tool call {} (id: {}) in agent loop", call.name, call.id);
                                     let result = tool_registry.execute(&call).await;
                                     let tool_msg = ChatMessage::tool(result.tool_call_id, result.output);
                                     if let Err(e) = session_store.append_message(msg.session_id, tool_msg.clone()).await {

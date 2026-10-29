@@ -87,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 5);
+    assert_eq!(defs.len(), 7);
 
     let names: Vec<&str> = defs
         .iter()
@@ -99,6 +99,8 @@ async fn test_tool_registry_get_definitions() {
     assert!(names.contains(&"write_file"));
     assert!(names.contains(&"patch"));
     assert!(names.contains(&"search_files"));
+    assert!(names.contains(&"web_search"));
+    assert!(names.contains(&"web_extract"));
 
     for def in &defs {
         assert_eq!(def.get("type").and_then(|t| t.as_str()), Some("function"));
@@ -990,4 +992,54 @@ async fn test_tool_registry_search_files_modes() {
     let _ = tokio::fs::remove_file(&file_a).await;
     let _ = tokio::fs::remove_file(&file_b).await;
     let _ = tokio::fs::remove_dir(&test_dir).await;
+}
+
+
+#[tokio::test]
+async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
+    let registry = ToolRegistry::new();
+    let defs = registry.get_definitions();
+
+    assert_eq!(defs.len(), 7);
+
+    let names: Vec<&str> = defs
+        .iter()
+        .filter_map(|d| d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
+        .collect();
+
+    assert!(names.contains(&"web_search"));
+    assert!(names.contains(&"web_extract"));
+
+    // 1. SSRF rejection in execute(web_extract)
+    let call_ssrf = ToolCall {
+        id: "call_ssrf_1".to_string(),
+        name: "web_extract".to_string(),
+        arguments: json!({
+            "urls": ["http://127.0.0.1:8080/admin", "http://169.254.169.254/latest/meta-data"]
+        }),
+    };
+    let res_ssrf = registry.execute(&call_ssrf).await;
+    assert!(res_ssrf.success);
+    let val_ssrf: serde_json::Value = serde_json::from_str(&res_ssrf.output).unwrap();
+    let results_arr = val_ssrf.get("results").and_then(|r| r.as_array()).unwrap();
+    assert_eq!(results_arr.len(), 2);
+    assert!(results_arr[0].get("error").is_some());
+    assert!(results_arr[0].get("error").and_then(|e| e.as_str()).unwrap().contains("SSRF security violation"));
+    assert!(results_arr[1].get("error").is_some());
+    assert!(results_arr[1].get("error").and_then(|e| e.as_str()).unwrap().contains("SSRF security violation"));
+
+    // 2. web_search execution test
+    let call_search = ToolCall {
+        id: "call_ws_1".to_string(),
+        name: "web_search".to_string(),
+        arguments: json!({
+            "query": "rust programming language",
+            "limit": 3
+        }),
+    };
+    let res_search = registry.execute(&call_search).await;
+    assert!(res_search.success);
+    let val_search: serde_json::Value = serde_json::from_str(&res_search.output).unwrap();
+    assert_eq!(val_search.get("success").and_then(|s| s.as_bool()), Some(true));
+    assert!(val_search.get("data").is_some());
 }
