@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
@@ -26,133 +28,171 @@ pub struct TelegramConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramUser {
-    id: i64,
-    is_bot: bool,
-    first_name: String,
-    last_name: Option<String>,
-    username: Option<String>,
-    language_code: Option<String>,
+pub struct TelegramUser {
+    pub id: i64,
+    pub is_bot: bool,
+    pub first_name: String,
+    pub last_name: Option<String>,
+    pub username: Option<String>,
+    pub language_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelegramChat {
-    id: i64,
+    pub id: i64,
     #[serde(rename = "type")]
-    chat_type: String,
-    title: Option<String>,
-    username: Option<String>,
-    first_name: Option<String>,
-    last_name: Option<String>,
+    pub chat_type: String,
+    pub title: Option<String>,
+    pub username: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    #[serde(default)]
+    pub is_forum: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramMessage {
-    message_id: i64,
-    from: Option<TelegramUser>,
-    chat: TelegramChat,
-    date: i64,
-    text: Option<String>,
-    caption: Option<String>,
-    photo: Option<Vec<TelegramPhotoSize>>,
-    document: Option<TelegramDocument>,
-    audio: Option<TelegramAudio>,
-    video: Option<TelegramVideo>,
-    sticker: Option<TelegramSticker>,
-    location: Option<TelegramLocation>,
-    contact: Option<TelegramContact>,
-    reply_to_message: Option<Box<TelegramMessage>>,
+pub struct TelegramMessageEntity {
+    #[serde(rename = "type")]
+    pub entity_type: String,
+    pub offset: usize,
+    pub length: usize,
+    pub url: Option<String>,
+    pub user: Option<TelegramUser>,
+    pub language: Option<String>,
+    pub custom_emoji_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramPhotoSize {
-    file_id: String,
-    file_unique_id: String,
-    width: i32,
-    height: i32,
-    file_size: Option<i64>,
+pub struct TelegramMessage {
+    pub message_id: i64,
+    pub from: Option<TelegramUser>,
+    pub chat: TelegramChat,
+    pub date: i64,
+    #[serde(default)]
+    pub message_thread_id: Option<i64>,
+    #[serde(default)]
+    pub is_topic_message: Option<bool>,
+    pub text: Option<String>,
+    pub entities: Option<Vec<TelegramMessageEntity>>,
+    pub caption: Option<String>,
+    pub caption_entities: Option<Vec<TelegramMessageEntity>>,
+    pub photo: Option<Vec<TelegramPhotoSize>>,
+    pub document: Option<TelegramDocument>,
+    pub audio: Option<TelegramAudio>,
+    pub voice: Option<TelegramVoice>,
+    pub video: Option<TelegramVideo>,
+    pub sticker: Option<TelegramSticker>,
+    pub location: Option<TelegramLocation>,
+    pub contact: Option<TelegramContact>,
+    pub reply_to_message: Option<Box<TelegramMessage>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramDocument {
-    file_id: String,
-    file_unique_id: String,
-    thumbnail: Option<TelegramPhotoSize>,
-    file_name: Option<String>,
-    mime_type: Option<String>,
-    file_size: Option<i64>,
+pub struct TelegramVoice {
+    pub file_id: String,
+    pub file_unique_id: String,
+    pub duration: i64,
+    pub mime_type: Option<String>,
+    pub file_size: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramAudio {
-    file_id: String,
-    file_unique_id: String,
-    duration: i64,
-    performer: Option<String>,
-    title: Option<String>,
-    mime_type: Option<String>,
-    file_size: Option<i64>,
+pub struct TelegramFile {
+    pub file_id: String,
+    pub file_unique_id: Option<String>,
+    pub file_size: Option<i64>,
+    pub file_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramVideo {
-    file_id: String,
-    file_unique_id: String,
-    width: i32,
-    height: i32,
-    duration: i64,
-    thumbnail: Option<TelegramPhotoSize>,
-    mime_type: Option<String>,
-    file_size: Option<i64>,
+pub struct TelegramPhotoSize {
+    pub file_id: String,
+    pub file_unique_id: String,
+    pub width: i32,
+    pub height: i32,
+    pub file_size: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramSticker {
-    file_id: String,
-    file_unique_id: String,
-    width: i32,
-    height: i32,
-    is_animated: bool,
-    is_video: bool,
-    thumbnail: Option<TelegramPhotoSize>,
-    emoji: Option<String>,
-    set_name: Option<String>,
-    file_size: Option<i64>,
+pub struct TelegramDocument {
+    pub file_id: String,
+    pub file_unique_id: String,
+    pub thumbnail: Option<TelegramPhotoSize>,
+    pub file_name: Option<String>,
+    pub mime_type: Option<String>,
+    pub file_size: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramLocation {
-    longitude: f64,
-    latitude: f64,
+pub struct TelegramAudio {
+    pub file_id: String,
+    pub file_unique_id: String,
+    pub duration: i64,
+    pub performer: Option<String>,
+    pub title: Option<String>,
+    pub mime_type: Option<String>,
+    pub file_size: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramContact {
-    phone_number: String,
-    first_name: String,
-    last_name: Option<String>,
-    user_id: Option<i64>,
+pub struct TelegramVideo {
+    pub file_id: String,
+    pub file_unique_id: String,
+    pub width: i32,
+    pub height: i32,
+    pub duration: i64,
+    pub thumbnail: Option<TelegramPhotoSize>,
+    pub mime_type: Option<String>,
+    pub file_size: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramUpdate {
-    update_id: i64,
-    message: Option<TelegramMessage>,
-    edited_message: Option<TelegramMessage>,
-    channel_post: Option<TelegramMessage>,
-    edited_channel_post: Option<TelegramMessage>,
-    callback_query: Option<TelegramCallbackQuery>,
+pub struct TelegramSticker {
+    pub file_id: String,
+    pub file_unique_id: String,
+    pub width: i32,
+    pub height: i32,
+    pub is_animated: bool,
+    pub is_video: bool,
+    pub thumbnail: Option<TelegramPhotoSize>,
+    pub emoji: Option<String>,
+    pub set_name: Option<String>,
+    pub file_size: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TelegramCallbackQuery {
-    id: String,
-    from: TelegramUser,
-    message: Option<TelegramMessage>,
-    inline_message_id: Option<String>,
-    chat_instance: String,
-    data: Option<String>,
-    game_short_name: Option<String>,
+pub struct TelegramLocation {
+    pub longitude: f64,
+    pub latitude: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramContact {
+    pub phone_number: String,
+    pub first_name: String,
+    pub last_name: Option<String>,
+    pub user_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramUpdate {
+    pub update_id: i64,
+    pub message: Option<TelegramMessage>,
+    pub edited_message: Option<TelegramMessage>,
+    pub channel_post: Option<TelegramMessage>,
+    pub edited_channel_post: Option<TelegramMessage>,
+    pub callback_query: Option<TelegramCallbackQuery>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramCallbackQuery {
+    pub id: String,
+    pub from: TelegramUser,
+    pub message: Option<TelegramMessage>,
+    pub inline_message_id: Option<String>,
+    pub chat_instance: String,
+    pub data: Option<String>,
+    pub game_short_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -185,6 +225,8 @@ impl InlineKeyboardMarkup {
 #[derive(Debug, Serialize)]
 struct SendMessageRequest {
     chat_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_thread_id: Option<i64>,
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     parse_mode: Option<String>,
@@ -208,6 +250,7 @@ pub struct EditMessageTextRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply_markup: Option<InlineKeyboardMarkup>,
 }
+
 #[derive(Debug, Serialize)]
 struct AnswerCallbackQueryRequest<'a> {
     callback_query_id: &'a str,
@@ -217,11 +260,11 @@ struct AnswerCallbackQueryRequest<'a> {
     show_alert: Option<bool>,
 }
 
-
-
 #[derive(Debug, Serialize)]
 struct SendPhotoRequest {
     chat_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_thread_id: Option<i64>,
     photo: String,
     caption: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -233,6 +276,8 @@ struct SendPhotoRequest {
 #[derive(Debug, Serialize)]
 struct SendDocumentRequest {
     chat_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_thread_id: Option<i64>,
     document: String,
     caption: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -243,6 +288,8 @@ struct SendDocumentRequest {
 struct SendChatActionRequest<'a> {
     chat_id: i64,
     action: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_thread_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -346,7 +393,8 @@ pub fn looks_like_parse_error(status_code: u16, error_desc: &str) -> bool {
 pub struct TelegramAdapter {
     base: BaseAdapter<TelegramConfig>,
     client: Client,
-    bot_info: Arc<RwLock<Option<TelegramUser>>>,
+    pub bot_info: Arc<RwLock<Option<TelegramUser>>>,
+    pub last_poll_time: Arc<RwLock<Instant>>,
     #[allow(dead_code)]
     pending_messages: Arc<RwLock<HashMap<MessageId, (OutgoingMessage, mpsc::UnboundedSender<DeliveryReceipt>)>>>,
 }
@@ -357,6 +405,7 @@ impl TelegramAdapter {
             base: BaseAdapter::new(Platform::Telegram),
             client: Client::new(),
             bot_info: Arc::new(RwLock::new(None)),
+            last_poll_time: Arc::new(RwLock::new(Instant::now())),
             pending_messages: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -393,6 +442,54 @@ impl TelegramAdapter {
         }
 
         tg_response.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
+    }
+
+    pub fn download_url(&self, file_path: &str) -> Result<String, PlatformError> {
+        let config = self.base.config.as_ref().ok_or_else(|| PlatformError::Internal("Not initialized".into()))?;
+        Ok(format!("https://api.telegram.org/file/bot{}/{}", config.bot_token, file_path.trim_start_matches('/')))
+    }
+
+    pub async fn get_file(&self, file_id: &str) -> Result<TelegramFile, PlatformError> {
+        let body = serde_json::json!({ "file_id": file_id });
+        self.make_request::<TelegramFile>("getFile", &body).await
+    }
+
+    pub async fn download_file_to_cache(&self, file_path: &str, destination: &Path) -> Result<PathBuf, PlatformError> {
+        let url = self.download_url(file_path)?;
+        if let Some(parent) = destination.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| PlatformError::Internal(e.to_string()))?;
+        }
+
+        let resp = self.client.get(&url).send().await.map_err(|e| PlatformError::Network(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(PlatformError::Api {
+                code: resp.status().as_u16().to_string(),
+                message: format!("Failed to download file from Telegram: HTTP {}", resp.status()),
+            });
+        }
+
+        let bytes = resp.bytes().await.map_err(|e| PlatformError::Network(e.to_string()))?;
+        tokio::fs::write(destination, &bytes).await.map_err(|e| PlatformError::Internal(e.to_string()))?;
+        Ok(destination.to_path_buf())
+    }
+
+    pub async fn cache_inbound_file(&self, file_id: &str, default_ext: &str) -> Result<String, PlatformError> {
+        let file_info = self.get_file(file_id).await?;
+        if let Some(file_path) = file_info.file_path {
+            let ext = Path::new(&file_path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| format!(".{}", e))
+                .unwrap_or_else(|| default_ext.to_string());
+
+            let cache_dir = PathBuf::from("/tmp/hermes_telegram_cache");
+            tokio::fs::create_dir_all(&cache_dir).await.map_err(|e| PlatformError::Internal(e.to_string()))?;
+            let dest = cache_dir.join(format!("{}_{}{}", file_id, Uuid::new_v4().simple(), ext));
+            let path = self.download_file_to_cache(&file_path, &dest).await?;
+            Ok(path.to_string_lossy().to_string())
+        } else {
+            Err(PlatformError::Internal("Telegram did not return file_path".into()))
+        }
     }
 
     pub async fn edit_message_text(
@@ -461,8 +558,19 @@ impl TelegramAdapter {
         text: &str,
         keyboard: InlineKeyboardMarkup,
     ) -> Result<SentMessage, PlatformError> {
+        self.send_message_with_keyboard_and_thread(chat_id, None, text, keyboard).await
+    }
+
+    pub async fn send_message_with_keyboard_and_thread(
+        &self,
+        chat_id: i64,
+        message_thread_id: Option<i64>,
+        text: &str,
+        keyboard: InlineKeyboardMarkup,
+    ) -> Result<SentMessage, PlatformError> {
         let html_req = SendMessageRequest {
             chat_id,
+            message_thread_id,
             text: text.to_string(),
             parse_mode: Some("HTML".to_string()),
             reply_to_message_id: None,
@@ -481,6 +589,7 @@ impl TelegramAdapter {
                     );
                     let plain_req = SendMessageRequest {
                         chat_id,
+                        message_thread_id,
                         text: strip_html_tags(text),
                         parse_mode: None,
                         reply_to_message_id: None,
@@ -562,7 +671,11 @@ impl TelegramAdapter {
     }
 
     pub async fn send_chat_action(&self, chat_id: i64, action: &str) -> Result<(), PlatformError> {
-        let req = SendChatActionRequest { chat_id, action };
+        self.send_chat_action_with_thread(chat_id, None, action).await
+    }
+
+    pub async fn send_chat_action_with_thread(&self, chat_id: i64, message_thread_id: Option<i64>, action: &str) -> Result<(), PlatformError> {
+        let req = SendChatActionRequest { chat_id, action, message_thread_id };
         let _: serde_json::Value = self.make_request("sendChatAction", &req).await?;
         Ok(())
     }
@@ -573,8 +686,19 @@ impl TelegramAdapter {
         chunk: &str,
         reply_to_message_id: Option<i64>,
     ) -> Result<SentMessage, PlatformError> {
+        self.send_chunk_with_fallback_and_thread(chat_id, None, chunk, reply_to_message_id).await
+    }
+
+    pub async fn send_chunk_with_fallback_and_thread(
+        &self,
+        chat_id: i64,
+        message_thread_id: Option<i64>,
+        chunk: &str,
+        reply_to_message_id: Option<i64>,
+    ) -> Result<SentMessage, PlatformError> {
         let html_req = SendMessageRequest {
             chat_id,
+            message_thread_id,
             text: chunk.to_string(),
             parse_mode: Some("HTML".to_string()),
             reply_to_message_id,
@@ -594,6 +718,7 @@ impl TelegramAdapter {
                     let plain_text = strip_html_tags(chunk);
                     let plain_req = SendMessageRequest {
                         chat_id,
+                        message_thread_id,
                         text: plain_text,
                         parse_mode: None,
                         reply_to_message_id,
@@ -609,14 +734,85 @@ impl TelegramAdapter {
         }
     }
 
-    fn convert_incoming(&self, update: TelegramUpdate) -> Result<Vec<IncomingMessage>, PlatformError> {
+    pub fn should_process_message(msg: &TelegramMessage, bot_info: Option<&TelegramUser>) -> bool {
+        let chat_type = msg.chat.chat_type.as_str();
+        if chat_type == "private" {
+            return true;
+        }
+
+        if chat_type != "group" && chat_type != "supergroup" {
+            return true;
+        }
+
+        let bot_username = bot_info.and_then(|b| b.username.as_deref()).map(|u| u.trim_start_matches('@').to_lowercase());
+        let bot_id = bot_info.map(|b| b.id);
+
+        let text = msg.text.as_deref().or(msg.caption.as_deref()).unwrap_or("").trim();
+
+        if text.starts_with('/') {
+            return true;
+        }
+
+        if let Some(ref reply) = msg.reply_to_message {
+            if let Some(ref sender) = reply.from {
+                if sender.is_bot {
+                    if let Some(bid) = bot_id {
+                        if sender.id == bid {
+                            return true;
+                        }
+                    }
+                    if let (Some(ref b_user), Some(ref s_user)) = (&bot_username, &sender.username) {
+                        if s_user.trim_start_matches('@').eq_ignore_ascii_case(b_user) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(ref b_user) = bot_username {
+            let mention_needle = format!("@{}", b_user);
+            if text.to_lowercase().contains(&mention_needle) {
+                return true;
+            }
+
+            let all_entities = msg.entities.as_ref().into_iter().flatten()
+                .chain(msg.caption_entities.as_ref().into_iter().flatten());
+
+            for ent in all_entities {
+                if ent.entity_type == "mention" {
+                    if ent.offset + ent.length <= text.len() {
+                        let span = &text[ent.offset..ent.offset + ent.length];
+                        if span.trim_start_matches('@').eq_ignore_ascii_case(b_user) {
+                            return true;
+                        }
+                    }
+                } else if ent.entity_type == "text_mention" {
+                    if let Some(ref user) = ent.user {
+                        if Some(user.id) == bot_id || user.username.as_ref().map(|u| u.trim_start_matches('@').to_lowercase()).as_deref() == Some(b_user) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    pub async fn convert_incoming_with_cache(&self, update: TelegramUpdate) -> Result<Vec<IncomingMessage>, PlatformError> {
         let mut messages = Vec::new();
+        let bot_user = self.bot_info.read().await.clone();
 
         if let Some(msg) = update.message.or(update.edited_message).or(update.channel_post).or(update.edited_channel_post) {
-            let session_id = self.session_id_from_chat(&msg.chat);
-            let content = self.convert_message_content(&msg)?;
+            if !Self::should_process_message(&msg, bot_user.as_ref()) {
+                return Ok(Vec::new());
+            }
 
-            let incoming = IncomingMessage {
+            let session_id = self.session_id_from_chat(&msg.chat, msg.message_thread_id);
+            let content = self.convert_message_content_and_cache(&msg).await?;
+
+            let mut incoming = IncomingMessage {
                 id: MessageId::new(),
                 session_id,
                 platform: Platform::Telegram,
@@ -625,12 +821,21 @@ impl TelegramAdapter {
                     .unwrap_or_else(|_| OffsetDateTime::now_utc()),
                 raw: Some(serde_json::to_value(&msg).unwrap_or(serde_json::Value::Null)),
             };
+
+            if let Some(tid) = msg.message_thread_id {
+                let mut raw_val = incoming.raw.take().unwrap_or(serde_json::json!({}));
+                if let Some(obj) = raw_val.as_object_mut() {
+                    obj.insert("thread_id".to_string(), serde_json::json!(tid));
+                }
+                incoming.raw = Some(raw_val);
+            }
+
             messages.push(incoming);
         }
 
         if let Some(callback) = update.callback_query {
             if let Some(ref msg) = callback.message {
-                let session_id = self.session_id_from_chat(&msg.chat);
+                let session_id = self.session_id_from_chat(&msg.chat, msg.message_thread_id);
                 let content = MessageContent::System {
                     event: "callback_query".to_string(),
                     data: serde_json::json!({
@@ -639,6 +844,7 @@ impl TelegramAdapter {
                         "data": callback.data,
                         "message_id": msg.message_id,
                         "chat_id": msg.chat.id,
+                        "message_thread_id": msg.message_thread_id,
                         "from": callback.from,
                     }),
                 };
@@ -658,11 +864,169 @@ impl TelegramAdapter {
         Ok(messages)
     }
 
-    fn session_id_from_chat(&self, chat: &TelegramChat) -> Uuid {
-        let bytes = chat.id.to_le_bytes();
+    pub fn convert_incoming(&self, update: TelegramUpdate) -> Result<Vec<IncomingMessage>, PlatformError> {
+        let mut messages = Vec::new();
+
+        if let Some(msg) = update.message.or(update.edited_message).or(update.channel_post).or(update.edited_channel_post) {
+            let session_id = self.session_id_from_chat(&msg.chat, msg.message_thread_id);
+            let content = self.convert_message_content(&msg)?;
+
+            let mut incoming = IncomingMessage {
+                id: MessageId::new(),
+                session_id,
+                platform: Platform::Telegram,
+                content,
+                timestamp: OffsetDateTime::from_unix_timestamp(msg.date)
+                    .unwrap_or_else(|_| OffsetDateTime::now_utc()),
+                raw: Some(serde_json::to_value(&msg).unwrap_or(serde_json::Value::Null)),
+            };
+
+            if let Some(tid) = msg.message_thread_id {
+                let mut raw_val = incoming.raw.take().unwrap_or(serde_json::json!({}));
+                if let Some(obj) = raw_val.as_object_mut() {
+                    obj.insert("thread_id".to_string(), serde_json::json!(tid));
+                }
+                incoming.raw = Some(raw_val);
+            }
+
+            messages.push(incoming);
+        }
+
+        if let Some(callback) = update.callback_query {
+            if let Some(ref msg) = callback.message {
+                let session_id = self.session_id_from_chat(&msg.chat, msg.message_thread_id);
+                let content = MessageContent::System {
+                    event: "callback_query".to_string(),
+                    data: serde_json::json!({
+                        "callback_query_id": callback.id,
+                        "callback_data": callback.data,
+                        "data": callback.data,
+                        "message_id": msg.message_id,
+                        "chat_id": msg.chat.id,
+                        "message_thread_id": msg.message_thread_id,
+                        "from": callback.from,
+                    }),
+                };
+
+                let incoming = IncomingMessage {
+                    id: MessageId::new(),
+                    session_id,
+                    platform: Platform::Telegram,
+                    content,
+                    timestamp: OffsetDateTime::now_utc(),
+                    raw: Some(serde_json::to_value(&callback).unwrap_or_default()),
+                };
+                messages.push(incoming);
+            }
+        }
+
+        Ok(messages)
+    }
+
+    pub fn session_id_from_chat(&self, chat: &TelegramChat, thread_id: Option<i64>) -> Uuid {
+        let chat_bytes = chat.id.to_le_bytes();
         let mut uuid_bytes = [0u8; 16];
-        uuid_bytes[..8].copy_from_slice(&bytes);
+        uuid_bytes[..8].copy_from_slice(&chat_bytes);
+
+        if let Some(tid) = thread_id {
+            let thread_bytes = tid.to_le_bytes();
+            uuid_bytes[8..].copy_from_slice(&thread_bytes);
+        }
+
         Uuid::from_bytes(uuid_bytes)
+    }
+
+    pub async fn convert_message_content_and_cache(&self, msg: &TelegramMessage) -> Result<MessageContent, PlatformError> {
+        if let Some(text) = &msg.text {
+            return Ok(MessageContent::Text { text: text.clone() });
+        }
+
+        if let Some(caption) = &msg.caption {
+            if let Some(photo) = &msg.photo {
+                let largest = photo.iter().max_by_key(|p| p.width * p.height);
+                if let Some(p) = largest {
+                    let cached_url = self.cache_inbound_file(&p.file_id, ".jpg").await.unwrap_or_else(|_| p.file_id.clone());
+                    return Ok(MessageContent::Image {
+                        url: cached_url,
+                        caption: Some(caption.clone()),
+                    });
+                }
+            }
+            if let Some(doc) = &msg.document {
+                let cached_url = self.cache_inbound_file(&doc.file_id, ".bin").await.unwrap_or_else(|_| doc.file_id.clone());
+                return Ok(MessageContent::File {
+                    url: cached_url,
+                    filename: doc.file_name.clone().unwrap_or_else(|| "document".to_string()),
+                    mime_type: doc.mime_type.clone(),
+                });
+            }
+        }
+
+        if let Some(photo) = &msg.photo {
+            let largest = photo.iter().max_by_key(|p| p.width * p.height);
+            if let Some(p) = largest {
+                let cached_url = self.cache_inbound_file(&p.file_id, ".jpg").await.unwrap_or_else(|_| p.file_id.clone());
+                return Ok(MessageContent::Image {
+                    url: cached_url,
+                    caption: msg.caption.clone(),
+                });
+            }
+        }
+
+        if let Some(doc) = &msg.document {
+            let cached_url = self.cache_inbound_file(&doc.file_id, ".bin").await.unwrap_or_else(|_| doc.file_id.clone());
+            return Ok(MessageContent::File {
+                url: cached_url,
+                filename: doc.file_name.clone().unwrap_or_else(|| "document".to_string()),
+                mime_type: doc.mime_type.clone(),
+            });
+        }
+
+        if let Some(voice) = &msg.voice {
+            let cached_url = self.cache_inbound_file(&voice.file_id, ".ogg").await.unwrap_or_else(|_| voice.file_id.clone());
+            return Ok(MessageContent::Audio {
+                url: cached_url,
+                duration: Some(voice.duration as u64),
+            });
+        }
+
+        if let Some(audio) = &msg.audio {
+            let cached_url = self.cache_inbound_file(&audio.file_id, ".mp3").await.unwrap_or_else(|_| audio.file_id.clone());
+            return Ok(MessageContent::Audio {
+                url: cached_url,
+                duration: Some(audio.duration as u64),
+            });
+        }
+
+        if let Some(video) = &msg.video {
+            let cached_url = self.cache_inbound_file(&video.file_id, ".mp4").await.unwrap_or_else(|_| video.file_id.clone());
+            return Ok(MessageContent::Video {
+                url: cached_url,
+                duration: Some(video.duration as u64),
+            });
+        }
+
+        if let Some(sticker) = &msg.sticker {
+            return Ok(MessageContent::Sticker {
+                sticker_id: sticker.file_id.clone(),
+            });
+        }
+
+        if let Some(location) = &msg.location {
+            return Ok(MessageContent::Location {
+                latitude: location.latitude,
+                longitude: location.longitude,
+            });
+        }
+
+        if let Some(contact) = &msg.contact {
+            return Ok(MessageContent::Contact {
+                name: format!("{} {}", contact.first_name, contact.last_name.as_ref().map(|s| s.as_str()).unwrap_or("")).trim().to_string(),
+                phone: contact.phone_number.clone(),
+            });
+        }
+
+        Ok(MessageContent::Unknown { data: serde_json::to_value(msg).unwrap_or_default() })
     }
 
     fn convert_message_content(&self, msg: &TelegramMessage) -> Result<MessageContent, PlatformError> {
@@ -703,6 +1067,12 @@ impl TelegramAdapter {
                 mime_type: doc.mime_type.clone(),
             });
         }
+        if let Some(voice) = &msg.voice {
+            return Ok(MessageContent::Audio {
+                url: voice.file_id.clone(),
+                duration: Some(voice.duration as u64),
+            });
+        }
         if let Some(audio) = &msg.audio {
             return Ok(MessageContent::Audio {
                 url: audio.file_id.clone(),
@@ -738,12 +1108,13 @@ impl TelegramAdapter {
 
     #[allow(dead_code)]
     fn convert_outgoing(&self, msg: &OutgoingMessage) -> Result<serde_json::Value, PlatformError> {
-        let chat_id = self.chat_id_from_session(msg.session_id)?;
+        let (chat_id, thread_id) = self.chat_and_thread_from_session(msg.session_id, &msg.metadata)?;
 
         match &msg.content {
             MessageContent::Text { text } => {
                 serde_json::to_value(SendMessageRequest {
                     chat_id,
+                    message_thread_id: thread_id,
                     text: text.clone(),
                     parse_mode: Some("HTML".to_string()),
                     reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
@@ -754,6 +1125,7 @@ impl TelegramAdapter {
             MessageContent::Image { url, caption } => {
                 serde_json::to_value(SendPhotoRequest {
                     chat_id,
+                    message_thread_id: thread_id,
                     photo: url.clone(),
                     caption: caption.clone(),
                     parse_mode: Some("HTML".to_string()),
@@ -763,12 +1135,37 @@ impl TelegramAdapter {
             MessageContent::File { url, filename: _, mime_type: _ } => {
                 serde_json::to_value(SendDocumentRequest {
                     chat_id,
+                    message_thread_id: thread_id,
                     document: url.clone(),
                     caption: None,
                     reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
                 }).map_err(|e| PlatformError::Internal(e.to_string()))
             }
             _ => Err(PlatformError::UnsupportedContent(format!("Content type not supported for Telegram: {:?}", msg.content))),
+        }
+    }
+
+    pub fn chat_and_thread_from_session(
+        &self,
+        session_id: Uuid,
+        metadata: &HashMap<String, serde_json::Value>,
+    ) -> Result<(i64, Option<i64>), PlatformError> {
+        let chat_id = self.chat_id_from_session(session_id)?;
+        let thread_id = metadata
+            .get("thread_id")
+            .or_else(|| metadata.get("message_thread_id"))
+            .and_then(|v| v.as_i64())
+            .or_else(|| self.thread_id_from_session(session_id));
+        Ok((chat_id, thread_id))
+    }
+
+    pub fn thread_id_from_session(&self, session_id: Uuid) -> Option<i64> {
+        let bytes = session_id.as_bytes();
+        let thread_id = i64::from_le_bytes(bytes[8..16].try_into().ok()?);
+        if thread_id != 0 {
+            Some(thread_id)
+        } else {
+            None
         }
     }
 
@@ -831,13 +1228,23 @@ impl PlatformAdapter for TelegramAdapter {
             let bot_token = config.bot_token.clone();
             let timeout = config.timeout_secs;
             let sender = self.base.sender.clone().expect("Sender not set");
-            let adapter_template = TelegramAdapter::new();
+            let adapter_template = Arc::new(TelegramAdapter {
+                base: BaseAdapter::new(Platform::Telegram).with_config(config.clone()),
+                client: client.clone(),
+                bot_info: self.bot_info.clone(),
+                last_poll_time: self.last_poll_time.clone(),
+                pending_messages: self.pending_messages.clone(),
+            });
+            let last_poll_time = self.last_poll_time.clone();
 
             tokio::spawn(async move {
                 let mut offset = 0;
                 let mut conflict_retry_delay = 5;
 
                 loop {
+                    let now = Instant::now();
+                    *last_poll_time.write().await = now;
+
                     let params = serde_json::json!({
                         "offset": offset,
                         "timeout": timeout,
@@ -865,25 +1272,36 @@ impl PlatformAdapter for TelegramAdapter {
                                             for update in updates {
                                                 offset = update.update_id + 1;
 
-                                                if let Ok(messages) = adapter_template.convert_incoming(update) {
-                                                    for msg in messages {
-                                                        // Auto send typing indicator immediately
-                                                        if let Ok(chat_id) = adapter_template.chat_id_from_session(msg.session_id) {
-                                                            let client_clone = client.clone();
-                                                            let bot_token_clone = bot_token.clone();
-                                                            tokio::spawn(async move {
-                                                                let action_url = format!("https://api.telegram.org/bot{}/sendChatAction", bot_token_clone);
-                                                                let body = serde_json::json!({"chat_id": chat_id, "action": "typing"});
-                                                                let _ = client_clone
-                                                                    .post(&action_url)
-                                                                    .json(&body)
-                                                                    .timeout(std::time::Duration::from_secs(10))
-                                                                    .send()
-                                                                    .await;
-                                                            });
-                                                        }
+                                                match adapter_template.convert_incoming_with_cache(update).await {
+                                                    Ok(messages) => {
+                                                        for msg in messages {
+                                                            let thread_id = msg.raw.as_ref()
+                                                                .and_then(|r| r.get("thread_id"))
+                                                                .and_then(|v| v.as_i64());
 
-                                                        let _ = sender.send(PlatformEvent::Incoming(msg));
+                                                            if let Ok(chat_id) = adapter_template.chat_id_from_session(msg.session_id) {
+                                                                let client_clone = client.clone();
+                                                                let bot_token_clone = bot_token.clone();
+                                                                tokio::spawn(async move {
+                                                                    let action_url = format!("https://api.telegram.org/bot{}/sendChatAction", bot_token_clone);
+                                                                    let mut body = serde_json::json!({"chat_id": chat_id, "action": "typing"});
+                                                                    if let Some(tid) = thread_id {
+                                                                        body["message_thread_id"] = serde_json::json!(tid);
+                                                                    }
+                                                                    let _ = client_clone
+                                                                        .post(&action_url)
+                                                                        .json(&body)
+                                                                        .timeout(std::time::Duration::from_secs(10))
+                                                                        .send()
+                                                                        .await;
+                                                                });
+                                                            }
+
+                                                            let _ = sender.send(PlatformEvent::Incoming(msg));
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        warn!("[telegram] Error converting incoming update: {:?}", e);
                                                     }
                                                 }
                                             }
@@ -918,7 +1336,12 @@ impl PlatformAdapter for TelegramAdapter {
                             }
                         }
                         Err(e) => {
-                            error!("[telegram] Telegram long polling network error: {}", e);
+                            let stalled_dur = Instant::now().duration_since(*last_poll_time.read().await);
+                            if stalled_dur > std::time::Duration::from_secs(timeout + 30) {
+                                warn!("[telegram] Polling stall watchdog triggered: request exceeded timeout+30s ({:?}). Backing off and restarting connection...", stalled_dur);
+                            } else {
+                                error!("[telegram] Telegram long polling network error: {}", e);
+                            }
                             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         }
                     }
@@ -948,7 +1371,7 @@ impl PlatformAdapter for TelegramAdapter {
             limiter.acquire().await?;
         }
 
-        let chat_id = self.chat_id_from_session(msg.session_id)?;
+        let (chat_id, thread_id) = self.chat_and_thread_from_session(msg.session_id, &msg.metadata)?;
 
         match &msg.content {
             MessageContent::Text { text } => {
@@ -958,7 +1381,7 @@ impl PlatformAdapter for TelegramAdapter {
 
                 for (idx, chunk) in chunks.iter().enumerate() {
                     let chunk_reply_to = if idx == 0 { reply_to_id } else { None };
-                    let sent = self.send_chunk_with_fallback(chat_id, chunk, chunk_reply_to).await?;
+                    let sent = self.send_chunk_with_fallback_and_thread(chat_id, thread_id, chunk, chunk_reply_to).await?;
                     last_message_id = Some(sent.message_id);
                 }
 
@@ -973,6 +1396,7 @@ impl PlatformAdapter for TelegramAdapter {
             MessageContent::Image { url, caption } => {
                 let req = SendPhotoRequest {
                     chat_id,
+                    message_thread_id: thread_id,
                     photo: url.clone(),
                     caption: caption.clone(),
                     parse_mode: Some("HTML".to_string()),
@@ -988,6 +1412,7 @@ impl PlatformAdapter for TelegramAdapter {
                             let plain_caption = caption.as_deref().map(strip_html_tags);
                             let plain_req = SendPhotoRequest {
                                 chat_id,
+                                message_thread_id: thread_id,
                                 photo: url.clone(),
                                 caption: plain_caption,
                                 parse_mode: None,
@@ -1012,6 +1437,7 @@ impl PlatformAdapter for TelegramAdapter {
             MessageContent::File { url, .. } => {
                 let req = SendDocumentRequest {
                     chat_id,
+                    message_thread_id: thread_id,
                     document: url.clone(),
                     caption: None,
                     reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
@@ -1051,6 +1477,256 @@ impl Default for TelegramAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_forum_topic_session_id_determinism_and_uniqueness() {
+        let adapter = TelegramAdapter::new();
+        let chat = TelegramChat {
+            id: -1001234567890,
+            chat_type: "supergroup".to_string(),
+            title: Some("Test Forum".to_string()),
+            username: None,
+            first_name: None,
+            last_name: None,
+            is_forum: Some(true),
+        };
+
+        // Same thread produces identical deterministic UUID
+        let uuid_t10_a = adapter.session_id_from_chat(&chat, Some(10));
+        let uuid_t10_b = adapter.session_id_from_chat(&chat, Some(10));
+        assert_eq!(uuid_t10_a, uuid_t10_b);
+
+        // Different threads produce different UUIDs
+        let uuid_t20 = adapter.session_id_from_chat(&chat, Some(20));
+        assert_ne!(uuid_t10_a, uuid_t20);
+
+        // None thread produces different UUID from thread 10
+        let uuid_none = adapter.session_id_from_chat(&chat, None);
+        assert_ne!(uuid_t10_a, uuid_none);
+
+        // Verification of chat_id and thread_id recovery from UUID
+        assert_eq!(adapter.chat_id_from_session(uuid_t10_a).unwrap(), -1001234567890);
+        assert_eq!(adapter.thread_id_from_session(uuid_t10_a), Some(10));
+        assert_eq!(adapter.thread_id_from_session(uuid_t20), Some(20));
+        assert_eq!(adapter.thread_id_from_session(uuid_none), None);
+    }
+
+    #[test]
+    fn test_group_mention_filtering() {
+        let bot = TelegramUser {
+            id: 123456,
+            is_bot: true,
+            first_name: "Hermes Bot".to_string(),
+            last_name: None,
+            username: Some("HermesBot".to_string()),
+            language_code: None,
+        };
+
+        let group_chat = TelegramChat {
+            id: -100987654321,
+            chat_type: "supergroup".to_string(),
+            title: Some("Devs Group".to_string()),
+            username: None,
+            first_name: None,
+            last_name: None,
+            is_forum: None,
+        };
+
+        let private_chat = TelegramChat {
+            id: 555666777,
+            chat_type: "private".to_string(),
+            title: None,
+            username: Some("alice".to_string()),
+            first_name: Some("Alice".to_string()),
+            last_name: None,
+            is_forum: None,
+        };
+
+        // 1. Private DM message -> always accepted
+        let dm_msg = TelegramMessage {
+            message_id: 1,
+            from: None,
+            chat: private_chat,
+            date: 1700000000,
+            message_thread_id: None,
+            is_topic_message: None,
+            text: Some("hello bot in dm".to_string()),
+            entities: None,
+            caption: None,
+            caption_entities: None,
+            photo: None,
+            document: None,
+            audio: None,
+            voice: None,
+            video: None,
+            sticker: None,
+            location: None,
+            contact: None,
+            reply_to_message: None,
+        };
+        assert!(TelegramAdapter::should_process_message(&dm_msg, Some(&bot)));
+
+        // 2. Group message without mention -> ignored
+        let group_plain_msg = TelegramMessage {
+            message_id: 2,
+            from: None,
+            chat: group_chat.clone(),
+            date: 1700000000,
+            message_thread_id: None,
+            is_topic_message: None,
+            text: Some("random group chatter".to_string()),
+            entities: None,
+            caption: None,
+            caption_entities: None,
+            photo: None,
+            document: None,
+            audio: None,
+            voice: None,
+            video: None,
+            sticker: None,
+            location: None,
+            contact: None,
+            reply_to_message: None,
+        };
+        assert!(!TelegramAdapter::should_process_message(&group_plain_msg, Some(&bot)));
+
+        // 3. Group command (/status) -> accepted
+        let group_cmd_msg = TelegramMessage {
+            message_id: 3,
+            from: None,
+            chat: group_chat.clone(),
+            date: 1700000000,
+            message_thread_id: None,
+            is_topic_message: None,
+            text: Some("/status".to_string()),
+            entities: None,
+            caption: None,
+            caption_entities: None,
+            photo: None,
+            document: None,
+            audio: None,
+            voice: None,
+            video: None,
+            sticker: None,
+            location: None,
+            contact: None,
+            reply_to_message: None,
+        };
+        assert!(TelegramAdapter::should_process_message(&group_cmd_msg, Some(&bot)));
+
+        // 4. Group message mentioning @HermesBot -> accepted
+        let group_mention_msg = TelegramMessage {
+            message_id: 4,
+            from: None,
+            chat: group_chat.clone(),
+            date: 1700000000,
+            message_thread_id: None,
+            is_topic_message: None,
+            text: Some("Hey @HermesBot please help".to_string()),
+            entities: Some(vec![TelegramMessageEntity {
+                entity_type: "mention".to_string(),
+                offset: 4,
+                length: 10,
+                url: None,
+                user: None,
+                language: None,
+                custom_emoji_id: None,
+            }]),
+            caption: None,
+            caption_entities: None,
+            photo: None,
+            document: None,
+            audio: None,
+            voice: None,
+            video: None,
+            sticker: None,
+            location: None,
+            contact: None,
+            reply_to_message: None,
+        };
+        assert!(TelegramAdapter::should_process_message(&group_mention_msg, Some(&bot)));
+
+        // 5. Group message replying to bot -> accepted
+        let reply_to_bot_msg = TelegramMessage {
+            message_id: 5,
+            from: None,
+            chat: group_chat.clone(),
+            date: 1700000000,
+            message_thread_id: None,
+            is_topic_message: None,
+            text: Some("Yes I agree".to_string()),
+            entities: None,
+            caption: None,
+            caption_entities: None,
+            photo: None,
+            document: None,
+            audio: None,
+            voice: None,
+            video: None,
+            sticker: None,
+            location: None,
+            contact: None,
+            reply_to_message: Some(Box::new(TelegramMessage {
+                message_id: 100,
+                from: Some(bot.clone()),
+                chat: group_chat.clone(),
+                date: 1700000000,
+                message_thread_id: None,
+                is_topic_message: None,
+                text: Some("I am bot response".to_string()),
+                entities: None,
+                caption: None,
+                caption_entities: None,
+                photo: None,
+                document: None,
+                audio: None,
+                voice: None,
+                video: None,
+                sticker: None,
+                location: None,
+                contact: None,
+                reply_to_message: None,
+            })),
+        };
+        assert!(TelegramAdapter::should_process_message(&reply_to_bot_msg, Some(&bot)));
+    }
+
+    #[test]
+    fn test_telegram_file_deserialization_and_download_url() {
+        let json = r#"{
+            "file_id": "BAACAgIAAxkBAAIBYw...",
+            "file_unique_id": "AQADu7cxG...",
+            "file_size": 12345,
+            "file_path": "photos/file_42.jpg"
+        }"#;
+
+        let file: TelegramFile = serde_json::from_str(json).expect("Deserialize TelegramFile");
+        assert_eq!(file.file_id, "BAACAgIAAxkBAAIBYw...");
+        assert_eq!(file.file_path.as_deref(), Some("photos/file_42.jpg"));
+        assert_eq!(file.file_size, Some(12345));
+
+        let mut adapter = TelegramAdapter::new();
+        adapter.base.config = Some(TelegramConfig {
+            bot_token: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11".to_string(),
+            webhook_url: None,
+            allowed_updates: vec![],
+            drop_pending_updates: false,
+            timeout_secs: 30,
+            base: BasePlatformConfig {
+                enabled: true,
+                rate_limit: None,
+                webhook: None,
+                custom: serde_json::Value::Null,
+            },
+        });
+
+        let download_url = adapter.download_url(file.file_path.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            download_url,
+            "https://api.telegram.org/file/bot123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/photos/file_42.jpg"
+        );
+    }
+
     #[test]
     fn test_inline_keyboard_serialization() {
         let btn1 = InlineKeyboardButton::new("⭐ 9Router Gateway", "mp:9router");
@@ -1074,7 +1750,6 @@ mod tests {
         assert_eq!(keyboard[1][0]["text"], "✗ Cancel");
         assert_eq!(keyboard[1][0]["callback_data"], "mx:cancel");
     }
-
 
     #[test]
     fn test_edit_message_text_request_serialization() {
