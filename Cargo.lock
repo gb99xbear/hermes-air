@@ -1541,6 +1541,7 @@ dependencies = [
  "rustyline",
  "tokio 1.54.1",
  "tokio-util 0.7.20",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "uuid",

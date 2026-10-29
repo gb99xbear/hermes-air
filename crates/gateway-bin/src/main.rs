@@ -1,3 +1,4 @@
+pub mod setup;
 // Hermes Air - Main Binary (CLI & Gateway)
 use hermes_config::{ConfigLoader, LogFormat, LogOutput, LoggingConfig};
 use hermes_gateway_core::{commands::parse_command, Gateway, TurnEvent};
@@ -44,6 +45,11 @@ pub enum Commands {
     },
     /// Run multi-platform gateway daemon
     Gateway,
+    /// Interactive setup wizard for models, agent settings, tools, and messaging platforms
+    Setup {
+        #[arg(help = "Optional setup section: model, agent, tools, gateway")]
+        section: Option<String>,
+    },
 }
 
 /// Rotating log file writer. Rotates the current file into `.1`, `.2`, ... up to
@@ -437,6 +443,11 @@ async fn run_interactive_chat(
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Run setup wizard if requested
+    if let Some(Commands::Setup { ref section }) = cli.command {
+        return setup::run_setup_wizard(&cli.config, section.as_deref());
+    }
+
     // Check if running interactive or oneshot mode to quiet the file/console logging
     let is_interactive = matches!(cli.command, None | Some(Commands::Chat { .. }));
     let is_oneshot = cli.query.is_some();
@@ -461,6 +472,9 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. Dispatch based on subcommand
     match cli.command {
+        Some(Commands::Setup { ref section }) => {
+            setup::run_setup_wizard(&cli.config, section.as_deref())
+        }
         Some(Commands::Gateway) => {
             gateway.run().await
         }
@@ -517,6 +531,20 @@ mod tests {
             cli.command,
             Some(Commands::Chat {
                 model: Some("custom-model".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn test_cli_parsing_setup_subcommand() {
+        let cli = Cli::try_parse_from(&["hermes-air", "setup"]).unwrap();
+        assert_eq!(cli.command, Some(Commands::Setup { section: None }));
+
+        let cli_sec = Cli::try_parse_from(&["hermes-air", "setup", "model"]).unwrap();
+        assert_eq!(
+            cli_sec.command,
+            Some(Commands::Setup {
+                section: Some("model".to_string())
             })
         );
     }

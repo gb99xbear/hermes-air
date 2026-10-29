@@ -18,3 +18,4 @@ clap = { workspace = true }
 rustyline = "19.0.0"
 uuid.workspace = true
 tokio-util = "0.7.20"
+toml = { workspace = true }
