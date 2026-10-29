@@ -22,6 +22,10 @@ pub trait SessionStore: Send + Sync {
     async fn append_message(&self, session_id: Uuid, message: ChatMessage) -> Result<(), SessionStoreError>;
     async fn get_messages(&self, session_id: Uuid, limit: Option<usize>) -> Result<Vec<ChatMessage>, SessionStoreError>;
     async fn clear_messages(&self, session_id: Uuid) -> Result<(), SessionStoreError>;
+
+    // Session model override persistence (1-to-1 matching Python gateway/session.py)
+    async fn set_model_override(&self, session_id: Uuid, model: Option<String>) -> Result<(), SessionStoreError>;
+    async fn get_model_override(&self, session_id: Uuid) -> Result<Option<String>, SessionStoreError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +47,7 @@ pub struct RedisSessionStore {
     conn: ConnectionManager,
     local_cache: Arc<DashMap<Uuid, Session>>,
     local_message_cache: Arc<DashMap<Uuid, Vec<ChatMessage>>>,
+    local_model_override_cache: Arc<DashMap<Uuid, String>>,
     max_cache_size: usize,
     key_prefix: String,
     default_ttl: Duration,
@@ -63,6 +68,7 @@ impl RedisSessionStore {
             conn,
             local_cache: Arc::new(DashMap::new()),
             local_message_cache: Arc::new(DashMap::new()),
+            local_model_override_cache: Arc::new(DashMap::new()),
             max_cache_size,
             key_prefix: key_prefix.unwrap_or_else(|| "hermes:session:".to_string()),
             default_ttl: Duration::from_secs(default_ttl_secs),
@@ -75,6 +81,10 @@ impl RedisSessionStore {
 
     fn messages_key(&self, id: Uuid) -> String {
         format!("{}messages:{}", self.key_prefix, id)
+    }
+
+    fn model_override_key(&self, id: Uuid) -> String {
+        format!("{}model_override:{}", self.key_prefix, id)
     }
 
     fn profile_index_key(&self, profile: &str) -> String {
@@ -95,6 +105,7 @@ impl RedisSessionStore {
             for key in to_remove {
                 self.local_cache.remove(&key);
                 self.local_message_cache.remove(&key);
+                self.local_model_override_cache.remove(&key);
             }
         }
     }
@@ -152,6 +163,7 @@ impl SessionStore for RedisSessionStore {
         let mut conn = self.conn.clone();
         let key = self.key(id);
         let msg_key = self.messages_key(id);
+        let model_key = self.model_override_key(id);
         
         // Get session first to update indexes
         if let Some(session) = self.get(id).await? {
@@ -164,8 +176,10 @@ impl SessionStore for RedisSessionStore {
         
         conn.del::<_, ()>(&key).await?;
         conn.del::<_, ()>(&msg_key).await?;
+        conn.del::<_, ()>(&model_key).await?;
         self.local_cache.remove(&id);
         self.local_message_cache.remove(&id);
+        self.local_model_override_cache.remove(&id);
         
         Ok(())
     }
@@ -210,7 +224,7 @@ impl SessionStore for RedisSessionStore {
         let mut sessions = Vec::new();
         for key in keys {
             if let Some(id_str) = key.strip_prefix(&self.key_prefix) {
-                if id_str.starts_with("messages:") || id_str.starts_with("profile:") || id_str.starts_with("platform:") {
+                if id_str.starts_with("messages:") || id_str.starts_with("model_override:") || id_str.starts_with("profile:") || id_str.starts_with("platform:") {
                     continue;
                 }
                 if let Ok(id) = Uuid::parse_str(id_str) {
@@ -256,6 +270,7 @@ impl SessionStore for RedisSessionStore {
         for key in expired_keys {
             self.local_cache.remove(&key);
             self.local_message_cache.remove(&key);
+            self.local_model_override_cache.remove(&key);
         }
         
         Ok(cleaned)
@@ -308,7 +323,39 @@ impl SessionStore for RedisSessionStore {
         let key = self.messages_key(session_id);
         let _: () = conn.del(&key).await?;
         self.local_message_cache.remove(&session_id);
+        // Also clear model override on reset/clear
+        self.set_model_override(session_id, None).await?;
         Ok(())
+    }
+
+    async fn set_model_override(&self, session_id: Uuid, model: Option<String>) -> Result<(), SessionStoreError> {
+        let mut conn = self.conn.clone();
+        let key = self.model_override_key(session_id);
+        match model {
+            Some(m) => {
+                conn.set_ex::<_, _, ()>(&key, &m, self.default_ttl.as_secs()).await?;
+                self.local_model_override_cache.insert(session_id, m);
+            }
+            None => {
+                conn.del::<_, ()>(&key).await?;
+                self.local_model_override_cache.remove(&session_id);
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_model_override(&self, session_id: Uuid) -> Result<Option<String>, SessionStoreError> {
+        if let Some(m) = self.local_model_override_cache.get(&session_id) {
+            return Ok(Some(m.clone()));
+        }
+
+        let mut conn = self.conn.clone();
+        let key = self.model_override_key(session_id);
+        let data: Option<String> = conn.get(&key).await?;
+        if let Some(ref m) = data {
+            self.local_model_override_cache.insert(session_id, m.clone());
+        }
+        Ok(data)
     }
 }
 
@@ -319,6 +366,7 @@ pub struct MemorySessionStore {
     profile_index: Arc<DashMap<String, Vec<Uuid>>>,
     platform_index: Arc<DashMap<Platform, Vec<Uuid>>>,
     messages: Arc<DashMap<Uuid, Vec<ChatMessage>>>,
+    model_overrides: Arc<DashMap<Uuid, String>>,
 }
 
 impl MemorySessionStore {
@@ -328,6 +376,7 @@ impl MemorySessionStore {
             profile_index: Arc::new(DashMap::new()),
             platform_index: Arc::new(DashMap::new()),
             messages: Arc::new(DashMap::new()),
+            model_overrides: Arc::new(DashMap::new()),
         }
     }
 }
@@ -355,6 +404,7 @@ impl SessionStore for MemorySessionStore {
             }
         }
         self.messages.remove(&id);
+        self.model_overrides.remove(&id);
         Ok(())
     }
 
@@ -415,7 +465,24 @@ impl SessionStore for MemorySessionStore {
 
     async fn clear_messages(&self, session_id: Uuid) -> Result<(), SessionStoreError> {
         self.messages.remove(&session_id);
+        self.model_overrides.remove(&session_id);
         Ok(())
+    }
+
+    async fn set_model_override(&self, session_id: Uuid, model: Option<String>) -> Result<(), SessionStoreError> {
+        match model {
+            Some(m) => {
+                self.model_overrides.insert(session_id, m);
+            }
+            None => {
+                self.model_overrides.remove(&session_id);
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_model_override(&self, session_id: Uuid) -> Result<Option<String>, SessionStoreError> {
+        Ok(self.model_overrides.get(&session_id).map(|v| v.clone()))
     }
 }
 
@@ -542,5 +609,49 @@ mod tests {
 
         store.delete(session_id).await.unwrap();
         assert_eq!(store.get_messages(session_id, None).await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_session_model_override_persistence() {
+        let store = MemorySessionStore::new();
+        let session_a = Uuid::new_v4();
+        let session_b = Uuid::new_v4();
+
+        // Initially None
+        assert_eq!(store.get_model_override(session_a).await.unwrap(), None);
+        assert_eq!(store.get_model_override(session_b).await.unwrap(), None);
+
+        // Set override for session_a
+        store.set_model_override(session_a, Some("anthropic/claude-3-opus".to_string())).await.unwrap();
+
+        // Verify session_a has override, session_b remains independent (None)
+        assert_eq!(store.get_model_override(session_a).await.unwrap(), Some("anthropic/claude-3-opus".to_string()));
+        assert_eq!(store.get_model_override(session_b).await.unwrap(), None);
+
+        // Set override for session_b
+        store.set_model_override(session_b, Some("openai/gpt-4o".to_string())).await.unwrap();
+        assert_eq!(store.get_model_override(session_a).await.unwrap(), Some("anthropic/claude-3-opus".to_string()));
+        assert_eq!(store.get_model_override(session_b).await.unwrap(), Some("openai/gpt-4o".to_string()));
+
+        // Clear override for session_a using None
+        store.set_model_override(session_a, None).await.unwrap();
+        assert_eq!(store.get_model_override(session_a).await.unwrap(), None);
+        assert_eq!(store.get_model_override(session_b).await.unwrap(), Some("openai/gpt-4o".to_string()));
+
+        // Deleting session_b also clears its model override
+        store.delete(session_b).await.unwrap();
+        assert_eq!(store.get_model_override(session_b).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_clear_messages_also_clears_model_override() {
+        let store = MemorySessionStore::new();
+        let session_id = Uuid::new_v4();
+
+        store.set_model_override(session_id, Some("deepseek/deepseek-chat".to_string())).await.unwrap();
+        assert_eq!(store.get_model_override(session_id).await.unwrap(), Some("deepseek/deepseek-chat".to_string()));
+
+        store.clear_messages(session_id).await.unwrap();
+        assert_eq!(store.get_model_override(session_id).await.unwrap(), None);
     }
 }

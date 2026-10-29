@@ -745,3 +745,53 @@ async fn test_error_recovery_zero_fake_echo() {
     assert!(error_reply.contains("Sila guna arahan /model untuk tukar model."));
     assert!(!error_reply.contains("Echo:"));
 }
+
+#[tokio::test]
+async fn test_multi_session_model_override_independence() {
+    use hermes_session_store::{MemorySessionStore, SessionStore};
+    use hermes_protocol::Uuid;
+
+    let store = MemorySessionStore::new();
+    let session_a = Uuid::new_v4();
+    let session_b = Uuid::new_v4();
+    let default_model = "gemini-2.5-flash";
+
+    // 1. Initial resolution without overrides falls back to default_model
+    let model_a_initial = store.get_model_override(session_a).await.unwrap()
+        .unwrap_or_else(|| default_model.to_string());
+    let model_b_initial = store.get_model_override(session_b).await.unwrap()
+        .unwrap_or_else(|| default_model.to_string());
+    assert_eq!(model_a_initial, "gemini-2.5-flash");
+    assert_eq!(model_b_initial, "gemini-2.5-flash");
+
+    // 2. Set model override for Session A to Claude 3.7 Sonnet
+    store.set_model_override(session_a, Some("freet/claude-3-7-sonnet".to_string())).await.unwrap();
+
+    // Verify Session A uses Claude, while Session B independently remains default (no leakage!)
+    let model_a_after = store.get_model_override(session_a).await.unwrap()
+        .unwrap_or_else(|| default_model.to_string());
+    let model_b_after = store.get_model_override(session_b).await.unwrap()
+        .unwrap_or_else(|| default_model.to_string());
+    assert_eq!(model_a_after, "freet/claude-3-7-sonnet");
+    assert_eq!(model_b_after, "gemini-2.5-flash");
+
+    // 3. Set model override for Session B to GPT-4o
+    store.set_model_override(session_b, Some("openai/gpt-4o".to_string())).await.unwrap();
+
+    // Verify both sessions have distinct, isolated models
+    let model_a_final = store.get_model_override(session_a).await.unwrap()
+        .unwrap_or_else(|| default_model.to_string());
+    let model_b_final = store.get_model_override(session_b).await.unwrap()
+        .unwrap_or_else(|| default_model.to_string());
+    assert_eq!(model_a_final, "freet/claude-3-7-sonnet");
+    assert_eq!(model_b_final, "openai/gpt-4o");
+
+    // 4. Reset Session A (/clear or /reset)
+    store.set_model_override(session_a, None).await.unwrap();
+    let model_a_reset = store.get_model_override(session_a).await.unwrap()
+        .unwrap_or_else(|| default_model.to_string());
+    let model_b_retained = store.get_model_override(session_b).await.unwrap()
+        .unwrap_or_else(|| default_model.to_string());
+    assert_eq!(model_a_reset, "gemini-2.5-flash");
+    assert_eq!(model_b_retained, "openai/gpt-4o");
+}

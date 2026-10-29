@@ -24,7 +24,7 @@ use hermes_relay::{WsRelayConfig, WsRelayServer};
 use hermes_session_store::{SessionStore, SessionStoreFactory};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 #[allow(dead_code)]
@@ -38,7 +38,6 @@ pub struct Gateway {
     prompt_assembler: Arc<PromptAssembler>,
     event_tx: mpsc::UnboundedSender<PlatformEvent>,
     event_rx: Option<mpsc::UnboundedReceiver<PlatformEvent>>,
-    active_model_override: Arc<RwLock<Option<String>>>,
 }
 
 impl Gateway {
@@ -108,7 +107,6 @@ impl Gateway {
 
         let tool_registry = Arc::new(ToolRegistry::new());
         let prompt_assembler = Arc::new(PromptAssembler::new());
-        let active_model_override = Arc::new(RwLock::new(None));
 
         Ok(Self {
             config,
@@ -120,7 +118,6 @@ impl Gateway {
             prompt_assembler,
             event_tx,
             event_rx: Some(event_rx),
-            active_model_override,
         })
     }
 
@@ -178,7 +175,6 @@ impl Gateway {
         let tool_registry = self.tool_registry.clone();
         let prompt_assembler = self.prompt_assembler.clone();
         let session_store = self.session_store.clone();
-        let active_model_override = self.active_model_override.clone();
         let config_arc = Arc::new(self.config.clone());
 
         let default_profile = self
@@ -204,7 +200,6 @@ impl Gateway {
                             &session_store,
                             &default_profile,
                             &event_loop_tg,
-                            &active_model_override,
                         )
                         .await;
                     }
@@ -236,7 +231,6 @@ impl Gateway {
         session_store: &Arc<Box<dyn SessionStore>>,
         profile: &Option<hermes_config::ProfileConfig>,
         tg_adapter: &Option<Arc<TelegramAdapter>>,
-        active_model_override: &Arc<RwLock<Option<String>>>,
     ) {
         let (prompt_text, incoming_id) = match &msg.content {
             MessageContent::Text { text } => (text.clone(), msg.id),
@@ -253,10 +247,16 @@ impl Gateway {
             .map(|p| p.model.as_str())
             .unwrap_or("gemini-2.5-flash");
 
-        let active_model = {
-            let guard = active_model_override.read().await;
-            guard.clone().unwrap_or_else(|| default_model.to_string())
+        // Query session-scoped model override from session store (1-to-1 matching Python gateway/session.py)
+        let session_override = match session_store.get_model_override(msg.session_id).await {
+            Ok(ov) => ov,
+            Err(e) => {
+                warn!("Failed to query model override for session {}: {:?}", msg.session_id, e);
+                None
+            }
         };
+
+        let active_model = session_override.unwrap_or_else(|| default_model.to_string());
 
         let profile_name = profile
             .as_ref()
@@ -280,9 +280,12 @@ impl Gateway {
 
             let reply_text = match cmd {
                 SlashCommand::Model(Some(ref target)) => {
-                    let mut guard = active_model_override.write().await;
-                    *guard = Some(target.trim().to_string());
-                    info!("Active model dynamically switched to: {}", target.trim());
+                    let trimmed_target = target.trim().to_string();
+                    if let Err(e) = session_store.set_model_override(msg.session_id, Some(trimmed_target.clone())).await {
+                        warn!("Failed to persist model override for session {}: {:?}", msg.session_id, e);
+                    } else {
+                        info!("Session {} active model dynamically switched to: {}", msg.session_id, trimmed_target);
+                    }
                     handle_model(&Some(target.clone()), &active_model, |_| Ok(()))
                 }
                 other => handle_command(other, &ctx, |_| Ok(())),
@@ -298,6 +301,11 @@ impl Gateway {
                     warn!("Failed to clear conversation history for session {} on /clear: {:?}", msg.session_id, e);
                 } else {
                     info!("Cleared conversation turn history for session {}", msg.session_id);
+                }
+                if let Err(e) = session_store.set_model_override(msg.session_id, None).await {
+                    warn!("Failed to clear model override for session {} on /clear: {:?}", msg.session_id, e);
+                } else {
+                    info!("Cleared model override for session {}", msg.session_id);
                 }
             }
 
