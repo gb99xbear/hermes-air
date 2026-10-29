@@ -183,7 +183,7 @@ impl Gateway {
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
-        info!("Starting Hermes Gateway");
+        info!("Starting Hermes Air Gateway");
 
         // Start relay server
         let relay = self.relay_server.clone();
@@ -274,7 +274,7 @@ impl Gateway {
             }
         });
 
-        info!("Hermes Gateway running");
+        info!("Hermes Air Gateway running");
 
         // Keep running until shutdown signal
         tokio::signal::ctrl_c().await?;
