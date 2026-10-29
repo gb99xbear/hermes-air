@@ -9,6 +9,7 @@ hermes-config = { path = "../config" }
 hermes-relay = { path = "../relay" }
 hermes-session-store = { path = "../session-store" }
 hermes-protocol = { path = "../protocol" }
+hermes-skills = { path = "../skills" }
 hermes-platform-telegram = { path = "../platform-telegram" }
 hermes-platform-adapter = { path = "../platform-adapter" }
 reqwest = { workspace = true }

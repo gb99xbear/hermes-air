@@ -87,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 7);
+    assert_eq!(defs.len(), 9);
 
     let names: Vec<&str> = defs
         .iter()
@@ -101,6 +101,8 @@ async fn test_tool_registry_get_definitions() {
     assert!(names.contains(&"search_files"));
     assert!(names.contains(&"web_search"));
     assert!(names.contains(&"web_extract"));
+    assert!(names.contains(&"skills_list"));
+    assert!(names.contains(&"skill_view"));
 
     for def in &defs {
         assert_eq!(def.get("type").and_then(|t| t.as_str()), Some("function"));
@@ -1000,7 +1002,7 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 7);
+    assert_eq!(defs.len(), 9);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1009,6 +1011,8 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
 
     assert!(names.contains(&"web_search"));
     assert!(names.contains(&"web_extract"));
+    assert!(names.contains(&"skills_list"));
+    assert!(names.contains(&"skill_view"));
 
     // 1. SSRF rejection in execute(web_extract)
     let call_ssrf = ToolCall {
@@ -1042,4 +1046,33 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let val_search: serde_json::Value = serde_json::from_str(&res_search.output).unwrap();
     assert_eq!(val_search.get("success").and_then(|s| s.as_bool()), Some(true));
     assert!(val_search.get("data").is_some());
+}
+
+#[tokio::test]
+async fn test_tool_registry_skills_list_and_view() {
+    let registry = ToolRegistry::new();
+
+    // 1. Test skills_list call
+    let call_list = ToolCall {
+        id: "call_skills_1".to_string(),
+        name: "skills_list".to_string(),
+        arguments: json!({}),
+    };
+    let res_list = registry.execute(&call_list).await;
+    assert!(res_list.success);
+    let parsed_list: serde_json::Value = serde_json::from_str(&res_list.output).unwrap();
+    assert_eq!(parsed_list.get("success").and_then(|v| v.as_bool()), Some(true));
+
+    // 2. Test skill_view call with non-existent skill
+    let call_view = ToolCall {
+        id: "call_skills_2".to_string(),
+        name: "skill_view".to_string(),
+        arguments: json!({
+            "name": "non-existent-skill-xyz"
+        }),
+    };
+    let res_view = registry.execute(&call_view).await;
+    assert!(!res_view.success);
+    let parsed_view: serde_json::Value = serde_json::from_str(&res_view.output).unwrap();
+    assert_eq!(parsed_view.get("success").and_then(|v| v.as_bool()), Some(false));
 }

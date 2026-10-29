@@ -1,3 +1,5 @@
+use hermes_skills::SkillRegistry;
+use std::sync::Arc;
 use crate::fuzzy_match::{
     format_no_match_hint, fuzzy_find_and_replace, is_already_applied, unified_diff,
 };
@@ -58,7 +60,9 @@ pub struct ReadResultPayload {
     pub truncated_lines: Option<bool>,
 }
 
-pub struct ToolRegistry {}
+pub struct ToolRegistry {
+    pub skill_registry: Arc<SkillRegistry>,
+}
 
 impl Default for ToolRegistry {
     fn default() -> Self {
@@ -68,7 +72,13 @@ impl Default for ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            skill_registry: Arc::new(SkillRegistry::default()),
+        }
+    }
+
+    pub fn with_skill_registry(skill_registry: Arc<SkillRegistry>) -> Self {
+        Self { skill_registry }
     }
 
     pub fn get_definitions(&self) -> Vec<serde_json::Value> {
@@ -275,6 +285,44 @@ impl ToolRegistry {
                     }
                 }
             }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "skills_list",
+                    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "category": {
+                                "type": "string",
+                                "description": "Optional category filter to narrow results"
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "skill_view",
+                    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans')."
+                            },
+                            "file_path": {
+                                "type": "string",
+                                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content."
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                }
+            }),
         ]
     }
 
@@ -288,6 +336,8 @@ impl ToolRegistry {
             "search_files" => self.execute_search_files(call).await,
             "web_search" => self.execute_web_search(call).await,
             "web_extract" => self.execute_web_extract(call).await,
+            "skills_list" => self.execute_skills_list(call).await,
+            "skill_view" => self.execute_skill_view(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown tool: {}", other),
@@ -1040,4 +1090,42 @@ impl ToolRegistry {
         }
     }
 
+
+    async fn execute_skills_list(&self, call: &ToolCall) -> ToolResult {
+        let category = call.arguments.get("category").and_then(|v| v.as_str());
+        let resp = self.skill_registry.skills_list(category).await;
+        let success = resp.success;
+        let output = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
+        ToolResult {
+            tool_call_id: call.id.clone(),
+            output,
+            success,
+        }
+    }
+
+    async fn execute_skill_view(&self, call: &ToolCall) -> ToolResult {
+        let name = match call.arguments.get("name").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => {
+                return ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": "Missing 'name' argument for skill_view"
+                    }).to_string(),
+                    success: false,
+                };
+            }
+        };
+
+        let file_path = call.arguments.get("file_path").and_then(|v| v.as_str());
+        let resp = self.skill_registry.skill_view(name, file_path).await;
+        let success = resp.success;
+        let output = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
+        ToolResult {
+            tool_call_id: call.id.clone(),
+            output,
+            success,
+        }
+    }
 }
