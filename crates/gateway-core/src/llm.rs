@@ -45,7 +45,33 @@ pub struct ChatCompletionRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionResponse {
+    #[serde(default)]
     pub choices: Vec<Choice>,
+    #[serde(default)]
+    pub response: Option<UpstreamResponseWrapper>,
+    #[serde(default)]
+    pub error: Option<UpstreamErrorWrapper>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpstreamResponseWrapper {
+    #[serde(rename = "promptFeedback")]
+    pub prompt_feedback: Option<PromptFeedback>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PromptFeedback {
+    #[serde(rename = "blockReason")]
+    pub block_reason: Option<String>,
+    #[serde(rename = "blockReasonMessage")]
+    pub block_reason_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpstreamErrorWrapper {
+    pub message: Option<String>,
+    #[serde(rename = "type")]
+    pub error_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -89,7 +115,7 @@ impl LlmClient {
 
         Self {
             client,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url: base_url.trim_end_matches("/").to_string(),
             api_key,
             default_headers: HashMap::new(),
         }
@@ -122,7 +148,7 @@ impl LlmClient {
 
         Self {
             client,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url: base_url.trim_end_matches("/").to_string(),
             api_key,
             default_headers: profile.default_headers.clone(),
         }
@@ -165,13 +191,27 @@ impl LlmClient {
         };
 
         let response = self.send_completion(&req_body).await?;
-        let choice = response
-            .choices
-            .into_iter()
-            .next()
-            .context("LLM returned no choices in response")?;
+        if let Some(choice) = response.choices.into_iter().next() {
+            return Ok(choice.message.content.unwrap_or_default());
+        }
 
-        Ok(choice.message.content.unwrap_or_default())
+        if let Some(ref resp_wrapper) = response.response {
+            if let Some(ref pf) = resp_wrapper.prompt_feedback {
+                let reason = pf.block_reason_message
+                    .as_deref()
+                    .or(pf.block_reason.as_deref())
+                    .unwrap_or("content policy violation");
+                return Ok(format!("⚠️ This request was blocked by upstream safety filters: {}", reason));
+            }
+        }
+
+        if let Some(ref err) = response.error {
+            if let Some(ref msg) = err.message {
+                return Ok(format!("⚠️ Upstream LLM error: {}", msg));
+            }
+        }
+
+        anyhow::bail!("LLM returned no choices in response");
     }
 
     pub async fn chat_completion_with_tools(
@@ -194,22 +234,50 @@ impl LlmClient {
         };
 
         let response = self.send_completion(&req_body).await?;
-        let choice = response
-            .choices
-            .into_iter()
-            .next()
-            .context("LLM returned no choices in response")?;
+        if let Some(choice) = response.choices.into_iter().next() {
+            let msg = choice.message;
+            if let Some(ref calls) = msg.tool_calls {
+                if !calls.is_empty() {
+                    let parsed_calls = calls.iter().map(|c| c.to_tool_call()).collect();
+                    return Ok((msg, ChatResponse::ToolCalls(parsed_calls)));
+                }
+            }
 
-        let msg = choice.message;
-        if let Some(ref calls) = msg.tool_calls {
-            if !calls.is_empty() {
-                let parsed_calls = calls.iter().map(|c| c.to_tool_call()).collect();
-                return Ok((msg, ChatResponse::ToolCalls(parsed_calls)));
+            let text = msg.content.clone().unwrap_or_default();
+            return Ok((msg, ChatResponse::Text(text)));
+        }
+
+        // Handle upstream promptFeedback (Google Gemini / 9Router safety filters)
+        if let Some(ref resp_wrapper) = response.response {
+            if let Some(ref pf) = resp_wrapper.prompt_feedback {
+                let reason = pf.block_reason_message
+                    .as_deref()
+                    .or(pf.block_reason.as_deref())
+                    .unwrap_or("content policy violation");
+                let refusal_text = format!("⚠️ This request was blocked by upstream safety filters: {}", reason);
+                let msg = ChatResponseMessage {
+                    role: "assistant".to_string(),
+                    content: Some(refusal_text.clone()),
+                    tool_calls: None,
+                };
+                return Ok((msg, ChatResponse::Text(refusal_text)));
             }
         }
 
-        let text = msg.content.clone().unwrap_or_default();
-        Ok((msg, ChatResponse::Text(text)))
+        // Handle upstream error wrapper
+        if let Some(ref err) = response.error {
+            if let Some(ref msg) = err.message {
+                let err_text = format!("⚠️ Upstream LLM error: {}. Sila guna arahan /model untuk tukar model.", msg);
+                let chat_msg = ChatResponseMessage {
+                    role: "assistant".to_string(),
+                    content: Some(err_text.clone()),
+                    tool_calls: None,
+                };
+                return Ok((chat_msg, ChatResponse::Text(err_text)));
+            }
+        }
+
+        anyhow::bail!("LLM returned no choices in response");
     }
 
     pub async fn chat_completion_stream(
@@ -271,8 +339,8 @@ impl LlmClient {
                     }
                 };
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(pos) = buffer.find("\n") {
-                    let line = buffer[..pos].trim_end_matches("\r").to_string();
+                while let Some(pos) = buffer.find('\n') {
+                    let line = buffer[..pos].trim_end_matches('\r').to_string();
                     buffer.drain(..=pos);
                     let trimmed = line.trim();
                     if trimmed.is_empty() { continue; }
@@ -343,10 +411,52 @@ impl LlmClient {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_prompt_feedback_deserialization() {
+        let raw_json = r#"{
+            "response": {
+                "promptFeedback": {
+                    "blockReason": "SAFETY",
+                    "blockReasonMessage": "The model refused due to safety policies."
+                }
+            }
+        }"#;
+
+        let res: Result<ChatCompletionResponse, _> = serde_json::from_str(raw_json);
+        assert!(res.is_ok(), "Should successfully deserialize promptFeedback JSON");
+        let parsed = res.unwrap();
+        assert!(parsed.choices.is_empty());
+        assert!(parsed.response.is_some());
+        let pf = parsed.response.unwrap().prompt_feedback.unwrap();
+        assert_eq!(pf.block_reason.as_deref(), Some("SAFETY"));
+        assert_eq!(
+            pf.block_reason_message.as_deref(),
+            Some("The model refused due to safety policies.")
+        );
+    }
+
+    #[test]
+    fn test_upstream_error_wrapper_deserialization() {
+        let raw_json = r#"{
+            "error": {
+                "message": "Resource exhausted / quota limit reached",
+                "type": "rate_limit_exceeded"
+            }
+        }"#;
+
+        let res: Result<ChatCompletionResponse, _> = serde_json::from_str(raw_json);
+        assert!(res.is_ok());
+        let parsed = res.unwrap();
+        assert!(parsed.choices.is_empty());
+        assert!(parsed.error.is_some());
+        let err = parsed.error.unwrap();
+        assert_eq!(err.message.as_deref(), Some("Resource exhausted / quota limit reached"));
+        assert_eq!(err.error_type.as_deref(), Some("rate_limit_exceeded"));
+    }
 
     #[tokio::test]
     async fn test_chat_completion_stream_sse_parsing() {

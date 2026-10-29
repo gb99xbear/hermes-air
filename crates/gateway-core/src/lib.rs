@@ -371,101 +371,103 @@ impl Gateway {
         let mut final_text = String::new();
         let mut streamed_delivery = false;
 
-        while iteration < max_tool_iterations {
-            iteration += 1;
-            info!("Agent loop iteration {}/{}", iteration, max_tool_iterations);
-
-            match llm_client
-                .chat_completion_with_tools(
-                    &active_model,
-                    &messages,
-                    Some(tool_definitions.clone()),
-                    None,
-                    temperature,
-                    max_tokens,
-                )
-                .await
-            {
-                Ok((raw_msg, response)) => {
-                    match response {
-                        ChatResponse::Text(text) => {
-                            let streamed_text = if iteration == 1 && tg_adapter.is_some() && msg.platform == Platform::Telegram {
-                                if let Some(adapter) = tg_adapter {
-                                    if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
-                                        match llm_client
-                                            .chat_completion_stream(&active_model, &messages, temperature, max_tokens)
-                                            .await
-                                        {
-                                            Ok(rx) => {
-                                                info!("Streaming chat response via GatewayStreamConsumer for chat_id: {}", chat_id);
-                                                let mut consumer = GatewayStreamConsumer::new(chat_id);
-                                                let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
-                                                match consumer.consume_stream(rx, adapter, reply_to_id).await {
-                                                    Ok(acc) => {
-                                                        streamed_delivery = true;
-                                                        Some(acc)
-                                                    }
-                                                    Err(e) => {
-                                                        warn!("GatewayStreamConsumer failed: {:?}, falling back to non-streamed text", e);
-                                                        None
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                warn!("Failed to initiate LLM stream: {:?}, falling back to non-streamed text", e);
-                                                None
-                                            }
-                                        }
-                                    } else {
-                                        None
+        // If tool definitions are empty and Telegram adapter is active, stream directly on single call!
+        if tool_definitions.is_empty() && tg_adapter.is_some() && msg.platform == Platform::Telegram {
+            if let Some(adapter) = tg_adapter {
+                if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
+                    match llm_client
+                        .chat_completion_stream(&active_model, &messages, temperature, max_tokens)
+                        .await
+                    {
+                        Ok(rx) => {
+                            info!("Streaming chat response directly via GatewayStreamConsumer for chat_id: {}", chat_id);
+                            let mut consumer = GatewayStreamConsumer::new(chat_id);
+                            let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
+                            match consumer.consume_stream(rx, adapter, reply_to_id).await {
+                                Ok(acc) => {
+                                    streamed_delivery = true;
+                                    final_text = acc.clone();
+                                    let asst_msg = ChatMessage::assistant(acc);
+                                    if let Err(e) = session_store.append_message(msg.session_id, asst_msg).await {
+                                        warn!("Failed to persist assistant message for session {}: {:?}", msg.session_id, e);
                                     }
-                                } else {
-                                    None
                                 }
-                            } else {
-                                None
-                            };
-
-                            let resolved_text = streamed_text.unwrap_or(text);
-                            final_text = resolved_text.clone();
-                            // Persist final assistant response to session store
-                            let asst_msg = ChatMessage::assistant(resolved_text);
-                            if let Err(e) = session_store.append_message(msg.session_id, asst_msg).await {
-                                warn!("Failed to persist assistant message for session {}: {:?}", msg.session_id, e);
+                                Err(e) => {
+                                    warn!("GatewayStreamConsumer failed: {:?}, falling back to non-streamed text", e);
+                                }
                             }
-                            break;
                         }
-                        ChatResponse::ToolCalls(calls) => {
-                            // Append assistant message with tool calls to context and store
-                            let asst_call_msg = ChatMessage {
-                                role: "assistant".to_string(),
-                                content: raw_msg.content,
-                                tool_calls: raw_msg.tool_calls,
-                                tool_call_id: None,
-                            };
-                            if let Err(e) = session_store.append_message(msg.session_id, asst_call_msg.clone()).await {
-                                warn!("Failed to persist assistant tool calls for session {}: {:?}", msg.session_id, e);
-                            }
-                            messages.push(asst_call_msg);
-
-                            // Execute each tool call and append tool result to context and store
-                            for call in calls {
-                                let result = tool_registry.execute(&call).await;
-                                let tool_msg = ChatMessage::tool(result.tool_call_id, result.output);
-                                if let Err(e) = session_store.append_message(msg.session_id, tool_msg.clone()).await {
-                                    warn!("Failed to persist tool result for session {}: {:?}", msg.session_id, e);
-                                }
-                                messages.push(tool_msg);
-                            }
+                        Err(e) => {
+                            error!("Failed to initiate LLM stream: {:?}", e);
+                            final_text = format!("⚠️ Upstream LLM error: {}. Sila guna arahan /model untuk tukar model.", e);
+                            let fallback_msg = ChatMessage::assistant(final_text.clone());
+                            let _ = session_store.append_message(msg.session_id, fallback_msg).await;
                         }
                     }
                 }
-                Err(e) => {
-                    error!("LLM chat completion with tools failed: {}. Falling back to echo.", e);
-                    final_text = format!("Echo: {}", prompt_text);
-                    let fallback_msg = ChatMessage::assistant(final_text.clone());
-                    let _ = session_store.append_message(msg.session_id, fallback_msg).await;
-                    break;
+            }
+        }
+
+        // If not delivered via direct stream, run single-call tool loop
+        if !streamed_delivery && final_text.is_empty() {
+            while iteration < max_tool_iterations {
+                iteration += 1;
+                info!("Agent loop iteration {}/{}", iteration, max_tool_iterations);
+
+                match llm_client
+                    .chat_completion_with_tools(
+                        &active_model,
+                        &messages,
+                        Some(tool_definitions.clone()),
+                        None,
+                        temperature,
+                        max_tokens,
+                    )
+                    .await
+                {
+                    Ok((raw_msg, response)) => {
+                        match response {
+                            ChatResponse::Text(text) => {
+                                final_text = text.clone();
+                                // Persist final assistant response to session store
+                                let asst_msg = ChatMessage::assistant(text);
+                                if let Err(e) = session_store.append_message(msg.session_id, asst_msg).await {
+                                    warn!("Failed to persist assistant message for session {}: {:?}", msg.session_id, e);
+                                }
+                                break;
+                            }
+                            ChatResponse::ToolCalls(calls) => {
+                                // Append assistant message with tool calls to context and store
+                                let asst_call_msg = ChatMessage {
+                                    role: "assistant".to_string(),
+                                    content: raw_msg.content,
+                                    tool_calls: raw_msg.tool_calls,
+                                    tool_call_id: None,
+                                };
+                                if let Err(e) = session_store.append_message(msg.session_id, asst_call_msg.clone()).await {
+                                    warn!("Failed to persist assistant tool calls for session {}: {:?}", msg.session_id, e);
+                                }
+                                messages.push(asst_call_msg);
+
+                                // Execute each tool call and append tool result to context and store
+                                for call in calls {
+                                    let result = tool_registry.execute(&call).await;
+                                    let tool_msg = ChatMessage::tool(result.tool_call_id, result.output);
+                                    if let Err(e) = session_store.append_message(msg.session_id, tool_msg.clone()).await {
+                                        warn!("Failed to persist tool result for session {}: {:?}", msg.session_id, e);
+                                    }
+                                    messages.push(tool_msg);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("LLM chat completion with tools failed: {}", e);
+                        final_text = format!("⚠️ Upstream LLM error: {}. Sila guna arahan /model untuk tukar model.", e);
+                        let fallback_msg = ChatMessage::assistant(final_text.clone());
+                        let _ = session_store.append_message(msg.session_id, fallback_msg).await;
+                        break;
+                    }
                 }
             }
         }

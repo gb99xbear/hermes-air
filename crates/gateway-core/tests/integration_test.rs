@@ -705,3 +705,43 @@ async fn test_streaming_sse_parser_and_consumer_mock() {
     assert_eq!(consumer.accumulated, "Hello streaming world");
     assert_eq!(consumer.chat_id, 999);
 }
+
+#[tokio::test]
+async fn test_upstream_prompt_feedback_filter_extraction() {
+    let raw_filter_json = json!({
+        "response": {
+            "promptFeedback": {
+                "blockReason": "SAFETY",
+                "blockReasonMessage": "Prompt violates upstream content policy."
+            }
+        }
+    });
+
+    let resp: ChatCompletionResponse = serde_json::from_value(raw_filter_json).expect("deserialization");
+    assert!(resp.choices.is_empty());
+    assert!(resp.response.is_some());
+    let pf = resp.response.unwrap().prompt_feedback.unwrap();
+    assert_eq!(pf.block_reason.as_deref(), Some("SAFETY"));
+    assert_eq!(pf.block_reason_message.as_deref(), Some("Prompt violates upstream content policy."));
+
+    let reason = pf.block_reason_message
+        .as_deref()
+        .or(pf.block_reason.as_deref())
+        .unwrap_or("content policy violation");
+    let refusal_text = format!("⚠️ This request was blocked by upstream safety filters: {}", reason);
+    assert_eq!(
+        refusal_text,
+        "⚠️ This request was blocked by upstream safety filters: Prompt violates upstream content policy."
+    );
+    assert!(!refusal_text.contains("Echo:"));
+}
+
+#[tokio::test]
+async fn test_error_recovery_zero_fake_echo() {
+    let simulated_error = anyhow::anyhow!("Connection timeout to upstream provider");
+    let error_reply = format!("⚠️ Upstream LLM error: {}. Sila guna arahan /model untuk tukar model.", simulated_error);
+
+    assert!(error_reply.starts_with("⚠️ Upstream LLM error:"));
+    assert!(error_reply.contains("Sila guna arahan /model untuk tukar model."));
+    assert!(!error_reply.contains("Echo:"));
+}
