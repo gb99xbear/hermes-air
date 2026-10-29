@@ -39,6 +39,7 @@ default_ttl_secs = 86400
 level = "info"
 format = "text"
 output = "stdout"
+file = "hermes-gateway.log"
 max_file_size_mb = 100
 max_files = 5
 
