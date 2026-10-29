@@ -4,6 +4,7 @@ pub mod llm;
 pub mod stream;
 pub mod prompt;
 pub mod providers;
+pub mod fuzzy_match;
 pub mod tools;
 
 pub use commands::{

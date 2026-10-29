@@ -61,7 +61,7 @@ async fn test_tool_registry_file_write_and_read() {
     let write_res = registry.execute(&write_call).await;
     assert_eq!(write_res.tool_call_id, "call_write_1");
     assert!(write_res.success, "File write should succeed: {}", write_res.output);
-    assert!(write_res.output.contains("Successfully wrote"));
+    assert!(write_res.output.contains("bytes_written"));
 
     let read_call = ToolCall {
         id: "call_read_1".to_string(),
@@ -74,10 +74,9 @@ async fn test_tool_registry_file_write_and_read() {
     let read_res = registry.execute(&read_call).await;
     assert_eq!(read_res.tool_call_id, "call_read_1");
     assert!(read_res.success, "File read should succeed: {}", read_res.output);
-    assert_eq!(
-        read_res.output,
-        "Hello Hermes Rust Core! Integration test payload 12345."
-    );
+    let read_json: serde_json::Value = serde_json::from_str(&read_res.output).expect("valid json from read_file");
+    assert_eq!(read_json.get("total_lines").and_then(|v| v.as_u64()), Some(1));
+    assert!(read_json.get("content").and_then(|v| v.as_str()).unwrap().contains("1|Hello Hermes Rust Core!"));
 
     let _ = tokio::fs::remove_file(&test_file).await;
     let _ = tokio::fs::remove_dir(&test_dir).await;
@@ -88,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 3);
+    assert_eq!(defs.len(), 5);
 
     let names: Vec<&str> = defs
         .iter()
@@ -98,6 +97,8 @@ async fn test_tool_registry_get_definitions() {
     assert!(names.contains(&"terminal"));
     assert!(names.contains(&"read_file"));
     assert!(names.contains(&"write_file"));
+    assert!(names.contains(&"patch"));
+    assert!(names.contains(&"search_files"));
 
     for def in &defs {
         assert_eq!(def.get("type").and_then(|t| t.as_str()), Some("function"));
@@ -864,4 +865,129 @@ async fn test_interactive_model_picker_generator_and_callback_routing() {
 
     let persisted = store.get_model_override(session_id).await.unwrap();
     assert_eq!(persisted, Some(chosen_model.to_string()));
+}
+
+#[tokio::test]
+async fn test_tool_registry_patch_execution() {
+    let registry = ToolRegistry::new();
+    let test_dir = std::env::temp_dir().join("hermes_patch_test");
+    let test_file = test_dir.join("sample.rs");
+    let file_path_str = test_file.to_str().expect("Valid path");
+
+    let _ = tokio::fs::create_dir_all(&test_dir).await;
+    let initial_content = "fn main() {\n    let x = 10;\n    println!(\"{}\", x);\n}\n";
+    tokio::fs::write(&test_file, initial_content).await.unwrap();
+
+    let patch_call = ToolCall {
+        id: "call_patch_1".to_string(),
+        name: "patch".to_string(),
+        arguments: json!({
+            "path": file_path_str,
+            "old_string": "    let x = 10;",
+            "new_string": "    let x = 42;\n    let y = 100;"
+        }),
+    };
+
+    let patch_res = registry.execute(&patch_call).await;
+    assert!(patch_res.success, "Patch must succeed: {}", patch_res.output);
+    let patch_json: serde_json::Value = serde_json::from_str(&patch_res.output).unwrap();
+    assert_eq!(patch_json.get("success"), Some(&json!(true)));
+    assert!(patch_json.get("diff").and_then(|v| v.as_str()).unwrap().contains("-    let x = 10;"));
+    assert!(patch_json.get("diff").and_then(|v| v.as_str()).unwrap().contains("+    let x = 42;"));
+
+    // Verify on disk
+    let updated = tokio::fs::read_to_string(&test_file).await.unwrap();
+    assert!(updated.contains("let x = 42;"));
+    assert!(updated.contains("let y = 100;"));
+
+    // Second run: test is_already_applied
+    let patch_res_2 = registry.execute(&patch_call).await;
+    assert!(patch_res_2.success);
+    let json_2: serde_json::Value = serde_json::from_str(&patch_res_2.output).unwrap();
+    assert_eq!(json_2.get("no_change"), Some(&json!(true)));
+
+    let _ = tokio::fs::remove_file(&test_file).await;
+    let _ = tokio::fs::remove_dir(&test_dir).await;
+}
+
+#[tokio::test]
+async fn test_tool_registry_search_files_modes() {
+    let registry = ToolRegistry::new();
+    let test_dir = std::env::temp_dir().join("hermes_search_test");
+    let dir_str = test_dir.to_str().unwrap();
+    let file_a = test_dir.join("file_a.txt");
+    let file_b = test_dir.join("file_b.txt");
+
+    let _ = tokio::fs::create_dir_all(&test_dir).await;
+    tokio::fs::write(&file_a, "target_token_123 in file a\nsecond line").await.unwrap();
+    tokio::fs::write(&file_b, "different text\ntarget_token_123 in file b\nthird line").await.unwrap();
+
+    // 1. Content search mode = "content"
+    let call_content = ToolCall {
+        id: "call_search_1".to_string(),
+        name: "search_files".to_string(),
+        arguments: json!({
+            "path": dir_str,
+            "pattern": "target_token_123",
+            "target": "content"
+        }),
+    };
+    let res_content = registry.execute(&call_content).await;
+    assert!(res_content.success);
+    let json_c: serde_json::Value = serde_json::from_str(&res_content.output).unwrap();
+    assert_eq!(json_c.get("total_count").and_then(|v| v.as_u64()), Some(2));
+    let matches = json_c.get("matches").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(matches.len(), 2);
+
+    // 2. Mode = "files_only"
+    let call_files_only = ToolCall {
+        id: "call_search_2".to_string(),
+        name: "search_files".to_string(),
+        arguments: json!({
+            "path": dir_str,
+            "pattern": "target_token_123",
+            "target": "content",
+            "output_mode": "files_only"
+        }),
+    };
+    let res_files_only = registry.execute(&call_files_only).await;
+    assert!(res_files_only.success);
+    let json_fo: serde_json::Value = serde_json::from_str(&res_files_only.output).unwrap();
+    assert_eq!(json_fo.get("total_count").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(json_fo.get("files").and_then(|v| v.as_array()).unwrap().len(), 2);
+
+    // 3. Mode = "count"
+    let call_count = ToolCall {
+        id: "call_search_3".to_string(),
+        name: "search_files".to_string(),
+        arguments: json!({
+            "path": dir_str,
+            "pattern": "target_token_123",
+            "target": "content",
+            "output_mode": "count"
+        }),
+    };
+    let res_count = registry.execute(&call_count).await;
+    assert!(res_count.success);
+    let json_cnt: serde_json::Value = serde_json::from_str(&res_count.output).unwrap();
+    assert_eq!(json_cnt.get("total_count").and_then(|v| v.as_u64()), Some(2));
+
+    // 4. Target = "files" (glob match)
+    let call_find_files = ToolCall {
+        id: "call_search_4".to_string(),
+        name: "search_files".to_string(),
+        arguments: json!({
+            "path": dir_str,
+            "pattern": "*.txt",
+            "target": "files"
+        }),
+    };
+    let res_find = registry.execute(&call_find_files).await;
+    assert!(res_find.success);
+    let json_find: serde_json::Value = serde_json::from_str(&res_find.output).unwrap();
+    assert_eq!(json_find.get("total_count").and_then(|v| v.as_u64()), Some(2));
+
+    let _ = tokio::fs::remove_file(&file_a).await;
+    let _ = tokio::fs::remove_file(&file_b).await;
+    let _ = tokio::fs::remove_dir(&test_dir).await;
 }
