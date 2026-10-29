@@ -10,9 +10,10 @@ pub mod web;
 
 pub use commands::{
     build_model_keyboard, build_provider_keyboard, default_providers_list, handle_clear,
-    handle_command, handle_model, handle_start_or_help, handle_status, model_picker_card,
-    parse_command, provider_picker_header, CommandContext, ProviderItem, SlashCommand,
-    MODEL_PAGE_SIZE,
+    handle_command, handle_context, handle_diff, handle_model, handle_profile,
+    handle_start_or_help, handle_status, handle_stop, handle_whoami, model_picker_card,
+    parse_command, provider_picker_header, BusyPolicy, CommandContext, ProviderItem,
+    SlashCommand, MODEL_PAGE_SIZE,
 };
 pub use llm::{ChatMessage, ChatResponse, LlmClient, ToolCallRawExt};
 pub use stream::GatewayStreamConsumer;
@@ -27,9 +28,11 @@ use hermes_platform_telegram::{TelegramAdapter, TelegramConfig};
 use hermes_protocol::{IncomingMessage, MessageContent, MessageId, OutgoingMessage, Platform, PlatformError, PlatformEvent};
 use hermes_relay::{WsRelayConfig, WsRelayServer};
 use hermes_session_store::{SessionStore, SessionStoreFactory};
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 /// State of an active model picker for a Telegram chat
@@ -58,6 +61,7 @@ pub struct Gateway {
     event_tx: mpsc::UnboundedSender<PlatformEvent>,
     event_rx: Option<mpsc::UnboundedReceiver<PlatformEvent>>,
     model_picker_states: Arc<RwLock<HashMap<i64, ModelPickerState>>>,
+    active_turns: Arc<DashMap<uuid::Uuid, CancellationToken>>,
 }
 
 impl Gateway {
@@ -128,6 +132,8 @@ impl Gateway {
         let tool_registry = Arc::new(ToolRegistry::new());
         let prompt_assembler = Arc::new(PromptAssembler::new());
 
+        let active_turns = Arc::new(DashMap::new());
+
         Ok(Self {
             config,
             relay_server,
@@ -139,6 +145,7 @@ impl Gateway {
             event_tx,
             event_rx: Some(event_rx),
             model_picker_states: Arc::new(RwLock::new(HashMap::new())),
+            active_turns,
         })
     }
 
@@ -148,6 +155,23 @@ impl Gateway {
 
     pub fn llm_client(&self) -> Arc<LlmClient> {
         self.llm_client.clone()
+    }
+
+    pub fn active_turns(&self) -> Arc<DashMap<uuid::Uuid, CancellationToken>> {
+        self.active_turns.clone()
+    }
+
+    pub fn is_session_busy(&self, session_id: &uuid::Uuid) -> bool {
+        self.active_turns.contains_key(session_id)
+    }
+
+    pub fn cancel_session_turn(&self, session_id: &uuid::Uuid) -> bool {
+        if let Some((_, token)) = self.active_turns.remove(session_id) {
+            token.cancel();
+            true
+        } else {
+            false
+        }
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
@@ -199,6 +223,7 @@ impl Gateway {
         let config_arc = Arc::new(self.config.clone());
         let provider_registry = self.provider_registry.clone();
         let model_picker_states = self.model_picker_states.clone();
+        let active_turns = self.active_turns.clone();
 
         let default_profile = self
             .config
@@ -225,6 +250,7 @@ impl Gateway {
                             &model_picker_states,
                             &default_profile,
                             &event_loop_tg,
+                            &active_turns,
                         )
                         .await;
                     }
@@ -568,6 +594,7 @@ impl Gateway {
         model_picker_states: &Arc<RwLock<HashMap<i64, ModelPickerState>>>,
         profile: &Option<hermes_config::ProfileConfig>,
         tg_adapter: &Option<Arc<TelegramAdapter>>,
+        active_turns: &Arc<DashMap<uuid::Uuid, CancellationToken>>,
     ) {
         // Handle Callback Query updates from Telegram (e.g. model selector taps)
         if let MessageContent::System { ref event, ref data } = msg.content {
@@ -653,6 +680,42 @@ impl Gateway {
         if let Some(cmd) = parse_command(&prompt_text) {
             info!("Detected slash command: {:?}", cmd);
 
+            let is_busy = active_turns.contains_key(&msg.session_id);
+            let policy = cmd.busy_policy();
+
+            // 1. Busy guard policy check
+            if is_busy {
+                match policy {
+                    BusyPolicy::Reject => {
+                        info!("Rejecting slash command /{} for busy session {}", cmd.name(), msg.session_id);
+                        let reject_text = format!(
+                            "⏳ Agent is running — `/{}` can't run mid-turn. Wait for the current response or `/stop` first.",
+                            cmd.name()
+                        );
+                        let outgoing = OutgoingMessage {
+                            id: MessageId::new(),
+                            session_id: msg.session_id,
+                            platform: msg.platform,
+                            reply_to: Some(incoming_id),
+                            content: MessageContent::Text { text: reject_text },
+                            metadata: HashMap::new(),
+                        };
+                        Self::dispatch_outgoing(outgoing, tg_adapter).await;
+                        return;
+                    }
+                    BusyPolicy::InterruptThenDispatch => {
+                        info!("Interrupting active turn for busy session {} before executing /{}", msg.session_id, cmd.name());
+                        if let Some((_, token)) = active_turns.remove(&msg.session_id) {
+                            token.cancel();
+                            info!("CancellationToken triggered for session {}", msg.session_id);
+                        }
+                    }
+                    BusyPolicy::Dispatch => {
+                        info!("Dispatching concurrent slash command /{} mid-turn for session {}", cmd.name(), msg.session_id);
+                    }
+                }
+            }
+
             // If command is /model with no arguments and Telegram adapter is active,
             // render the Interactive Inline Keyboard Model Selector!
             if matches!(cmd, SlashCommand::Model(None)) && tg_adapter.is_some() && msg.platform == Platform::Telegram {
@@ -688,6 +751,37 @@ impl Gateway {
             }
 
             let is_clear = matches!(cmd, SlashCommand::Clear);
+            let is_stop = matches!(cmd, SlashCommand::Stop);
+
+            if is_stop {
+                if let Some((_, token)) = active_turns.remove(&msg.session_id) {
+                    token.cancel();
+                    info!("Cancelled running turn on /stop for session {}", msg.session_id);
+                }
+            }
+
+            // Context window metadata calculation for /context and /status
+            let history_for_stats = session_store
+                .get_messages(msg.session_id, Some(100))
+                .await
+                .unwrap_or_default();
+            let transcript_count = history_for_stats.len();
+            let estimated_prompt_tokens: usize = history_for_stats
+                .iter()
+                .map(|m| m.content.as_deref().unwrap_or("").chars().count() / 4)
+                .sum();
+
+            let context_window = profile
+                .as_ref()
+                .map(|p| p.max_tokens as usize)
+                .unwrap_or(128_000);
+
+            let raw_chat_id = msg.raw.as_ref().and_then(|r| r.get("chat")).and_then(|c| c.get("id")).and_then(|id| id.as_i64()).map(|i| i.to_string());
+            let raw_user_id = msg.raw.as_ref().and_then(|r| r.get("from")).and_then(|f| f.get("id")).and_then(|id| id.as_i64()).map(|i| i.to_string());
+            let raw_chat_type = msg.raw.as_ref().and_then(|r| r.get("chat")).and_then(|c| c.get("type")).and_then(|t| t.as_str());
+            let raw_thread_id = msg.raw.as_ref().and_then(|r| r.get("message_thread_id")).and_then(|t| t.as_i64()).map(|i| i.to_string());
+
+            let platform_str = msg.platform.as_str();
 
             let ctx = CommandContext {
                 gateway_name: &config.gateway.name,
@@ -696,6 +790,15 @@ impl Gateway {
                 active_model: &active_model,
                 telegram_connected: tg_adapter.is_some(),
                 memory_stats: None,
+                session_id: Some(msg.session_id),
+                platform: Some(platform_str),
+                user_id: raw_user_id.as_deref(),
+                chat_id: raw_chat_id.as_deref(),
+                chat_type: raw_chat_type,
+                thread_id: raw_thread_id.as_deref(),
+                transcript_count,
+                estimated_prompt_tokens,
+                context_window,
             };
 
             let reply_text = match cmd {
@@ -741,6 +844,10 @@ impl Gateway {
             Self::dispatch_outgoing(outgoing, tg_adapter).await;
             return;
         }
+
+        // Register turn in active_turns tracker with CancellationToken
+        let turn_token = CancellationToken::new();
+        active_turns.insert(msg.session_id, turn_token.clone());
 
         // Send chat action typing immediately if telegram
         if let Some(ref adapter) = tg_adapter {
@@ -803,6 +910,12 @@ impl Gateway {
         if tool_definitions.is_empty() && tg_adapter.is_some() && msg.platform == Platform::Telegram {
             if let Some(adapter) = tg_adapter {
                 if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
+                    if turn_token.is_cancelled() {
+                        info!("Turn cancelled before stream start for session {}", msg.session_id);
+                        active_turns.remove(&msg.session_id);
+                        return;
+                    }
+
                     match llm_client
                         .chat_completion_stream(&active_model, &messages, temperature, max_tokens)
                         .await
@@ -813,6 +926,11 @@ impl Gateway {
                             let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
                             match consumer.consume_stream(rx, adapter, reply_to_id).await {
                                 Ok(acc) => {
+                                    if turn_token.is_cancelled() {
+                                        info!("Turn cancelled during/after stream consumption for session {}", msg.session_id);
+                                        active_turns.remove(&msg.session_id);
+                                        return;
+                                    }
                                     streamed_delivery = true;
                                     final_text = acc.clone();
                                     let asst_msg = ChatMessage::assistant(acc);
@@ -839,6 +957,12 @@ impl Gateway {
 // If not delivered via direct stream, run recursive tool loop
         if !streamed_delivery && final_text.is_empty() {
             while iteration < max_tool_iterations {
+                if turn_token.is_cancelled() {
+                    info!("Turn cancelled before iteration {} for session {}", iteration + 1, msg.session_id);
+                    active_turns.remove(&msg.session_id);
+                    return;
+                }
+
                 iteration += 1;
                 info!("Agent loop iteration {}/{}", iteration, max_tool_iterations);
 
@@ -905,6 +1029,12 @@ impl Gateway {
 
                                 // Execute each tool call and append tool result to context and store
                                 for call in calls {
+                                    if turn_token.is_cancelled() {
+                                        info!("Turn cancelled mid-tool execution for session {}", msg.session_id);
+                                        active_turns.remove(&msg.session_id);
+                                        return;
+                                    }
+
                                     info!("Executing tool call {} (id: {}) in agent loop", call.name, call.id);
                                     let result = tool_registry.execute(&call).await;
                                     let tool_msg = ChatMessage::tool(result.tool_call_id, result.output);
@@ -942,6 +1072,9 @@ impl Gateway {
             content: MessageContent::Text { text: final_text },
             metadata: HashMap::new(),
         };
+
+        // Turn completed: remove from active turn tracker
+        active_turns.remove(&msg.session_id);
 
         if !streamed_delivery {
             Self::dispatch_outgoing(outgoing, tg_adapter).await;

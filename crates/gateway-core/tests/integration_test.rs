@@ -474,6 +474,15 @@ async fn test_slash_command_output_handling() {
         active_model: "test-model-default",
         telegram_connected: true,
         memory_stats: Some("12.3 MB RSS".to_string()),
+        session_id: Some(uuid::Uuid::nil()),
+        platform: Some("telegram"),
+        user_id: Some("12345"),
+        chat_id: Some("67890"),
+        chat_type: Some("dm"),
+        thread_id: None,
+        transcript_count: 8,
+        estimated_prompt_tokens: 16000,
+        context_window: 128000,
     };
 
     // Test /start and /help output
@@ -1075,4 +1084,108 @@ async fn test_tool_registry_skills_list_and_view() {
     assert!(!res_view.success);
     let parsed_view: serde_json::Value = serde_json::from_str(&res_view.output).unwrap();
     assert_eq!(parsed_view.get("success").and_then(|v| v.as_bool()), Some(false));
+}
+
+#[tokio::test]
+async fn test_busy_guard_and_stop_cancellation() {
+    use hermes_gateway_core::{BusyPolicy, SlashCommand};
+    use dashmap::DashMap;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+    use uuid::Uuid;
+
+    let active_turns = Arc::new(DashMap::new());
+    let session_id = Uuid::new_v4();
+
+    // 1. Session is idle
+    assert!(!active_turns.contains_key(&session_id));
+
+    // 2. Register active turn with CancellationToken
+    let token = CancellationToken::new();
+    active_turns.insert(session_id, token.clone());
+    assert!(active_turns.contains_key(&session_id));
+    assert!(!token.is_cancelled());
+
+    // 3. BusyPolicy check: /model should be Rejected
+    let model_cmd = SlashCommand::Model(Some("new-model".to_string()));
+    assert_eq!(model_cmd.busy_policy(), BusyPolicy::Reject);
+
+    // 4. BusyPolicy check: /status, /context, /whoami, /profile should be Dispatched
+    assert_eq!(SlashCommand::Status.busy_policy(), BusyPolicy::Dispatch);
+    assert_eq!(SlashCommand::Context.busy_policy(), BusyPolicy::Dispatch);
+    assert_eq!(SlashCommand::Whoami.busy_policy(), BusyPolicy::Dispatch);
+    assert_eq!(SlashCommand::Profile.busy_policy(), BusyPolicy::Dispatch);
+    assert_eq!(SlashCommand::Diff(None).busy_policy(), BusyPolicy::Dispatch);
+
+    // 5. BusyPolicy check: /stop and /clear should be InterruptThenDispatch
+    assert_eq!(SlashCommand::Stop.busy_policy(), BusyPolicy::InterruptThenDispatch);
+    assert_eq!(SlashCommand::Clear.busy_policy(), BusyPolicy::InterruptThenDispatch);
+
+    // 6. Simulate /stop action: cancel token and clear active turn
+    if let Some((_, tok)) = active_turns.remove(&session_id) {
+        tok.cancel();
+    }
+
+    assert!(token.is_cancelled());
+    assert!(!active_turns.contains_key(&session_id));
+}
+
+#[tokio::test]
+async fn test_slash_commands_context_whoami_profile_diff() {
+    use hermes_gateway_core::{handle_command, CommandContext, SlashCommand};
+    use uuid::Uuid;
+
+    let session_id = Uuid::new_v4();
+    let ctx = CommandContext {
+        gateway_name: "hermes-gateway-test",
+        gateway_version: "0.2.0",
+        active_profile: "production-profile",
+        active_model: "ag/gemini-3.8-flash",
+        telegram_connected: true,
+        memory_stats: Some("32.5 MB RSS".to_string()),
+        session_id: Some(session_id),
+        platform: Some("telegram"),
+        user_id: Some("tg_123456"),
+        chat_id: Some("chat_987654"),
+        chat_type: Some("dm"),
+        thread_id: Some("thread_111"),
+        transcript_count: 15,
+        estimated_prompt_tokens: 25000,
+        context_window: 100000,
+    };
+
+    // /context output test
+    let ctx_out = handle_command(SlashCommand::Context, &ctx, |_| Ok(()));
+    assert!(ctx_out.contains("⚡ <b>CONTEXT WINDOW</b>"));
+    assert!(ctx_out.contains("ag/gemini-3.8-flash"));
+    assert!(ctx_out.contains("Window:</b> 100,000 tokens"));
+    assert!(ctx_out.contains("In use:</b> 25,000 / 100,000 (25.0%)"));
+    assert!(ctx_out.contains("Bar:</b> <code>["));
+    assert!(ctx_out.contains("Headroom:</b> 75,000 tokens"));
+    assert!(ctx_out.contains("Messages in transcript:</b> 15"));
+
+    // /whoami output test
+    let who_out = handle_command(SlashCommand::Whoami, &ctx, |_| Ok(()));
+    assert!(who_out.contains("You</b> — telegram (DM)"));
+    assert!(who_out.contains("tg_123456"));
+    assert!(who_out.contains("chat_987654"));
+    assert!(who_out.contains("thread_111"));
+    assert!(who_out.contains("production-profile"));
+    assert!(who_out.contains(&session_id.to_string()));
+    assert!(who_out.contains("Tier:</b> unrestricted"));
+
+    // /profile output test
+    let prof_out = handle_command(SlashCommand::Profile, &ctx, |_| Ok(()));
+    assert!(prof_out.contains("Agent Profile Configuration"));
+    assert!(prof_out.contains("production-profile"));
+    assert!(prof_out.contains("ag/gemini-3.8-flash"));
+    assert!(prof_out.contains(&session_id.to_string()));
+
+    // /stop output test
+    let stop_out = handle_command(SlashCommand::Stop, &ctx, |_| Ok(()));
+    assert_eq!(stop_out, "⏹️ Agent execution stopped.");
+
+    // /diff output test
+    let diff_out = handle_command(SlashCommand::Diff(None), &ctx, |_| Ok(()));
+    assert!(!diff_out.is_empty());
 }

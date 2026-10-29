@@ -1,6 +1,14 @@
 use std::time::Instant;
 use hermes_platform_telegram::{InlineKeyboardButton, InlineKeyboardMarkup};
 
+/// Busy Policy classification matching Python gateway/run_busy.py
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusyPolicy {
+    Reject,
+    Dispatch,
+    InterruptThenDispatch,
+}
+
 /// Active Slash Commands supported by Hermes native Gateway
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
@@ -9,10 +17,52 @@ pub enum SlashCommand {
     Status,
     Model(Option<String>),
     Clear,
+    Stop,
+    Context,
+    Whoami,
+    Profile,
+    Diff(Option<String>),
+}
+
+impl SlashCommand {
+    pub fn name(&self) -> &'static str {
+        match self {
+            SlashCommand::Start => "start",
+            SlashCommand::Help => "help",
+            SlashCommand::Status => "status",
+            SlashCommand::Model(_) => "model",
+            SlashCommand::Clear => "clear",
+            SlashCommand::Stop => "stop",
+            SlashCommand::Context => "context",
+            SlashCommand::Whoami => "whoami",
+            SlashCommand::Profile => "profile",
+            SlashCommand::Diff(_) => "diff",
+        }
+    }
+
+    pub fn busy_policy(&self) -> BusyPolicy {
+        match self {
+            // Reject mid-turn commands that mutate model or personality
+            SlashCommand::Model(_) => BusyPolicy::Reject,
+
+            // Concurrent read-only diagnostic / info commands allowed mid-turn
+            SlashCommand::Status
+            | SlashCommand::Context
+            | SlashCommand::Whoami
+            | SlashCommand::Profile
+            | SlashCommand::Diff(_)
+            | SlashCommand::Help => BusyPolicy::Dispatch,
+
+            // Interrupt running turn immediately and dispatch
+            SlashCommand::Stop | SlashCommand::Clear | SlashCommand::Start => {
+                BusyPolicy::InterruptThenDispatch
+            }
+        }
+    }
 }
 
 /// Parse incoming prompt or message text for slash commands.
-/// Matches commands like /start, /help, /status, /model [name], /clear, /reset.
+/// Matches commands like /start, /help, /status, /model [name], /clear, /reset, /new, /stop, /context, /whoami, /profile, /diff.
 /// Handles Telegram bot mentions (e.g. /status@HermesBot) and leading/trailing whitespace.
 pub fn parse_command(text: &str) -> Option<SlashCommand> {
     let trimmed = text.trim();
@@ -33,6 +83,11 @@ pub fn parse_command(text: &str) -> Option<SlashCommand> {
         "/status" => Some(SlashCommand::Status),
         "/model" => Some(SlashCommand::Model(args.map(|s| s.to_string()))),
         "/clear" | "/reset" | "/new" => Some(SlashCommand::Clear),
+        "/stop" => Some(SlashCommand::Stop),
+        "/context" => Some(SlashCommand::Context),
+        "/whoami" => Some(SlashCommand::Whoami),
+        "/profile" => Some(SlashCommand::Profile),
+        "/diff" => Some(SlashCommand::Diff(args.map(|s| s.to_string()))),
         _ => None,
     }
 }
@@ -73,12 +128,21 @@ pub struct CommandContext<'a> {
     pub active_model: &'a str,
     pub telegram_connected: bool,
     pub memory_stats: Option<String>,
+    pub session_id: Option<uuid::Uuid>,
+    pub platform: Option<&'a str>,
+    pub user_id: Option<&'a str>,
+    pub chat_id: Option<&'a str>,
+    pub chat_type: Option<&'a str>,
+    pub thread_id: Option<&'a str>,
+    pub transcript_count: usize,
+    pub estimated_prompt_tokens: usize,
+    pub context_window: usize,
 }
 
 /// Format the Greeting for /start and /help
 pub fn handle_start_or_help(ctx: &CommandContext) -> String {
     format!(
-        "<b>Greetings!</b>\n\nI am your Hermes Gateway assistant. All systems are operational.\n\n<b>Active Model:</b> <code>{}</code>\n<b>Profile:</b> <code>{}</code>\n\n<b>Available Slash Commands:</b>\n• <code>/start</code> / <code>/help</code> — Show this greeting & command overview\n• <code>/status</code> — Display full system diagnostics, uptime & platform status\n• <code>/model</code> — View current active model & provider info\n• <code>/model &lt;name&gt;</code> — Dynamically switch active model (e.g. <code>/model ag/gemini-3.8-flash</code>)\n• <code>/clear</code> / <code>/reset</code> — Reset conversation turn memory & session",
+        "<b>Greetings!</b>\n\nI am your Hermes Gateway assistant. All systems are operational.\n\n<b>Active Model:</b> <code>{}</code>\n<b>Profile:</b> <code>{}</code>\n\n<b>Available Slash Commands:</b>\n• <code>/start</code> / <code>/help</code> — Show this greeting & command overview\n• <code>/status</code> — Display full system diagnostics, uptime & platform status\n• <code>/context</code> — Visual context window occupancy & token headroom bar\n• <code>/whoami</code> — Display user, chat, session UUID and platform scope\n• <code>/profile</code> — Display active agent profile configuration\n• <code>/diff</code> — Display recent git changes and file diffs\n• <code>/model</code> — View current active model & provider info\n• <code>/model &lt;name&gt;</code> — Dynamically switch active model (e.g. <code>/model ag/gemini-3.8-flash</code>)\n• <code>/stop</code> — Interrupt and cancel active running turn immediately\n• <code>/clear</code> / <code>/reset</code> — Reset conversation turn memory & session",
         ctx.active_model, ctx.active_profile
     )
 }
@@ -131,6 +195,185 @@ pub fn handle_status(ctx: &CommandContext) -> String {
         tg_status,
         memory_info
     )
+}
+
+/// Format visual context bar matching Python Hermes slash_commands_status.py
+pub fn handle_context(ctx: &CommandContext) -> String {
+    let window = if ctx.context_window > 0 {
+        ctx.context_window
+    } else {
+        // Default context length fallback if not configured (e.g. 128k)
+        128_000
+    };
+
+    let used = ctx.estimated_prompt_tokens;
+    let pct = if window > 0 {
+        ((used as f64 / window as f64) * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+
+    let bar_len: usize = 24;
+    let filled = ((pct / 100.0) * bar_len as f64).round() as usize;
+    let filled = filled.min(bar_len);
+    let empty = bar_len.saturating_sub(filled);
+
+    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+    let headroom = window.saturating_sub(used);
+
+    format!(
+"⚡ <b>CONTEXT WINDOW</b>
+
+<b>Model:</b> <code>{}</code>
+<b>Window:</b> {} tokens
+<b>In use:</b> {} / {} ({:.1}%)
+<b>Bar:</b> <code>[{}]</code>
+<b>Headroom:</b> {} tokens
+<b>Messages in transcript:</b> {}",
+        ctx.active_model,
+        format_number(window),
+        format_number(used),
+        format_number(window),
+        pct,
+        bar,
+        format_number(headroom),
+        ctx.transcript_count
+    )
+}
+
+/// Handle /whoami command matching Python slash_commands.py
+pub fn handle_whoami(ctx: &CommandContext) -> String {
+    let platform = ctx.platform.unwrap_or("unknown");
+    let chat_type = ctx.chat_type.unwrap_or("dm");
+    let scope = if chat_type.eq_ignore_ascii_case("dm")
+        || chat_type.eq_ignore_ascii_case("direct")
+        || chat_type.eq_ignore_ascii_case("private")
+        || chat_type.is_empty()
+    {
+        "DM"
+    } else {
+        "group/channel"
+    };
+
+    let user_id = ctx.user_id.unwrap_or("?");
+    let chat_id = ctx.chat_id.unwrap_or("?");
+    let session_uuid = ctx
+        .session_id
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let thread_id = ctx.thread_id.unwrap_or("none");
+
+    format!(
+"<b>You</b> — {} ({})
+• <b>User ID:</b> <code>{}</code>
+• <b>Chat ID:</b> <code>{}</code>
+• <b>Chat Type:</b> <code>{}</code>
+• <b>Thread ID:</b> <code>{}</code>
+• <b>Active Profile:</b> <code>{}</code>
+• <b>Session UUID:</b> <code>{}</code>
+• <b>Tier:</b> unrestricted
+• <b>Slash commands:</b> all available",
+        platform, scope, user_id, chat_id, chat_type, thread_id, ctx.active_profile, session_uuid
+    )
+}
+
+/// Handle /profile command
+pub fn handle_profile(ctx: &CommandContext) -> String {
+    format!(
+"🎭 <b>Agent Profile Configuration</b>
+
+• <b>Profile Name:</b> <code>{}</code>
+• <b>Active Model:</b> <code>{}</code>
+• <b>Gateway Name:</b> <code>{}</code>
+• <b>Version:</b> <code>{}</code>
+• <b>Session UUID:</b> <code>{}</code>",
+        ctx.active_profile,
+        ctx.active_model,
+        ctx.gateway_name,
+        ctx.gateway_version,
+        ctx.session_id.map(|u| u.to_string()).unwrap_or_else(|| "none".to_string())
+    )
+}
+
+/// Handle /diff command matching Python slash_commands.py
+pub fn handle_diff(arg: &Option<String>) -> String {
+    let stat_only = arg
+        .as_deref()
+        .map(|s| s.contains("--stat") || s.contains("stat"))
+        .unwrap_or(false);
+
+    // Try reading git diff in current working directory
+    let git_status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output();
+
+    let git_diff = if stat_only {
+        std::process::Command::new("git")
+            .args(["diff", "--stat"])
+            .output()
+    } else {
+        std::process::Command::new("git")
+            .args(["diff", "HEAD"])
+            .output()
+    };
+
+    match (git_status, git_diff) {
+        (Ok(status_out), Ok(diff_out)) => {
+            let status_str = String::from_utf8_lossy(&status_out.stdout).trim().to_string();
+            let diff_str = String::from_utf8_lossy(&diff_out.stdout).trim().to_string();
+
+            if status_str.is_empty() && diff_str.is_empty() {
+                return "📂 <b>Working Directory Clean</b>\n\nNo modified, staged, or untracked changes found.".to_string();
+            }
+
+            let mut out = Vec::new();
+            if !status_str.is_empty() {
+                let lines: Vec<&str> = status_str.lines().take(15).collect();
+                let extra = if status_str.lines().count() > 15 {
+                    format!("\n... and {} more files", status_str.lines().count() - 15)
+                } else {
+                    String::new()
+                };
+                out.push(format!("<b>Status:</b>\n<pre>\n{}{}\n</pre>", lines.join("\n"), extra));
+            }
+
+            if !diff_str.is_empty() {
+                let truncated_diff = if diff_str.lines().count() > 60 {
+                    let first_lines: Vec<&str> = diff_str.lines().take(60).collect();
+                    format!("{}\n... (truncated — {} lines total; use /diff --stat for a summary)", first_lines.join("\n"), diff_str.lines().count())
+                } else if diff_str.len() > 3000 {
+                    format!("{}...\n(truncated at 3000 chars)", &diff_str[..3000])
+                } else {
+                    diff_str
+                };
+                out.push(format!("<pre>\n{}\n</pre>", truncated_diff));
+            }
+
+            out.join("\n\n")
+        }
+        _ => "⚠️ <i>Git repository not detected or git command unavailable in working directory.</i>".to_string(),
+    }
+}
+
+/// Helper to format large integers with commas
+fn format_number(n: usize) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+
+    for (i, &b) in bytes.iter().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(b as char);
+    }
+    result
+}
+
+/// Handle /stop command
+pub fn handle_stop() -> String {
+    "⏹️ Agent execution stopped.".to_string()
 }
 
 /// Handle /model command
@@ -389,6 +632,11 @@ pub fn handle_command(
         SlashCommand::Status => handle_status(ctx),
         SlashCommand::Model(arg) => handle_model(&arg, ctx.active_model, on_switch_model),
         SlashCommand::Clear => handle_clear(),
+        SlashCommand::Stop => handle_stop(),
+        SlashCommand::Context => handle_context(ctx),
+        SlashCommand::Whoami => handle_whoami(ctx),
+        SlashCommand::Profile => handle_profile(ctx),
+        SlashCommand::Diff(arg) => handle_diff(&arg),
     }
 }
 
@@ -433,8 +681,29 @@ mod tests {
         assert_eq!(parse_command("/clear"), Some(SlashCommand::Clear));
         assert_eq!(parse_command("/reset"), Some(SlashCommand::Clear));
         assert_eq!(parse_command("/new"), Some(SlashCommand::Clear));
+        assert_eq!(parse_command("/stop"), Some(SlashCommand::Stop));
+        assert_eq!(parse_command("/context"), Some(SlashCommand::Context));
+        assert_eq!(parse_command("/whoami"), Some(SlashCommand::Whoami));
+        assert_eq!(parse_command("/profile"), Some(SlashCommand::Profile));
+        assert_eq!(parse_command("/diff"), Some(SlashCommand::Diff(None)));
+        assert_eq!(
+            parse_command("/diff --stat"),
+            Some(SlashCommand::Diff(Some("--stat".to_string())))
+        );
         assert_eq!(parse_command("hello world"), None);
         assert_eq!(parse_command("/unknown"), None);
+    }
+
+    #[test]
+    fn test_busy_policy() {
+        assert_eq!(SlashCommand::Model(None).busy_policy(), BusyPolicy::Reject);
+        assert_eq!(SlashCommand::Status.busy_policy(), BusyPolicy::Dispatch);
+        assert_eq!(SlashCommand::Context.busy_policy(), BusyPolicy::Dispatch);
+        assert_eq!(SlashCommand::Whoami.busy_policy(), BusyPolicy::Dispatch);
+        assert_eq!(SlashCommand::Profile.busy_policy(), BusyPolicy::Dispatch);
+        assert_eq!(SlashCommand::Diff(None).busy_policy(), BusyPolicy::Dispatch);
+        assert_eq!(SlashCommand::Stop.busy_policy(), BusyPolicy::InterruptThenDispatch);
+        assert_eq!(SlashCommand::Clear.busy_policy(), BusyPolicy::InterruptThenDispatch);
     }
 
     #[test]
@@ -454,6 +723,15 @@ mod tests {
             active_model: "ag/gemini-3.8-flash",
             telegram_connected: true,
             memory_stats: Some("42.0 MB RSS".to_string()),
+            session_id: Some(uuid::Uuid::nil()),
+            platform: Some("telegram"),
+            user_id: Some("12345"),
+            chat_id: Some("67890"),
+            chat_type: Some("dm"),
+            thread_id: None,
+            transcript_count: 5,
+            estimated_prompt_tokens: 1200,
+            context_window: 128000,
         };
 
         let start_res = handle_command(SlashCommand::Start, &ctx, |_| Ok(()));
@@ -465,6 +743,8 @@ mod tests {
         assert!(help_res.contains("Greetings!"));
         assert!(help_res.contains("I am your Hermes Gateway assistant. All systems are operational."));
         assert!(help_res.contains("/status"));
+        assert!(help_res.contains("/context"));
+        assert!(help_res.contains("/whoami"));
     }
 
     #[test]
@@ -476,6 +756,15 @@ mod tests {
             active_model: "ag/gemini-3.8-flash",
             telegram_connected: true,
             memory_stats: Some("15.5 MB RSS / 120.0 MB VIRT".to_string()),
+            session_id: Some(uuid::Uuid::nil()),
+            platform: Some("telegram"),
+            user_id: Some("12345"),
+            chat_id: Some("67890"),
+            chat_type: Some("dm"),
+            thread_id: None,
+            transcript_count: 5,
+            estimated_prompt_tokens: 1200,
+            context_window: 128000,
         };
 
         let res = handle_command(SlashCommand::Status, &ctx, |_| Ok(()));
@@ -487,6 +776,106 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_context_command() {
+        let ctx = CommandContext {
+            gateway_name: "Hermes",
+            gateway_version: "0.1.0",
+            active_profile: "default",
+            active_model: "ag/gemini-3.8-flash",
+            telegram_connected: true,
+            memory_stats: None,
+            session_id: Some(uuid::Uuid::nil()),
+            platform: Some("telegram"),
+            user_id: Some("12345"),
+            chat_id: Some("67890"),
+            chat_type: Some("dm"),
+            thread_id: None,
+            transcript_count: 12,
+            estimated_prompt_tokens: 32000,
+            context_window: 128000,
+        };
+
+        let res = handle_command(SlashCommand::Context, &ctx, |_| Ok(()));
+        assert!(res.contains("CONTEXT WINDOW"));
+        assert!(res.contains("ag/gemini-3.8-flash"));
+        assert!(res.contains("128,000"));
+        assert!(res.contains("32,000"));
+        assert!(res.contains("25.0%"));
+        assert!(res.contains("Messages in transcript:</b> 12"));
+        assert!(res.contains("<b>Headroom:</b> 96,000"));
+    }
+
+    #[test]
+    fn test_handle_whoami_command() {
+        let ctx = CommandContext {
+            gateway_name: "Hermes",
+            gateway_version: "0.1.0",
+            active_profile: "default",
+            active_model: "ag/gemini-3.8-flash",
+            telegram_connected: true,
+            memory_stats: None,
+            session_id: Some(uuid::Uuid::nil()),
+            platform: Some("telegram"),
+            user_id: Some("user_999"),
+            chat_id: Some("chat_888"),
+            chat_type: Some("dm"),
+            thread_id: Some("thread_777"),
+            transcript_count: 0,
+            estimated_prompt_tokens: 0,
+            context_window: 128000,
+        };
+
+        let res = handle_command(SlashCommand::Whoami, &ctx, |_| Ok(()));
+        eprintln!("DEBUG_RES_WHOAMI:\n{}", res);
+        assert!(res.contains("You</b> — telegram (DM)"));
+        assert!(res.contains("user_999"));
+        assert!(res.contains("chat_888"));
+        assert!(res.contains("thread_777"));
+        assert!(res.contains("<b>Tier:</b> unrestricted"));
+    }
+
+    #[test]
+    fn test_handle_profile_command() {
+        let session_id = uuid::Uuid::new_v4();
+        let ctx = CommandContext {
+            gateway_name: "Hermes",
+            gateway_version: "0.1.0",
+            active_profile: "coding-specialist",
+            active_model: "freet/claude-3-7-sonnet",
+            telegram_connected: true,
+            memory_stats: None,
+            session_id: Some(session_id),
+            platform: Some("telegram"),
+            user_id: None,
+            chat_id: None,
+            chat_type: None,
+            thread_id: None,
+            transcript_count: 0,
+            estimated_prompt_tokens: 0,
+            context_window: 128000,
+        };
+
+        let res = handle_command(SlashCommand::Profile, &ctx, |_| Ok(()));
+        assert!(res.contains("Agent Profile Configuration"));
+        assert!(res.contains("coding-specialist"));
+        assert!(res.contains("freet/claude-3-7-sonnet"));
+        assert!(res.contains(&session_id.to_string()));
+    }
+
+    #[test]
+    fn test_handle_stop_command() {
+        let res = handle_stop();
+        assert_eq!(res, "⏹️ Agent execution stopped.");
+    }
+
+    #[test]
+    fn test_handle_diff_command() {
+        let res = handle_diff(&None);
+        // Should execute git or return clean / not detected without panic
+        assert!(!res.is_empty());
+    }
+
+    #[test]
     fn test_handle_command_model_query_and_switch() {
         let ctx = CommandContext {
             gateway_name: "hermes-gateway",
@@ -495,6 +884,15 @@ mod tests {
             active_model: "gemini-2.5-flash",
             telegram_connected: true,
             memory_stats: None,
+            session_id: None,
+            platform: None,
+            user_id: None,
+            chat_id: None,
+            chat_type: None,
+            thread_id: None,
+            transcript_count: 0,
+            estimated_prompt_tokens: 0,
+            context_window: 128000,
         };
 
         // Query model
@@ -534,6 +932,15 @@ mod tests {
             active_model: "gemini-2.5-flash",
             telegram_connected: true,
             memory_stats: None,
+            session_id: None,
+            platform: None,
+            user_id: None,
+            chat_id: None,
+            chat_type: None,
+            thread_id: None,
+            transcript_count: 0,
+            estimated_prompt_tokens: 0,
+            context_window: 128000,
         };
 
         let clear_res = handle_command(SlashCommand::Clear, &ctx, |_| Ok(()));
