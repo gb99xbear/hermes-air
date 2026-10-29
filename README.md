@@ -59,14 +59,14 @@ Hermes Air exposes a comprehensive OpenAI function-calling toolset:
 Install Hermes Air instantly with a single command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gb99xbear/hermes-pro/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gb99xbear/hermes-air/main/install.sh | bash
 ```
 
 Or build manually from source:
 
 ```bash
-git clone https://github.com/gb99xbear/hermes-pro.git
-cd hermes-pro
+git clone https://github.com/gb99xbear/hermes-air.git
+cd hermes-air
 cargo build --release -p hermes-gateway
 ```
 
