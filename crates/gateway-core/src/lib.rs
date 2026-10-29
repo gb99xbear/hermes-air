@@ -9,6 +9,7 @@ pub mod fuzzy_match;
 pub mod tools;
 pub mod web;
 pub mod browser;
+pub mod code_exec;
 
 pub use commands::{
     build_model_keyboard, build_provider_keyboard, default_providers_list, handle_clear,
@@ -23,6 +24,7 @@ pub use stream::GatewayStreamConsumer;
 pub use prompt::PromptAssembler;
 pub use providers::{ProviderProfile, ProviderRegistry};
 pub use tools::{ToolCall, ToolRegistry, ToolResult};
+pub use code_exec::{CodeExecutionEngine, TruncationMetadata, truncate_stdout_text, spill_full_stdout, head_tail_split};
 pub use web::{web_extract, web_search, WebExtractItem, WebExtractResponse, WebSearchResponse, WebSearchResultItem};
 
 use hermes_config::GatewayConfig;

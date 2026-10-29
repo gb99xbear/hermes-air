@@ -62,6 +62,7 @@ pub struct ReadResultPayload {
 
 pub struct ToolRegistry {
     pub skill_registry: Arc<SkillRegistry>,
+    pub code_engine: Arc<crate::code_exec::CodeExecutionEngine>,
 }
 
 impl Default for ToolRegistry {
@@ -74,11 +75,15 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             skill_registry: Arc::new(SkillRegistry::default()),
+            code_engine: Arc::new(crate::code_exec::CodeExecutionEngine::default()),
         }
     }
 
     pub fn with_skill_registry(skill_registry: Arc<SkillRegistry>) -> Self {
-        Self { skill_registry }
+        Self {
+            skill_registry,
+            code_engine: Arc::new(crate::code_exec::CodeExecutionEngine::default()),
+        }
     }
 
     pub fn get_definitions(&self) -> Vec<serde_json::Value> {
@@ -415,6 +420,27 @@ impl ToolRegistry {
                     }
                 }
             }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "execute_code",
+                    "description": "Run Python that calls Hermes tools programmatically. Use when you need 3+ tool calls with logic between them: filtering/reducing large outputs before they enter context, branching, or loops (N pages/files, retry on failure). Use normal tool calls for single calls, results you must reason over in full, or anything needing user interaction.\n\nCalls run in a persistent session kernel: variables, imports, and loaded data survive across execute_code calls, so build on earlier work instead of re-loading it. A timed-out or interrupted call loses that state.\n\nAvailable via `from hermes_tools import ...`:\n\n  web_search(query: str, limit: int = 5) -> dict\n    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}\n  web_extract(urls: list[str], char_limit: int = None) -> dict\n    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer).\n  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}\n  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file.\n  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}\n  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n    Replaces old_string with new_string in the file.\n  terminal(command: str, timeout=None, workdir=None) -> dict\n    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}\n\nLimits: 5-minute timeout, max 50 tool calls per call. Stdout over 50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\nScripts run in the session's working directory. Interpreter: the project's activated venv/conda python when one is active (VIRTUAL_ENV/CONDA_PREFIX — matches terminal()); otherwise Hermes's own python (the common case — stdlib plus Hermes's deps; check `import x` before relying on project packages).\n\nHelpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. json_parse(text) — tolerant json.loads for terminal() output; shell_quote(s) — shlex.quote for dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential backoff.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "description": "Python code to execute. Import tools with `from hermes_tools import web_search, terminal, ...` and print your final result to stdout."
+                            },
+                            "reset": {
+                                "type": "boolean",
+                                "description": "Discard the kernel's persistent state and start fresh before running this code."
+                            }
+                        },
+                        "required": ["code"]
+                    }
+                }
+            }),
         ]
     }
 
@@ -435,6 +461,7 @@ impl ToolRegistry {
             "browser_click" => self.execute_browser_click(call).await,
             "browser_type" => self.execute_browser_type(call).await,
             "browser_exec" => self.execute_browser_exec(call).await,
+            "execute_code" => self.execute_code(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown tool: {}", other),
@@ -456,7 +483,7 @@ impl ToolRegistry {
         PathBuf::from(p)
     }
 
-    async fn execute_terminal(&self, call: &ToolCall) -> ToolResult {
+    pub async fn execute_terminal(&self, call: &ToolCall) -> ToolResult {
         let command_str = match call.arguments.get("command").and_then(|v| v.as_str()) {
             Some(cmd) => cmd,
             None => {
@@ -1107,7 +1134,7 @@ impl ToolRegistry {
         }
     }
 
-    async fn execute_web_search(&self, call: &ToolCall) -> ToolResult {
+    pub async fn execute_web_search(&self, call: &ToolCall) -> ToolResult {
         let query = match call.arguments.get("query").and_then(|v| v.as_str()) {
             Some(q) => q,
             None => {
@@ -1141,7 +1168,7 @@ impl ToolRegistry {
         }
     }
 
-    async fn execute_web_extract(&self, call: &ToolCall) -> ToolResult {
+    pub async fn execute_web_extract(&self, call: &ToolCall) -> ToolResult {
         let urls: Vec<String> = match call.arguments.get("urls") {
             Some(serde_json::Value::Array(arr)) => arr
                 .iter()
@@ -1188,7 +1215,7 @@ impl ToolRegistry {
     }
 
 
-    async fn execute_skills_list(&self, call: &ToolCall) -> ToolResult {
+    pub async fn execute_skills_list(&self, call: &ToolCall) -> ToolResult {
         let category = call.arguments.get("category").and_then(|v| v.as_str());
         let resp = self.skill_registry.skills_list(category).await;
         let success = resp.success;
@@ -1200,7 +1227,7 @@ impl ToolRegistry {
         }
     }
 
-    async fn execute_skill_view(&self, call: &ToolCall) -> ToolResult {
+    pub async fn execute_skill_view(&self, call: &ToolCall) -> ToolResult {
         let name = match call.arguments.get("name").and_then(|v| v.as_str()) {
             Some(n) => n,
             None => {
@@ -1370,6 +1397,53 @@ impl ToolRegistry {
                 output: serde_json::json!({
                     "success": false,
                     "error": e.to_string()
+                }).to_string(),
+                success: false,
+            },
+        }
+    }
+
+    async fn execute_code(&self, call: &ToolCall) -> ToolResult {
+        let code = match call.arguments.get("code").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": "No code provided. execute_code requires a non-empty code parameter containing Python source."
+                    }).to_string(),
+                    success: false,
+                };
+            }
+        };
+
+        let reset = call.arguments.get("reset").and_then(|v| v.as_bool()).unwrap_or(false);
+        let session_id = call.arguments.get("session_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default");
+
+        // ToolRegistry cannot easily pass Arc<Self> without Arc::new or with_self,
+        // so we instantiate or pass Arc of self clone if needed, or pass Arc::new(ToolRegistry::new())
+        let tool_reg = Arc::new(Self {
+            skill_registry: self.skill_registry.clone(),
+            code_engine: self.code_engine.clone(),
+        });
+
+        match self.code_engine.execute(session_id, code, reset, None, Some(tool_reg)).await {
+            Ok(res_val) => {
+                let success = res_val.get("status").and_then(|v| v.as_str()) == Some("success");
+                ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::to_string_pretty(&res_val).unwrap_or_else(|_| "{}".to_string()),
+                    success,
+                }
+            }
+            Err(e) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "status": "error",
+                    "error": e
                 }).to_string(),
                 success: false,
             },

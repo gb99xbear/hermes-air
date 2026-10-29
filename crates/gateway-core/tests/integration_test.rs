@@ -87,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 14);
+    assert_eq!(defs.len(), 15);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1011,7 +1011,7 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 14);
+    assert_eq!(defs.len(), 15);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1329,4 +1329,94 @@ async fn test_browser_automation_suite_integration() {
     let res = registry.execute(&missing_code_call).await;
     assert!(!res.success);
     assert!(res.output.contains("Missing required 'code'"));
+}
+#[tokio::test]
+async fn test_execute_code_tool_definition() {
+    let registry = ToolRegistry::new();
+    let defs = registry.get_definitions();
+
+    let exec_code_def = defs
+        .iter()
+        .find(|d| d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) == Some("execute_code"))
+        .expect("execute_code definition must be present");
+
+    assert_eq!(exec_code_def.get("type").and_then(|t| t.as_str()), Some("function"));
+    let func = exec_code_def.get("function").expect("function object");
+    assert_eq!(func.get("name").and_then(|n| n.as_str()), Some("execute_code"));
+    let desc = func.get("description").and_then(|d| d.as_str()).expect("description");
+    assert!(desc.contains("Run Python that calls Hermes tools programmatically"));
+    assert!(desc.contains("from hermes_tools import"));
+
+    let params = func.get("parameters").expect("parameters");
+    assert_eq!(params.get("type").and_then(|t| t.as_str()), Some("object"));
+    let props = params.get("properties").expect("properties");
+    assert!(props.get("code").is_some());
+    assert!(props.get("reset").is_some());
+
+    let req = params.get("required").and_then(|r| r.as_array()).expect("required");
+    assert!(req.contains(&json!("code")));
+}
+
+#[tokio::test]
+async fn test_execute_code_integration() {
+    let registry = ToolRegistry::new();
+
+    // 1. Basic Python calculation
+    let call_basic = ToolCall {
+        id: "call_exec_1".to_string(),
+        name: "execute_code".to_string(),
+        arguments: json!({
+            "session_id": "test_integ_exec",
+            "code": "result = 123 * 456\nprint(f'CALC_RESULT={result}')"
+        }),
+    };
+
+    let res_basic = registry.execute(&call_basic).await;
+    assert_eq!(res_basic.tool_call_id, "call_exec_1");
+    assert!(res_basic.success, "execute_code should succeed: {}", res_basic.output);
+    let parsed: serde_json::Value = serde_json::from_str(&res_basic.output).expect("valid json");
+    assert_eq!(parsed.get("status").and_then(|v| v.as_str()), Some("success"));
+    let out = parsed.get("output").and_then(|v| v.as_str()).unwrap();
+    assert!(out.contains("CALC_RESULT=56088"));
+
+    // 2. State persistence across turns
+    let call_persist = ToolCall {
+        id: "call_exec_2".to_string(),
+        name: "execute_code".to_string(),
+        arguments: json!({
+            "session_id": "test_integ_exec",
+            "code": "print(f'PERSIST_VERIFY={result + 12}')"
+        }),
+    };
+    let res_persist = registry.execute(&call_persist).await;
+    assert!(res_persist.success);
+    let parsed_persist: serde_json::Value = serde_json::from_str(&res_persist.output).unwrap();
+    let out_persist = parsed_persist.get("output").and_then(|v| v.as_str()).unwrap();
+    assert!(out_persist.contains("PERSIST_VERIFY=56100"));
+
+    // 3. Reset flag test
+    let call_reset = ToolCall {
+        id: "call_exec_3".to_string(),
+        name: "execute_code".to_string(),
+        arguments: json!({
+            "session_id": "test_integ_exec",
+            "reset": true,
+            "code": "print('result_exists:', 'result' in globals() or 'result' in locals())"
+        }),
+    };
+    let res_reset = registry.execute(&call_reset).await;
+    assert!(res_reset.success);
+    let parsed_reset: serde_json::Value = serde_json::from_str(&res_reset.output).unwrap();
+    let out_reset = parsed_reset.get("output").and_then(|v| v.as_str()).unwrap();
+    assert!(out_reset.contains("result_exists: False"));
+
+    // 4. Missing required code argument
+    let call_nocode = ToolCall {
+        id: "call_exec_4".to_string(),
+        name: "execute_code".to_string(),
+        arguments: json!({}),
+    };
+    let res_nocode = registry.execute(&call_nocode).await;
+    assert!(!res_nocode.success);
+    assert!(res_nocode.output.contains("No code provided"));
 }
