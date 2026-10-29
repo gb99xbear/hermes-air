@@ -1,208 +1,174 @@
-// Hermes Air - Visual Branding & Startup Banner
-use std::env;
+// crates/gateway-bin/src/banner.rs
+// Hermes Air - 1-to-1 Authentic Terminal Dashboard Banner
 
-pub const LOGO_HERMES_AIR: [(&str, &str); 6] = [
-    ("\x1b[1;38;2;255;215;0m", "██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗    █████╗ ██╗██████╗     █████╗  ██████╗ ███████╗███╗   ██╗████████╗"),
-    ("\x1b[1;38;2;255;215;0m", "██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝   ██╔══██╗██║██╔══██╗   ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝"),
-    ("\x1b[38;2;255;191;0m",   "███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗   ███████║██║██████╔╝   ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   "),
-    ("\x1b[38;2;255;191;0m",   "██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║   ██╔══██║██║██╔══██╗   ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   "),
-    ("\x1b[38;2;205;127;50m",  "██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║   ██║  ██║██║██║  ██║   ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   "),
-    ("\x1b[38;2;205;127;50m",  "╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   "),
-];
+use std::path::Path;
 
-pub const CADUCEUS_HERO: [(&str, &str); 15] = [
-    ("\x1b[38;2;205;127;50m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;205;127;50m", "⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;255;191;0m", "⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀"),
-    ("\x1b[38;2;255;191;0m", "⠀⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻⠶⠈⠉⠉⠀⠀"),
-    ("\x1b[38;2;255;215;0m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;255;215;0m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;255;191;0m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;255;191;0m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;205;127;50m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;205;127;50m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;184;134;11m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠷⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;184;134;11m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⠑⢶⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;184;134;11m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠁⢰⡆⠈⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;184;134;11m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-    ("\x1b[38;2;184;134;11m", "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"),
-];
+pub fn print_startup_banner(model_name: &str, cwd: &Path, session_id: &str) {
+    let gold_bold = "\x1b[1;38;2;255;215;0m";
+    let amber_box = "\x1b[38;2;205;127;50m";
+    let yellow_text = "\x1b[38;2;255;235;130m";
+    let gray_dim = "\x1b[38;2;140;145;155m";
+    let cyan_bright = "\x1b[1;38;2;100;220;255m";
+    let reset = "\x1b[0m";
 
-/// Helper to compute display width in terminal columns (handling emojis/full-width chars)
-pub fn str_display_width(s: &str) -> usize {
-    s.chars().fold(0, |acc, ch| {
-        let cp = ch as u32;
-        if (0x1F300..=0x1FAFF).contains(&cp) || (0x2600..=0x27BF).contains(&cp) && cp != 0x2624 {
-            acc + 2
-        } else {
-            acc + 1
-        }
-    })
-}
+    // 1. Top Logo: HERMES-AIR AGENT in clean block ASCII matching Python Hermes
+    println!("{}", gold_bold);
+    println!(" _   _ _____ ____  __  __ _____ ____       _    ___ ____      _    ____ _____ _   _ _____ ");
+    println!("| | | | ____|  _ \\|  \\/  | ____/ ___|     / \\  |_ _|  _ \\    / \\  / ___| ____| \\ | |_   _|");
+    println!("| |_| |  _| | |_) | |\\/| |  _| \\___ \\    / _ \\  | || |_) |  / _ \\| |  _|  _| |  \\| | | |  ");
+    println!("|  _  | |___|  _ <| |  | | |___ ___) |  / ___ \\ | ||  _ <  / ___ \\ |_| | |___| |\\  | | |  ");
+    println!("|_| |_|_____|_| \\_\\_|  |_|_____|____/  /_/   \\_\\___|_| \\_\\/_/   \\_\\____|_____|_| \\_| |_|  ");
+    println!("{}", reset);
 
-/// Print the official 3D Isometric ASCII Logo
-pub fn print_ascii_logo() {
-    let rst = "\x1b[0m";
-    for (style, line) in LOGO_HERMES_AIR {
-        println!("{}{}{}", style, line, rst);
-    }
-}
-
-/// Print the full startup banner matching Python Hermes Agent specifications
-pub fn print_startup_banner(model: &str, session_id: &str) {
-    let c_gold1 = "\x1b[38;2;255;215;0m";    // #FFD700
-    let c_gold2 = "\x1b[38;2;255;191;0m";    // #FFBF00
-    let c_bronze = "\x1b[38;2;205;127;50m";  // #CD7F32
-    let c_dim = "\x1b[38;2;184;134;11m";     // #B8860B
-    let c_gray = "\x1b[38;2;139;134;130m";   // #8B8682
-    let c_text = "\x1b[38;2;255;248;220m";   // #FFF8DC
-    let c_cyan = "\x1b[1;36m";
-    let c_bold = "\x1b[1m";
-    let rst = "\x1b[0m";
-
-    // 1. Title Logo
-    print_ascii_logo();
-    println!();
-
-    // 2. 2-column Retro Dashboard Box
-    let cwd = env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| ".".to_string());
-
-    let mut left_lines: Vec<(String, String)> = Vec::new();
-    for (col, art) in CADUCEUS_HERO {
-        left_lines.push((art.to_string(), format!("{}{}{}", col, art, rst)));
-    }
-    left_lines.push(("".to_string(), "".to_string()));
-    left_lines.push((
-        format!("{} · 1.0M context · Nous Research", model),
-        format!("{}{}{} {}· 1.0M context · Nous Research{}", c_gold2, model, rst, c_dim, rst),
-    ));
-    left_lines.push((
-        format!("dir: {}", cwd),
-        format!("{}dir: {}{}", c_dim, cwd, rst),
-    ));
-    left_lines.push((
-        format!("Session: {}", session_id),
-        format!("{}Session: {}{}", c_gray, session_id, rst),
-    ));
-
-    let mut right_lines: Vec<(String, String)> = vec![
-        ("Available Tools".to_string(), format!("{}{}Available Tools{}", c_bold, c_gold2, rst)),
-        ("  • terminal, read_file, write_file, patch, search_files".to_string(), format!("{}  • terminal, read_file, write_file, patch, search_files{}", c_text, rst)),
-        ("  • web_search, web_extract, execute_code".to_string(), format!("{}  • web_search, web_extract, execute_code{}", c_text, rst)),
-        ("  • browser_navigate, browser_snapshot, browser_click".to_string(), format!("{}  • browser_navigate, browser_snapshot, browser_click{}", c_text, rst)),
-        ("  • browser_type, browser_exec".to_string(), format!("{}  • browser_type, browser_exec{}", c_text, rst)),
-        ("  • skills_list, skill_view".to_string(), format!("{}  • skills_list, skill_view{}", c_text, rst)),
-        ("".to_string(), "".to_string()),
-        ("Available Skills".to_string(), format!("{}{}Available Skills{}", c_bold, c_gold2, rst)),
-        ("  Security · Automation · DevOps · Research · QA-Testing".to_string(), format!("{}  Security · Automation · DevOps · Research · QA-Testing{}", c_text, rst)),
-        ("  Programming · Productivity · Media · Finance".to_string(), format!("{}  Programming · Productivity · Media · Finance{}", c_text, rst)),
-        ("".to_string(), "".to_string()),
-        ("Profile: default".to_string(), format!("{}{}Profile: {}{}{}", c_bold, c_gold2, c_text, "default", rst)),
-        ("15 tools · skills · /help for commands".to_string(), format!("{}15 tools · skills · /help for commands{}", c_dim, rst)),
+    // 2. Exact Caduceus ASCII Art (34 lines) matching Python Hermes screenshot
+    let caduceus_lines: [&str; 34] = [
+        "         .:::.                   .:::.      ",
+        "      .:*%@@@%*:.             .:*%@@@%*:.   ",
+        "    .:*#@@@@@@@@#*:         :*#@@@@@@@@#*:. ",
+        "   .:*%@@@@@@@@@@@%*:.....:*%@@@@@@@@@@@%*:.",
+        "     .:*#@@@@@@@@@@@#*:::*#@@@@@@@@@@@#*:.  ",
+        "        .:*%@@@@@@@@@@@@@@@@@@@@@@%*:.      ",
+        "           .:*#@@@@@@@@@@@@@@@@#*:.         ",
+        "              .:*%@@@@@@@@@@%*:.            ",
+        "                   .:*%%*:.                 ",
+        "                     :@@:                   ",
+        "                  .:*%@@%*:.                ",
+        "                .:*#@@@@@@#*:.              ",
+        "               :*%@@%*::*%@@%*:             ",
+        "              :%@@%:      :%@@%:            ",
+        "              :%@@%:      :%@@%:            ",
+        "               :*%@@%*::*%@@%*:             ",
+        "                .:*#@@@@@@#*:.              ",
+        "                  .:*%@@%*:.                ",
+        "                     :@@:                   ",
+        "                  .:*%@@%*:.                ",
+        "                .:*#@@@@@@#*:.              ",
+        "               :*%@@%*::*%@@%*:             ",
+        "              :%@@%:      :%@@%:            ",
+        "              :%@@%:      :%@@%:            ",
+        "               :*%@@%*::*%@@%*:             ",
+        "                .:*#@@@@@@#*:.              ",
+        "                  .:*%@@%*:.                ",
+        "                     :@@:                   ",
+        "                     :@@:                   ",
+        "                     :@@:                   ",
+        "                     :@@:                   ",
+        "                    .:%%:.                  ",
+        "                     :@@:                   ",
+        "                      ::                    ",
     ];
 
-    let max_lines = left_lines.len().max(right_lines.len());
-    while left_lines.len() < max_lines {
-        left_lines.push(("".to_string(), "".to_string()));
-    }
-    while right_lines.len() < max_lines {
-        right_lines.push(("".to_string(), "".to_string()));
-    }
+    let right_column: [&str; 34] = [
+        "Available Tools",
+        "browser: browser_click, browser_exec, browser_navigate...",
+        "code_execution: execute_code",
+        "file: patch, read_file, search_files, write_file",
+        "skills: skill_view, skills_list",
+        "terminal: terminal",
+        "web: web_extract, web_search",
+        "",
+        "Available Skills",
+        "autonomous-ai-agents: hermes-air",
+        "creative: ascii-art, system-atlas",
+        "devops: docker-management, setup-wizard",
+        "gaming: game-hacking",
+        "media: vision-analyze, tts",
+        "mlops: model-evaluation, vllm",
+        "productivity: context-compaction, todo",
+        "research: web-research, osint",
+        "security: offensive-security, exploit-gen, rat",
+        "software-development: test-driven-development, git",
+        "",
+        "Profile: default",
+        "15 tools • 45 skills • /help for commands",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+    ];
 
-    let inner_w: usize = 118;
-    let left_w: usize = 46;
-    let right_w: usize = inner_w - left_w - 4;
+    // Top border - exactly 111 chars
+    println!("{}╭─────────────────────────────────────────────────────────────────── Hermes Air Agent v0.1.0 (2026.10.30) ────╮{}", amber_box, reset);
 
-    let box_title = "Hermes Air Agent v0.1.0 (2026.10.30)";
-    let dashes = inner_w.saturating_sub(2 + box_title.len() + 2);
-    let top_border = format!(
-        "{}╭─ {}{}{}{} {}╮{}",
-        c_bronze, c_bold, c_gold1, box_title, c_bronze, "─".repeat(dashes), rst
-    );
-    let bot_border = format!("{}╰{}╯{}", c_bronze, "─".repeat(inner_w), rst);
+    for i in 0..34 {
+        let r_text = right_column[i];
+        let r_is_header = r_text.starts_with("Available") || r_text.starts_with("Profile:");
+        let r_pad = 60usize.saturating_sub(r_text.chars().count());
 
-    println!("{}", top_border);
-    for i in 0..max_lines {
-        let (l_plain, l_styled) = &left_lines[i];
-        let (r_plain, r_styled) = &right_lines[i];
+        let l_cell = if i == 31 {
+            let s = format!("{} • Nous Research", model_name);
+            let s_trimmed = if s.chars().count() > 44 { &s[..44] } else { &s };
+            let pad_total = 44usize.saturating_sub(s_trimmed.chars().count());
+            let pad_left = pad_total / 2;
+            let pad_right = pad_total - pad_left;
+            format!("{}{}{}", " ".repeat(pad_left), s_trimmed, " ".repeat(pad_right))
+        } else if i == 32 {
+            let cwd_str = cwd.to_string_lossy();
+            let s_trimmed = if cwd_str.chars().count() > 44 { &cwd_str[..44] } else { &cwd_str };
+            let pad_total = 44usize.saturating_sub(s_trimmed.chars().count());
+            let pad_left = pad_total / 2;
+            let pad_right = pad_total - pad_left;
+            format!("{}{}{}", " ".repeat(pad_left), s_trimmed, " ".repeat(pad_right))
+        } else if i == 33 {
+            let s = format!("Session: {}", session_id);
+            let s_trimmed = if s.chars().count() > 44 { &s[..44] } else { &s };
+            let pad_total = 44usize.saturating_sub(s_trimmed.chars().count());
+            let pad_left = pad_total / 2;
+            let pad_right = pad_total - pad_left;
+            format!("{}{}{}", " ".repeat(pad_left), s_trimmed, " ".repeat(pad_right))
+        } else {
+            let s = caduceus_lines[i];
+            let pad = 44usize.saturating_sub(s.chars().count());
+            format!("{}{}", s, " ".repeat(pad))
+        };
 
-        let l_pad = " ".repeat(left_w.saturating_sub(str_display_width(l_plain)));
-        let r_pad = " ".repeat(right_w.saturating_sub(str_display_width(r_plain)));
+        let l_color = if i >= 31 { gray_dim } else { gold_bold };
+        let r_color = if r_is_header { gold_bold } else if r_text.is_empty() { "" } else { yellow_text };
 
         println!(
-            "{}│{}  {}{}{}{}  {}│{}",
-            c_bronze, rst, l_styled, l_pad, r_styled, r_pad, c_bronze, rst
+            "{}│{} {}{}{} {}│{} {}{}{}{} {}│{}",
+            amber_box, reset,
+            l_color, l_cell, reset,
+            amber_box, reset,
+            r_color, r_text, reset, " ".repeat(r_pad),
+            amber_box, reset
         );
     }
-    println!("{}", bot_border);
-    println!();
 
-    // 3. Status Bar
-    let status_bar_bg = "\x1b[48;2;26;26;46m";
-    let status_bar_fg = "\x1b[38;2;192;192;192m";
-    let sb_strong = format!("{}\x1b[1;38;2;255;215;0m", status_bar_bg);
-    let sb_dim = format!("{}\x1b[38;2;138;122;74m", status_bar_bg);
-    let sb_text = format!("{}{}", status_bar_bg, status_bar_fg);
-    let sb_good = format!("{}\x1b[1;38;2;143;188;143m", status_bar_bg);
+    // Bottom border - exactly 111 chars
+    println!("{}╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────╯{}", amber_box, reset);
 
-    let gauge = "[░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]";
+    // 3. Status Bar & Welcome Notice
     println!(
-        "{}  {}☤ {}{}  │  {}Context {}{}{} 0%{}  │  {}Runtime: Pure Async Rust (~20MB RAM){}  │  {}Uptime: 0s  {}",
-        status_bar_bg, sb_strong, model, sb_dim, sb_text, sb_good, gauge, sb_text, sb_dim, sb_text, sb_dim, sb_text, rst
+        "{}☤ {}{} │ {}ctx --{} │ [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] -- │ {}33s{}",
+        cyan_bright, model_name, reset, gray_dim, reset, gray_dim, reset
     );
     println!();
-
-    // 4. Welcome Message & Quick Command Hints
-    println!("{}Welcome to Hermes Air Agent! Type your message or /help for commands.{}", c_cyan, rst);
-    println!("{}Quick command hints:{}", c_dim, rst);
-    println!("{}  /model    - Switch or view active model{}", c_dim, rst);
-    println!("{}  /context  - Show context window usage & token headroom{}", c_dim, rst);
-    println!("{}  /clear    - Reset conversation history{}", c_dim, rst);
-    println!("{}  /compress - Compact conversation context{}", c_dim, rst);
-    println!("{}  exit      - Exit chat{}", c_dim, rst);
+    println!("Welcome to Hermes Air Agent! Type your message or /help for commands.");
     println!();
 }
 
-/// Print the logo header when setup is launched
 pub fn print_setup_header() {
-    let c_cyan = "\x1b[1;36m";
-    let c_dim = "\x1b[38;2;184;134;11m";
-    let rst = "\x1b[0m";
-
-    print_ascii_logo();
+    let gold_bold = "\x1b[1;38;2;255;215;0m";
+    let cyan = "\x1b[1;38;2;100;220;255m";
+    let reset = "\x1b[0m";
+    println!("{}", gold_bold);
+    println!(" _   _ _____ ____  __  __ _____ ____       _    ___ ____      _    ____ _____ _   _ _____ ");
+    println!("| | | | ____|  _ \\|  \\/  | ____/ ___|     / \\  |_ _|  _ \\    / \\  / ___| ____| \\ | |_   _|");
+    println!("| |_| |  _| | |_) | |\\/| |  _| \\___ \\    / _ \\  | || |_) |  / _ \\| |  _|  _| |  \\| | | |  ");
+    println!("|  _  | |___|  _ <| |  | | |___ ___) |  / ___ \\ | ||  _ <  / ___ \\ |_| | |___| |\\  | | |  ");
+    println!("|_| |_|_____|_| \\_\\_|  |_|_____|____/  /_/   \\_\\___|_| \\_\\/_/   \\_\\____|_____|_| \\_| |_|  ");
+    println!("{}", reset);
+    println!("{}{}===================================================={}", cyan, "\x1b[1m", reset);
+    println!("{}🌿 Hermes Air 🍃 - Interactive Setup Wizard{}", gold_bold, reset);
+    println!("{}{}===================================================={}", cyan, "\x1b[1m", reset);
     println!();
-    println!("{}🍃 Hermes Air v0.1.0 — The Featherlight Agent Gateway{}", c_cyan, rst);
-    println!("{}Interactive Setup Wizard — Configuration & Diagnostics{}", c_dim, rst);
-    println!();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_display_width_calculations() {
-        assert_eq!(str_display_width("abc"), 3);
-        assert_eq!(str_display_width("🍃"), 2);
-        assert_eq!(str_display_width("•"), 1);
-        assert_eq!(str_display_width("☤"), 1);
-    }
-
-    #[test]
-    fn test_logo_dimensions() {
-        assert_eq!(LOGO_HERMES_AIR.len(), 6);
-        for (_, line) in LOGO_HERMES_AIR {
-            assert_eq!(line.chars().count(), 120);
-        }
-    }
-
-    #[test]
-    fn test_caduceus_dimensions() {
-        assert_eq!(CADUCEUS_HERO.len(), 15);
-        for (_, line) in CADUCEUS_HERO {
-            assert_eq!(line.chars().count(), 30);
-        }
-    }
 }

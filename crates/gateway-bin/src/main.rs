@@ -299,7 +299,8 @@ async fn run_oneshot_query(
 
 /// Print Hermes Air startup banner & dashboard
 fn print_interactive_banner(model: &str, session_id: &str) {
-    banner::print_startup_banner(model, session_id);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    banner::print_startup_banner(model, &cwd, session_id);
 }
 
 /// Interactive Chat REPL mode
