@@ -1,3 +1,4 @@
+pub mod banner;
 pub mod setup;
 // Hermes Air - Main Binary (CLI & Gateway)
 use hermes_config::{ConfigLoader, LogFormat, LogOutput, LoggingConfig};
@@ -296,13 +297,9 @@ async fn run_oneshot_query(
     Ok(())
 }
 
-/// Print Hermes banner
-fn print_interactive_banner(model: &str) {
-    println!("\x1b[1;36m====================================================\x1b[0m");
-    println!("\x1b[1;32m🌿 Hermes Air 🍃\x1b[0m - \x1b[2mInteractive Terminal REPL\x1b[0m");
-    println!("\x1b[1;34mModel:\x1b[0m \x1b[33m{}\x1b[0m", model);
-    println!("\x1b[2mType your prompt or /help for slash commands (/exit to quit)\x1b[0m");
-    println!("\x1b[1;36m====================================================\x1b[0m\n");
+/// Print Hermes Air startup banner & dashboard
+fn print_interactive_banner(model: &str, session_id: &str) {
+    banner::print_startup_banner(model, session_id);
 }
 
 /// Interactive Chat REPL mode
@@ -318,7 +315,7 @@ async fn run_interactive_chat(
         .clone()
         .unwrap_or_else(|| "ag/gemini-3.8-flash".to_string());
 
-    print_interactive_banner(&active_model_display);
+    print_interactive_banner(&active_model_display, &session_id.to_string());
 
     let mut rl = DefaultEditor::new()?;
     let history_path = std::env::var_os("HOME")
@@ -445,6 +442,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Run setup wizard if requested
     if let Some(Commands::Setup { ref section }) = cli.command {
+        banner::print_setup_header();
         return setup::run_setup_wizard(&cli.config, section.as_deref());
     }
 
@@ -473,6 +471,7 @@ async fn main() -> anyhow::Result<()> {
     // 2. Dispatch based on subcommand
     match cli.command {
         Some(Commands::Setup { ref section }) => {
+            banner::print_setup_header();
             setup::run_setup_wizard(&cli.config, section.as_deref())
         }
         Some(Commands::Gateway) => {
