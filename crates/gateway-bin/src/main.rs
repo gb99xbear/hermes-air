@@ -191,6 +191,24 @@ fn init_logging(cfg: &LoggingConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
+    let config = ConfigLoader::load(&args.config)?;
+    init_logging(&config.logging)?;
+
+    if args.validate {
+        println!("Configuration valid!");
+        println!("Profiles: {}", config.profiles.len());
+        println!("Platforms: {}", config.platforms.len());
+        return Ok(());
+    }
+
+    let gateway = Gateway::new(config).await?;
+    gateway.run().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,22 +239,4 @@ mod tests {
         let _ = w.write(b"smoke");
         let _ = w.flush();
     }
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-
-    let config = ConfigLoader::load(&args.config)?;
-    init_logging(&config.logging)?;
-
-    if args.validate {
-        println!("Configuration valid!");
-        println!("Profiles: {}", config.profiles.len());
-        println!("Platforms: {}", config.platforms.len());
-        return Ok(());
-    }
-
-    let gateway = Gateway::new(config).await?;
-    gateway.run().await
 }
