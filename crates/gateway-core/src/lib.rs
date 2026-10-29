@@ -7,8 +7,10 @@ pub mod providers;
 pub mod tools;
 
 pub use commands::{
-    handle_clear, handle_command, handle_model, handle_start_or_help, handle_status,
-    parse_command, CommandContext, SlashCommand,
+    build_model_keyboard, build_provider_keyboard, default_providers_list, handle_clear,
+    handle_command, handle_model, handle_start_or_help, handle_status, model_picker_card,
+    parse_command, provider_picker_header, CommandContext, ProviderItem, SlashCommand,
+    MODEL_PAGE_SIZE,
 };
 pub use llm::{ChatMessage, ChatResponse, LlmClient, ToolCallRawExt};
 pub use stream::GatewayStreamConsumer;
@@ -19,13 +21,27 @@ pub use tools::{ToolCall, ToolRegistry, ToolResult};
 use hermes_config::GatewayConfig;
 use hermes_platform_adapter::PlatformAdapter;
 use hermes_platform_telegram::{TelegramAdapter, TelegramConfig};
-use hermes_protocol::{IncomingMessage, MessageContent, MessageId, OutgoingMessage, Platform, PlatformEvent};
+use hermes_protocol::{IncomingMessage, MessageContent, MessageId, OutgoingMessage, Platform, PlatformError, PlatformEvent};
 use hermes_relay::{WsRelayConfig, WsRelayServer};
 use hermes_session_store::{SessionStore, SessionStoreFactory};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
+
+/// State of an active model picker for a Telegram chat
+#[derive(Debug, Clone)]
+pub struct ModelPickerState {
+    pub message_id: i64,
+    pub chat_id: i64,
+    pub session_id: uuid::Uuid,
+    pub selected_provider: String,
+    pub selected_provider_name: String,
+    pub current_model: String,
+    pub current_provider: String,
+    pub model_list: Vec<String>,
+    pub model_page: usize,
+}
 
 #[allow(dead_code)]
 pub struct Gateway {
@@ -38,6 +54,7 @@ pub struct Gateway {
     prompt_assembler: Arc<PromptAssembler>,
     event_tx: mpsc::UnboundedSender<PlatformEvent>,
     event_rx: Option<mpsc::UnboundedReceiver<PlatformEvent>>,
+    model_picker_states: Arc<RwLock<HashMap<i64, ModelPickerState>>>,
 }
 
 impl Gateway {
@@ -118,6 +135,7 @@ impl Gateway {
             prompt_assembler,
             event_tx,
             event_rx: Some(event_rx),
+            model_picker_states: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -176,6 +194,8 @@ impl Gateway {
         let prompt_assembler = self.prompt_assembler.clone();
         let session_store = self.session_store.clone();
         let config_arc = Arc::new(self.config.clone());
+        let provider_registry = self.provider_registry.clone();
+        let model_picker_states = self.model_picker_states.clone();
 
         let default_profile = self
             .config
@@ -198,6 +218,8 @@ impl Gateway {
                             &tool_registry,
                             &prompt_assembler,
                             &session_store,
+                            &provider_registry,
+                            &model_picker_states,
                             &default_profile,
                             &event_loop_tg,
                         )
@@ -222,6 +244,316 @@ impl Gateway {
         Ok(())
     }
 
+    /// Fetch models available for a given provider
+    pub async fn fetch_provider_models(
+        provider_slug: &str,
+        provider_registry: &Arc<ProviderRegistry>,
+    ) -> Vec<String> {
+        let slug_lower = provider_slug.to_lowercase();
+        if slug_lower.contains("9router") || slug_lower == "9router" {
+            // Live query 9Router models API
+            let url = "http://100.75.163.92:20128/v1/models";
+            let client = reqwest::Client::new();
+            let mut req = client.get(url).timeout(std::time::Duration::from_secs(3));
+            if let Ok(key) = std::env::var("HERMES_CUSTOM_100_75_163_92_20128_API_KEY") {
+                req = req.bearer_auth(key);
+            }
+            if let Ok(resp) = req.send().await {
+                if let Ok(body) = resp.json::<serde_json::Value>().await {
+                    if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+                        let mut models: Vec<String> = data
+                            .iter()
+                            .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(|s| s.to_string()))
+                            .collect();
+                        if !models.is_empty() {
+                            models.sort();
+                            return models;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback to provider profile catalog
+        if let Some(profile) = provider_registry.get(provider_slug).await {
+            if !profile.fallback_models.is_empty() {
+                return profile.fallback_models;
+            }
+        }
+
+        match slug_lower.as_str() {
+            "tokenharbor" => vec![
+                "thk/deepseek-v4.1-flash:free".to_string(),
+                "thk/mimo-v2.6-flash:free".to_string(),
+                "thk/gemini-2.5-flash:free".to_string(),
+                "thk/claude-3-5-haiku:free".to_string(),
+            ],
+            "openrouter" => vec![
+                "anthropic/claude-sonnet-4.6".to_string(),
+                "openai/gpt-5.4".to_string(),
+                "deepseek/deepseek-chat".to_string(),
+                "google/gemini-3.8-flash".to_string(),
+            ],
+            "anthropic" => vec![
+                "claude-3-5-sonnet-20241022".to_string(),
+                "claude-3-5-haiku-20241022".to_string(),
+            ],
+            "openai" => vec![
+                "gpt-4o".to_string(),
+                "gpt-4o-mini".to_string(),
+                "o1".to_string(),
+                "o3-mini".to_string(),
+            ],
+            _ => vec![format!("{}-default", provider_slug)],
+        }
+    }
+
+    /// Handle Telegram Callback Queries from the Interactive Model Picker
+    pub async fn handle_callback_query(
+        callback_data: &str,
+        callback_query_id: &str,
+        chat_id: i64,
+        message_id: i64,
+        tg_adapter: &TelegramAdapter,
+        session_store: &Arc<Box<dyn SessionStore>>,
+        provider_registry: &Arc<ProviderRegistry>,
+        picker_states: &Arc<RwLock<HashMap<i64, ModelPickerState>>>,
+    ) -> Result<(), PlatformError> {
+        info!(
+            "[model-picker] Callback: data='{}', query_id='{}', chat_id={}, message_id={}",
+            callback_data, callback_query_id, chat_id, message_id
+        );
+
+        // 1. Cancel action: mx:cancel or mx
+        if callback_data == "mx:cancel" || callback_data == "mx" {
+            let _ = tg_adapter.answer_callback_query(callback_query_id, Some("Cancelled")).await;
+            picker_states.write().await.remove(&chat_id);
+            return tg_adapter
+                .edit_message_with_keyboard(
+                    chat_id,
+                    message_id,
+                    "<i>Model selection cancelled.</i>",
+                    None,
+                )
+                .await;
+        }
+
+        // No-op (e.g. current page counter button)
+        if callback_data == "mx:noop" {
+            return tg_adapter.answer_callback_query(callback_query_id, None).await;
+        }
+
+        // 2. Back to Provider Selection: mb:back or mb
+        if callback_data == "mb:back" || callback_data == "mb" {
+            let state_opt = picker_states.read().await.get(&chat_id).cloned();
+            let (active_model, active_provider) = if let Some(st) = state_opt {
+                (st.current_model, st.current_provider)
+            } else {
+                ("unknown".to_string(), "9router".to_string())
+            };
+
+            let providers = default_providers_list();
+            let keyboard = build_provider_keyboard(&providers, &active_provider);
+            let header = provider_picker_header(&active_model, &active_provider);
+
+            let _ = tg_adapter.answer_callback_query(callback_query_id, None).await;
+            return tg_adapter
+                .edit_message_with_keyboard(chat_id, message_id, &header, Some(keyboard))
+                .await;
+        }
+
+        // 3. Provider selected: mp:<provider_slug>
+        if let Some(provider_slug) = callback_data.strip_prefix("mp:") {
+            let _ = tg_adapter.answer_callback_query(callback_query_id, None).await;
+
+            let providers = default_providers_list();
+            let p_name = providers
+                .iter()
+                .find(|p| p.slug == provider_slug)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| provider_slug.to_string());
+
+            let mut state = picker_states
+                .read()
+                .await
+                .get(&chat_id)
+                .cloned()
+                .unwrap_or_else(|| {
+                    let bytes = chat_id.to_le_bytes();
+                    let mut uuid_bytes = [0u8; 16];
+                    uuid_bytes[..8].copy_from_slice(&bytes);
+                    let session_id = uuid::Uuid::from_bytes(uuid_bytes);
+                    ModelPickerState {
+                        message_id,
+                        chat_id,
+                        session_id,
+                        selected_provider: provider_slug.to_string(),
+                        selected_provider_name: p_name.clone(),
+                        current_model: "gemini-2.5-flash".to_string(),
+                        current_provider: "9router".to_string(),
+                        model_list: Vec::new(),
+                        model_page: 0,
+                    }
+                });
+
+            state.selected_provider = provider_slug.to_string();
+            state.selected_provider_name = p_name.clone();
+            state.model_page = 0;
+
+            // Fetch models for provider
+            let models = Self::fetch_provider_models(provider_slug, provider_registry).await;
+            state.model_list = models.clone();
+
+            picker_states.write().await.insert(chat_id, state.clone());
+
+            let (keyboard, cur_page, total_pages) =
+                build_model_keyboard(&models, 0, &state.current_model, provider_slug);
+
+            let start = 0;
+            let end = std::cmp::min(MODEL_PAGE_SIZE, models.len());
+            let page_models = if !models.is_empty() { &models[start..end] } else { &[] };
+
+            let text = model_picker_card(
+                &p_name,
+                models.len(),
+                cur_page,
+                total_pages,
+                page_models,
+                &state.current_model,
+            );
+
+            return tg_adapter
+                .edit_message_with_keyboard(chat_id, message_id, &text, Some(keyboard))
+                .await;
+        }
+
+        // 4. Model Page Navigation: mg:<provider_slug>:<page>
+        if let Some(rest) = callback_data.strip_prefix("mg:") {
+            let parts: Vec<&str> = rest.split(':').collect();
+            if parts.len() >= 2 {
+                let provider_slug = parts[0];
+                let target_page: usize = parts[1].parse().unwrap_or(0);
+
+                let mut state_opt = picker_states.read().await.get(&chat_id).cloned();
+                if let Some(ref mut state) = state_opt {
+                    state.model_page = target_page;
+                    picker_states.write().await.insert(chat_id, state.clone());
+
+                    let models = &state.model_list;
+                    let (keyboard, cur_page, total_pages) =
+                        build_model_keyboard(models, target_page, &state.current_model, provider_slug);
+
+                    let start = target_page * MODEL_PAGE_SIZE;
+                    let end = std::cmp::min(start + MODEL_PAGE_SIZE, models.len());
+                    let page_models = if start < models.len() { &models[start..end] } else { &[] };
+
+                    let text = model_picker_card(
+                        &state.selected_provider_name,
+                        models.len(),
+                        cur_page,
+                        total_pages,
+                        page_models,
+                        &state.current_model,
+                    );
+
+                    let _ = tg_adapter.answer_callback_query(callback_query_id, None).await;
+                    return tg_adapter
+                        .edit_message_with_keyboard(chat_id, message_id, &text, Some(keyboard))
+                        .await;
+                }
+            }
+        }
+
+        // 5. Model Refresh: mrf:<provider_slug> or mrf:prov
+        if let Some(target) = callback_data.strip_prefix("mrf:") {
+            if target == "prov" {
+                let state_opt = picker_states.read().await.get(&chat_id).cloned();
+                let (active_model, active_provider) = if let Some(st) = state_opt {
+                    (st.current_model, st.current_provider)
+                } else {
+                    ("unknown".to_string(), "9router".to_string())
+                };
+
+                let providers = default_providers_list();
+                let keyboard = build_provider_keyboard(&providers, &active_provider);
+                let header = provider_picker_header(&active_model, &active_provider);
+
+                let _ = tg_adapter.answer_callback_query(callback_query_id, Some("Providers refreshed")).await;
+                return tg_adapter
+                    .edit_message_with_keyboard(chat_id, message_id, &header, Some(keyboard))
+                    .await;
+            } else {
+                let provider_slug = target;
+                let mut state_opt = picker_states.read().await.get(&chat_id).cloned();
+                if let Some(ref mut state) = state_opt {
+                    let models = Self::fetch_provider_models(provider_slug, provider_registry).await;
+                    state.model_list = models.clone();
+                    picker_states.write().await.insert(chat_id, state.clone());
+
+                    let (keyboard, cur_page, total_pages) =
+                        build_model_keyboard(&models, state.model_page, &state.current_model, provider_slug);
+
+                    let start = state.model_page * MODEL_PAGE_SIZE;
+                    let end = std::cmp::min(start + MODEL_PAGE_SIZE, models.len());
+                    let page_models = if start < models.len() { &models[start..end] } else { &[] };
+
+                    let text = model_picker_card(
+                        &state.selected_provider_name,
+                        models.len(),
+                        cur_page,
+                        total_pages,
+                        page_models,
+                        &state.current_model,
+                    );
+
+                    let _ = tg_adapter.answer_callback_query(callback_query_id, Some("Models refreshed")).await;
+                    return tg_adapter
+                        .edit_message_with_keyboard(chat_id, message_id, &text, Some(keyboard))
+                        .await;
+                }
+            }
+        }
+
+        // 6. Model Selected: mm:<model_id>
+        if let Some(new_model) = callback_data.strip_prefix("mm:") {
+            let state_opt = picker_states.read().await.get(&chat_id).cloned();
+            let session_id = if let Some(ref st) = state_opt {
+                st.session_id
+            } else {
+                let bytes = chat_id.to_le_bytes();
+                let mut uuid_bytes = [0u8; 16];
+                uuid_bytes[..8].copy_from_slice(&bytes);
+                uuid::Uuid::from_bytes(uuid_bytes)
+            };
+
+            // Switch session model override in session store!
+            if let Err(e) = session_store
+                .set_model_override(session_id, Some(new_model.to_string()))
+                .await
+            {
+                warn!("Failed to persist model override: {:?}", e);
+            }
+
+            picker_states.write().await.remove(&chat_id);
+
+            let confirmation_text = format!(
+                "⚡ <b>HERMES ROUTER // MODEL SELECTOR</b>\n\n⭐ <b>Active model switched to:</b> <code>{}</code>\n\nSubsequent conversation turns will use this model.",
+                new_model
+            );
+
+            let _ = tg_adapter
+                .answer_callback_query(callback_query_id, Some(&format!("Model switched to {}", new_model)))
+                .await;
+
+            return tg_adapter
+                .edit_message_with_keyboard(chat_id, message_id, &confirmation_text, None)
+                .await;
+        }
+
+        let _ = tg_adapter.answer_callback_query(callback_query_id, None).await;
+        Ok(())
+    }
+
     async fn process_incoming(
         msg: IncomingMessage,
         config: &Arc<GatewayConfig>,
@@ -229,9 +561,55 @@ impl Gateway {
         tool_registry: &Arc<ToolRegistry>,
         prompt_assembler: &Arc<PromptAssembler>,
         session_store: &Arc<Box<dyn SessionStore>>,
+        provider_registry: &Arc<ProviderRegistry>,
+        model_picker_states: &Arc<RwLock<HashMap<i64, ModelPickerState>>>,
         profile: &Option<hermes_config::ProfileConfig>,
         tg_adapter: &Option<Arc<TelegramAdapter>>,
     ) {
+        // Handle Callback Query updates from Telegram (e.g. model selector taps)
+        if let MessageContent::System { ref event, ref data } = msg.content {
+            if event == "callback_query" {
+                if let Some(ref adapter) = tg_adapter {
+                    let callback_data = data
+                        .get("callback_data")
+                        .or_else(|| data.get("data"))
+                        .and_then(|d| d.as_str())
+                        .unwrap_or_default();
+
+                    let callback_query_id = data
+                        .get("callback_query_id")
+                        .and_then(|id| id.as_str())
+                        .unwrap_or_default();
+
+                    let chat_id = data
+                        .get("chat_id")
+                        .and_then(|c| c.as_i64())
+                        .unwrap_or_else(|| adapter.chat_id_from_session(msg.session_id).unwrap_or(0));
+
+                    let message_id = data
+                        .get("message_id")
+                        .and_then(|m| m.as_i64())
+                        .unwrap_or(0);
+
+                    if let Err(e) = Self::handle_callback_query(
+                        callback_data,
+                        callback_query_id,
+                        chat_id,
+                        message_id,
+                        adapter,
+                        session_store,
+                        provider_registry,
+                        model_picker_states,
+                    )
+                    .await
+                    {
+                        error!("[model-picker] Failed handling callback query: {:?}", e);
+                    }
+                }
+                return;
+            }
+        }
+
         let (prompt_text, incoming_id) = match &msg.content {
             MessageContent::Text { text } => (text.clone(), msg.id),
             _ => {
@@ -263,9 +641,48 @@ impl Gateway {
             .map(|p| p.name.as_str())
             .unwrap_or_else(|| config.gateway.default_profile.as_str());
 
+        let active_provider = profile
+            .as_ref()
+            .map(|p| p.model_provider.as_str())
+            .unwrap_or("9router");
+
         // Check if incoming text is a Slash Command
         if let Some(cmd) = parse_command(&prompt_text) {
             info!("Detected slash command: {:?}", cmd);
+
+            // If command is /model with no arguments and Telegram adapter is active,
+            // render the Interactive Inline Keyboard Model Selector!
+            if matches!(cmd, SlashCommand::Model(None)) && tg_adapter.is_some() && msg.platform == Platform::Telegram {
+                if let Some(adapter) = tg_adapter {
+                    if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
+                        let providers = default_providers_list();
+                        let keyboard = build_provider_keyboard(&providers, active_provider);
+                        let header = provider_picker_header(&active_model, active_provider);
+
+                        match adapter.send_message_with_keyboard(chat_id, &header, keyboard).await {
+                            Ok(sent) => {
+                                let state = ModelPickerState {
+                                    message_id: sent.message_id,
+                                    chat_id,
+                                    session_id: msg.session_id,
+                                    selected_provider: active_provider.to_string(),
+                                    selected_provider_name: "9Router Gateway".to_string(),
+                                    current_model: active_model.clone(),
+                                    current_provider: active_provider.to_string(),
+                                    model_list: Vec::new(),
+                                    model_page: 0,
+                                };
+                                model_picker_states.write().await.insert(chat_id, state);
+                                info!("[model-picker] Sent interactive picker message {} for chat {}", sent.message_id, chat_id);
+                                return;
+                            }
+                            Err(e) => {
+                                warn!("[model-picker] Failed to send interactive picker: {:?}, falling back to text", e);
+                            }
+                        }
+                    }
+                }
+            }
 
             let is_clear = matches!(cmd, SlashCommand::Clear);
 

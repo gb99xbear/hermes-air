@@ -155,6 +155,33 @@ struct TelegramCallbackQuery {
     game_short_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InlineKeyboardButton {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback_data: Option<String>,
+}
+
+impl InlineKeyboardButton {
+    pub fn new(text: impl Into<String>, callback_data: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            callback_data: Some(callback_data.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InlineKeyboardMarkup {
+    pub inline_keyboard: Vec<Vec<InlineKeyboardButton>>,
+}
+
+impl InlineKeyboardMarkup {
+    pub fn new(inline_keyboard: Vec<Vec<InlineKeyboardButton>>) -> Self {
+        Self { inline_keyboard }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct SendMessageRequest {
     chat_id: i64,
@@ -165,6 +192,8 @@ struct SendMessageRequest {
     reply_to_message_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     disable_web_page_preview: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_markup: Option<InlineKeyboardMarkup>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -176,7 +205,18 @@ pub struct EditMessageTextRequest {
     pub parse_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disable_web_page_preview: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_markup: Option<InlineKeyboardMarkup>,
 }
+#[derive(Debug, Serialize)]
+struct AnswerCallbackQueryRequest<'a> {
+    callback_query_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    show_alert: Option<bool>,
+}
+
 
 
 #[derive(Debug, Serialize)]
@@ -367,6 +407,7 @@ impl TelegramAdapter {
             text: text.to_string(),
             parse_mode: Some("HTML".to_string()),
             disable_web_page_preview: Some(true),
+            reply_markup: None,
         };
 
         match self.make_request::<serde_json::Value>("editMessageText", &html_req).await {
@@ -388,6 +429,7 @@ impl TelegramAdapter {
                         text: plain_text,
                         parse_mode: None,
                         disable_web_page_preview: Some(true),
+                        reply_markup: None,
                     };
                     match self.make_request::<serde_json::Value>("editMessageText", &plain_req).await {
                         Ok(_) => Ok(()),
@@ -413,6 +455,112 @@ impl TelegramAdapter {
         self.edit_message_text(chat_id, message_id, text).await
     }
 
+    pub async fn send_message_with_keyboard(
+        &self,
+        chat_id: i64,
+        text: &str,
+        keyboard: InlineKeyboardMarkup,
+    ) -> Result<SentMessage, PlatformError> {
+        let html_req = SendMessageRequest {
+            chat_id,
+            text: text.to_string(),
+            parse_mode: Some("HTML".to_string()),
+            reply_to_message_id: None,
+            disable_web_page_preview: Some(true),
+            reply_markup: Some(keyboard.clone()),
+        };
+
+        match self.make_request::<SentMessage>("sendMessage", &html_req).await {
+            Ok(sent) => Ok(sent),
+            Err(PlatformError::Api { code, message }) => {
+                let status_code = code.parse::<u16>().unwrap_or(0);
+                if looks_like_parse_error(status_code, &message) {
+                    warn!(
+                        "[telegram] Send with keyboard HTML failed ({}: {}), retrying plain text",
+                        code, message
+                    );
+                    let plain_req = SendMessageRequest {
+                        chat_id,
+                        text: strip_html_tags(text),
+                        parse_mode: None,
+                        reply_to_message_id: None,
+                        disable_web_page_preview: Some(true),
+                        reply_markup: Some(keyboard),
+                    };
+                    self.make_request::<SentMessage>("sendMessage", &plain_req).await
+                } else {
+                    Err(PlatformError::Api { code, message })
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn edit_message_with_keyboard(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+        keyboard: Option<InlineKeyboardMarkup>,
+    ) -> Result<(), PlatformError> {
+        let html_req = EditMessageTextRequest {
+            chat_id,
+            message_id,
+            text: text.to_string(),
+            parse_mode: Some("HTML".to_string()),
+            disable_web_page_preview: Some(true),
+            reply_markup: keyboard.clone(),
+        };
+
+        match self.make_request::<serde_json::Value>("editMessageText", &html_req).await {
+            Ok(_) => Ok(()),
+            Err(PlatformError::Api { code, message }) => {
+                if looks_like_message_not_modified(&message) {
+                    return Ok(());
+                }
+                let status_code = code.parse::<u16>().unwrap_or(0);
+                if looks_like_parse_error(status_code, &message) {
+                    warn!(
+                        "[telegram] Edit with keyboard HTML failed ({}: {}), retrying plain text",
+                        code, message
+                    );
+                    let plain_req = EditMessageTextRequest {
+                        chat_id,
+                        message_id,
+                        text: strip_html_tags(text),
+                        parse_mode: None,
+                        disable_web_page_preview: Some(true),
+                        reply_markup: keyboard,
+                    };
+                    match self.make_request::<serde_json::Value>("editMessageText", &plain_req).await {
+                        Ok(_) => Ok(()),
+                        Err(PlatformError::Api { message: p_msg, .. }) if looks_like_message_not_modified(&p_msg) => {
+                            Ok(())
+                        }
+                        Err(other) => Err(other),
+                    }
+                } else {
+                    Err(PlatformError::Api { code, message })
+                }
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    pub async fn answer_callback_query(
+        &self,
+        callback_query_id: &str,
+        text: Option<&str>,
+    ) -> Result<(), PlatformError> {
+        let req = AnswerCallbackQueryRequest {
+            callback_query_id,
+            text,
+            show_alert: None,
+        };
+        let _: serde_json::Value = self.make_request("answerCallbackQuery", &req).await?;
+        Ok(())
+    }
+
     pub async fn send_chat_action(&self, chat_id: i64, action: &str) -> Result<(), PlatformError> {
         let req = SendChatActionRequest { chat_id, action };
         let _: serde_json::Value = self.make_request("sendChatAction", &req).await?;
@@ -431,6 +579,7 @@ impl TelegramAdapter {
             parse_mode: Some("HTML".to_string()),
             reply_to_message_id,
             disable_web_page_preview: Some(true),
+            reply_markup: None,
         };
 
         match self.make_request::<SentMessage>("sendMessage", &html_req).await {
@@ -449,6 +598,7 @@ impl TelegramAdapter {
                         parse_mode: None,
                         reply_to_message_id,
                         disable_web_page_preview: Some(true),
+                        reply_markup: None,
                     };
                     self.make_request::<SentMessage>("sendMessage", &plain_req).await
                 } else {
@@ -485,7 +635,10 @@ impl TelegramAdapter {
                     event: "callback_query".to_string(),
                     data: serde_json::json!({
                         "callback_query_id": callback.id,
+                        "callback_data": callback.data,
                         "data": callback.data,
+                        "message_id": msg.message_id,
+                        "chat_id": msg.chat.id,
                         "from": callback.from,
                     }),
                 };
@@ -595,6 +748,7 @@ impl TelegramAdapter {
                     parse_mode: Some("HTML".to_string()),
                     reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
                     disable_web_page_preview: Some(true),
+                    reply_markup: None,
                 }).map_err(|e| PlatformError::Internal(e.to_string()))
             }
             MessageContent::Image { url, caption } => {
@@ -897,6 +1051,30 @@ impl Default for TelegramAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn test_inline_keyboard_serialization() {
+        let btn1 = InlineKeyboardButton::new("⭐ 9Router Gateway", "mp:9router");
+        let btn2 = InlineKeyboardButton::new("OpenRouter", "mp:openrouter");
+        let cancel_btn = InlineKeyboardButton::new("✗ Cancel", "mx:cancel");
+
+        let markup = InlineKeyboardMarkup::new(vec![
+            vec![btn1, btn2],
+            vec![cancel_btn],
+        ]);
+
+        let json = serde_json::to_string(&markup).expect("Failed to serialize markup");
+        let val: serde_json::Value = serde_json::from_str(&json).expect("Failed to parse json");
+
+        let keyboard = val["inline_keyboard"].as_array().expect("Must have inline_keyboard array");
+        assert_eq!(keyboard.len(), 2);
+        assert_eq!(keyboard[0][0]["text"], "⭐ 9Router Gateway");
+        assert_eq!(keyboard[0][0]["callback_data"], "mp:9router");
+        assert_eq!(keyboard[0][1]["text"], "OpenRouter");
+        assert_eq!(keyboard[0][1]["callback_data"], "mp:openrouter");
+        assert_eq!(keyboard[1][0]["text"], "✗ Cancel");
+        assert_eq!(keyboard[1][0]["callback_data"], "mx:cancel");
+    }
+
 
     #[test]
     fn test_edit_message_text_request_serialization() {
@@ -906,6 +1084,7 @@ mod tests {
             text: "<b>Hello World</b>".to_string(),
             parse_mode: Some("HTML".to_string()),
             disable_web_page_preview: Some(true),
+            reply_markup: None,
         };
 
         let json = serde_json::to_string(&req).expect("Failed to serialize");
@@ -924,6 +1103,7 @@ mod tests {
             text: "Plain message".to_string(),
             parse_mode: None,
             disable_web_page_preview: None,
+            reply_markup: None,
         };
         let json_none = serde_json::to_string(&req_none).expect("Failed to serialize");
         let val_none: serde_json::Value = serde_json::from_str(&json_none).expect("Failed to parse json");

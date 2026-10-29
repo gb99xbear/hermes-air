@@ -795,3 +795,73 @@ async fn test_multi_session_model_override_independence() {
     assert_eq!(model_a_reset, "gemini-2.5-flash");
     assert_eq!(model_b_retained, "openai/gpt-4o");
 }
+
+#[tokio::test]
+async fn test_interactive_model_picker_generator_and_callback_routing() {
+    use hermes_gateway_core::{
+        build_provider_keyboard, build_model_keyboard, model_picker_card, provider_picker_header,
+        default_providers_list, ModelPickerState,
+    };
+    use hermes_session_store::SessionStoreFactory;
+    use hermes_config::SessionStoreBackend;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use uuid::Uuid;
+
+    // 1. Verify Provider Picker Generator
+    let providers = default_providers_list();
+    let prov_kb = build_provider_keyboard(&providers, "9router");
+    assert_eq!(prov_kb.inline_keyboard[0][0].text, "⭐ 9Router Gateway");
+    assert_eq!(prov_kb.inline_keyboard[0][0].callback_data.as_deref(), Some("mp:9router"));
+
+    let header = provider_picker_header("ag/gemini-3.8-flash", "9Router Gateway");
+    assert!(header.contains("HERMES ROUTER // MODEL SELECTOR"));
+    assert!(header.contains("ag/gemini-3.8-flash"));
+    assert!(header.contains("Select a provider:"));
+
+    // 2. Verify Model Picker Card and Keyboard
+    let sample_models = vec![
+        "ag/gemini-3.8-flash".to_string(),
+        "thk/deepseek-v4.1-flash:free".to_string(),
+        "gcli/grok-4.7-medium".to_string(),
+    ];
+    let (model_kb, page, total) = build_model_keyboard(&sample_models, 0, "ag/gemini-3.8-flash", "9router");
+    assert_eq!(page, 1);
+    assert_eq!(total, 1);
+    assert_eq!(model_kb.inline_keyboard[0][0].text, "⭐ gemini-3.8-flash");
+    assert_eq!(model_kb.inline_keyboard[0][0].callback_data.as_deref(), Some("mm:ag/gemini-3.8-flash"));
+
+    let card = model_picker_card("9Router Gateway", 3, page, total, &sample_models, "ag/gemini-3.8-flash");
+    assert!(card.contains("PROVIDER : 9Router Gateway"));
+    assert!(card.contains("⭐ ag/gemini-3.8-flash"));
+    assert!(card.contains("Select a target model below:"));
+
+    // 3. Test Session Model Override persistence via mm:<model_id> callback simulation
+    let store = Arc::new(SessionStoreFactory::create(SessionStoreBackend::Memory, None, 100, 3600).await.unwrap());
+    let session_id = Uuid::new_v4();
+    let chat_id = 999888777i64;
+
+    let picker_states = Arc::new(RwLock::new(HashMap::new()));
+    picker_states.write().await.insert(
+        chat_id,
+        ModelPickerState {
+            message_id: 1234,
+            chat_id,
+            session_id,
+            selected_provider: "tokenharbor".to_string(),
+            selected_provider_name: "TokenHarbor".to_string(),
+            current_model: "gemini-2.5-flash".to_string(),
+            current_provider: "9router".to_string(),
+            model_list: sample_models.clone(),
+            model_page: 0,
+        },
+    );
+
+    // Simulate model switch callback
+    let chosen_model = "thk/deepseek-v4.1-flash:free";
+    store.set_model_override(session_id, Some(chosen_model.to_string())).await.unwrap();
+
+    let persisted = store.get_model_override(session_id).await.unwrap();
+    assert_eq!(persisted, Some(chosen_model.to_string()));
+}

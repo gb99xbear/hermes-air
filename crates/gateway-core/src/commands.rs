@@ -1,4 +1,5 @@
 use std::time::Instant;
+use hermes_platform_telegram::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 /// Active Slash Commands supported by Hermes native Gateway
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +165,211 @@ pub fn handle_model(
             }
         }
     }
+}
+
+// -----------------------------------------------------------------------------
+// Interactive Model Picker UI & Keyboards (1-to-1 Blueprint Parity)
+// -----------------------------------------------------------------------------
+
+pub const MODEL_PAGE_SIZE: usize = 8;
+
+pub struct ProviderItem {
+    pub slug: String,
+    pub name: String,
+}
+
+pub fn default_providers_list() -> Vec<ProviderItem> {
+    vec![
+        ProviderItem { slug: "9router".to_string(), name: "9Router Gateway".to_string() },
+        ProviderItem { slug: "tokenharbor".to_string(), name: "TokenHarbor".to_string() },
+        ProviderItem { slug: "openrouter".to_string(), name: "OpenRouter".to_string() },
+        ProviderItem { slug: "anthropic".to_string(), name: "Anthropic".to_string() },
+        ProviderItem { slug: "openai".to_string(), name: "OpenAI".to_string() },
+    ]
+}
+
+/// Build the provider selection keyboard.
+/// Displays active provider with ⭐, lays out 2 buttons per row,
+/// and adds bottom navigation: [🔄 Refresh] (mrf:prov) and [✗ Cancel] (mx:cancel).
+pub fn build_provider_keyboard(providers: &[ProviderItem], active_provider: &str) -> InlineKeyboardMarkup {
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+    let mut current_row: Vec<InlineKeyboardButton> = Vec::new();
+
+    for p in providers {
+        let is_current = p.slug.eq_ignore_ascii_case(active_provider)
+            || (active_provider.is_empty() && p.slug == "9router");
+        let label = if is_current {
+            format!("⭐ {}", p.name)
+        } else {
+            p.name.clone()
+        };
+
+        current_row.push(InlineKeyboardButton::new(label, format!("mp:{}", p.slug)));
+        if current_row.len() == 2 {
+            rows.push(std::mem::take(&mut current_row));
+        }
+    }
+
+    if !current_row.is_empty() {
+        rows.push(current_row);
+    }
+
+    // Bottom action row: [🔄 Refresh], [✗ Cancel]
+    rows.push(vec![
+        InlineKeyboardButton::new("🔄 Refresh", "mrf:prov"),
+        InlineKeyboardButton::new("✗ Cancel", "mx:cancel"),
+    ]);
+
+    InlineKeyboardMarkup::new(rows)
+}
+
+/// Header text for the Provider selection screen
+pub fn provider_picker_header(active_model: &str, active_provider: &str) -> String {
+    let prov = if active_provider.is_empty() {
+        "9Router Gateway"
+    } else {
+        active_provider
+    };
+
+    format!(
+        "⚡ <b>HERMES ROUTER // MODEL SELECTOR</b>\n\n<b>Active model:</b> <code>{}</code> ⭐\n<b>Provider:</b> <code>{}</code>\n\nSelect a provider:",
+        active_model, prov
+    )
+}
+
+/// Build the paginated model selection keyboard.
+/// Displays active model with ⭐, pagination [◀ Prev], [page/total], [Next ▶],
+/// and bottom row [⬅ Back] (mb:back), [🔄 Refresh] (mrf), [✗ Cancel] (mx:cancel).
+pub fn build_model_keyboard(
+    models: &[String],
+    page: usize,
+    active_model: &str,
+    provider_slug: &str,
+) -> (InlineKeyboardMarkup, usize, usize) {
+    let total_models = models.len();
+    let total_pages = if total_models == 0 {
+        1
+    } else {
+        (total_models + MODEL_PAGE_SIZE - 1) / MODEL_PAGE_SIZE
+    };
+    let current_page = std::cmp::min(page, total_pages.saturating_sub(1));
+
+    let start_idx = current_page * MODEL_PAGE_SIZE;
+    let end_idx = std::cmp::min(start_idx + MODEL_PAGE_SIZE, total_models);
+    let page_models = if start_idx < total_models {
+        &models[start_idx..end_idx]
+    } else {
+        &[][..]
+    };
+
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+
+    // Model buttons: 1 or 2 per row
+    for model_id in page_models {
+        let short = model_id.split('/').last().unwrap_or(model_id);
+        let is_active = model_id == active_model || short == active_model;
+        let mut display_name = if is_active {
+            format!("⭐ {}", short)
+        } else {
+            short.to_string()
+        };
+
+        if display_name.len() > 36 {
+            display_name = format!("{}...", &display_name[..33]);
+        }
+
+        // Each model button callbacks with `mm:<model_id>`
+        rows.push(vec![InlineKeyboardButton::new(display_name, format!("mm:{}", model_id))]);
+    }
+
+    // Pagination row if total_pages > 1
+    if total_pages > 1 {
+        let mut nav_row = Vec::new();
+        if current_page > 0 {
+            nav_row.push(InlineKeyboardButton::new(
+                "◀ Prev",
+                format!("mg:{}:{}", provider_slug, current_page - 1),
+            ));
+        }
+        nav_row.push(InlineKeyboardButton::new(
+            format!("[{}/{}]", current_page + 1, total_pages),
+            "mx:noop",
+        ));
+        if current_page + 1 < total_pages {
+            nav_row.push(InlineKeyboardButton::new(
+                "Next ▶",
+                format!("mg:{}:{}", provider_slug, current_page + 1),
+            ));
+        }
+        rows.push(nav_row);
+    }
+
+    // Tail control row: [⬅ Back], [🔄 Refresh], [✗ Cancel]
+    rows.push(vec![
+        InlineKeyboardButton::new("⬅ Back", "mb:back"),
+        InlineKeyboardButton::new("🔄 Refresh", format!("mrf:{}", provider_slug)),
+        InlineKeyboardButton::new("✗ Cancel", "mx:cancel"),
+    ]);
+
+    (InlineKeyboardMarkup::new(rows), current_page + 1, total_pages)
+}
+
+/// Header card text for Model selection screen matching Python blueprint
+pub fn model_picker_card(
+    provider_name: &str,
+    total_models: usize,
+    current_page: usize,
+    total_pages: usize,
+    page_models: &[String],
+    active_model: &str,
+) -> String {
+    let mut preview_lines = Vec::new();
+    for mid in page_models {
+        let is_active = mid == active_model || mid.split('/').last().unwrap_or(mid) == active_model;
+        let marker = if is_active { "⭐ " } else { "  " };
+
+        let mid_lower = mid.to_lowercase();
+        let badge = if mid_lower.contains("flash")
+            || mid_lower.contains("turbo")
+            || mid_lower.contains("mini")
+            || mid_lower.contains("3.8")
+            || mid_lower.contains("3.7")
+        {
+            "🟢 ~0.1s"
+        } else if mid_lower.contains("deepseek") || mid_lower.contains("gemma") || mid_lower.contains("free") {
+            "🟢 ~0.3s"
+        } else if mid_lower.contains("grok") || mid_lower.contains("luna") || mid_lower.contains("atria") {
+            "🟡 ~0.8s"
+        } else {
+            "🟢 ~0.2s"
+        };
+
+        let mut display = mid.clone();
+        if display.len() > 22 {
+            display = format!("{}...", &display[..19]);
+        }
+        preview_lines.push(format!("{}{:<22} {}", marker, display, badge));
+    }
+
+    let preview_block = if preview_lines.is_empty() {
+        "• none".to_string()
+    } else {
+        preview_lines.join("\n")
+    };
+
+    format!(
+"⚡ <b>HERMES ROUTER // MODEL SELECTOR</b>
+<pre>
+PROVIDER : {}
+GATEWAY  : 🟢 ~0.1s (9Router Oracle)
+POOL     : {} models available [{}/{}]
+──────────────────────────────────────
+MODELS ON THIS PAGE & SPEED:
+{}
+</pre>
+<b>Select a target model below:</b>",
+        provider_name, total_models, current_page, total_pages, preview_block
+    )
 }
 
 /// Handle /clear or /reset command
@@ -333,5 +539,51 @@ mod tests {
         let clear_res = handle_command(SlashCommand::Clear, &ctx, |_| Ok(()));
         assert!(clear_res.contains("Session Reset"));
         assert!(clear_res.contains("Conversation turn memory has been cleared."));
+    }
+
+    #[test]
+    fn test_build_provider_keyboard() {
+        let providers = default_providers_list();
+        let keyboard = build_provider_keyboard(&providers, "9router");
+
+        assert_eq!(keyboard.inline_keyboard.len(), 4);
+        assert_eq!(keyboard.inline_keyboard[0][0].text, "⭐ 9Router Gateway");
+        assert_eq!(keyboard.inline_keyboard[0][0].callback_data.as_deref(), Some("mp:9router"));
+        assert_eq!(keyboard.inline_keyboard[0][1].text, "TokenHarbor");
+        assert_eq!(keyboard.inline_keyboard[0][1].callback_data.as_deref(), Some("mp:tokenharbor"));
+
+        // Action row
+        let last_row = &keyboard.inline_keyboard[3];
+        assert_eq!(last_row[0].text, "🔄 Refresh");
+        assert_eq!(last_row[0].callback_data.as_deref(), Some("mrf:prov"));
+        assert_eq!(last_row[1].text, "✗ Cancel");
+        assert_eq!(last_row[1].callback_data.as_deref(), Some("mx:cancel"));
+    }
+
+    #[test]
+    fn test_build_model_keyboard_and_pagination() {
+        let models: Vec<String> = (1..=20).map(|i| format!("model-{}", i)).collect();
+        let (keyboard, page, total) = build_model_keyboard(&models, 0, "model-1", "9router");
+
+        assert_eq!(page, 1);
+        assert_eq!(total, 3);
+        // 8 model buttons + 1 nav row + 1 action row = 10 rows
+        assert_eq!(keyboard.inline_keyboard.len(), 10);
+        assert_eq!(keyboard.inline_keyboard[0][0].text, "⭐ model-1");
+        assert_eq!(keyboard.inline_keyboard[0][0].callback_data.as_deref(), Some("mm:model-1"));
+
+        // Nav row
+        let nav_row = &keyboard.inline_keyboard[8];
+        assert_eq!(nav_row.len(), 2); // [1/3], Next ▶
+        assert_eq!(nav_row[0].text, "[1/3]");
+        assert_eq!(nav_row[1].text, "Next ▶");
+        assert_eq!(nav_row[1].callback_data.as_deref(), Some("mg:9router:1"));
+
+        // Cancel / Back row
+        let tail_row = &keyboard.inline_keyboard[9];
+        assert_eq!(tail_row[0].text, "⬅ Back");
+        assert_eq!(tail_row[0].callback_data.as_deref(), Some("mb:back"));
+        assert_eq!(tail_row[1].text, "🔄 Refresh");
+        assert_eq!(tail_row[2].text, "✗ Cancel");
     }
 }
