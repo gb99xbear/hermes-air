@@ -106,7 +106,7 @@ impl LlmClient {
     pub fn new(base_url: Option<String>, api_key: Option<String>) -> Self {
         let base_url = base_url
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "http://100.75.163.92:20128/v1".to_string());
+            .unwrap_or_else(|| "http://127.0.0.1:20128/v1".to_string());
         
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
@@ -133,7 +133,7 @@ impl LlmClient {
                 if !profile.base_url.is_empty() {
                     profile.base_url.clone()
                 } else {
-                    "http://100.75.163.92:20128/v1".to_string()
+                    "http://127.0.0.1:20128/v1".to_string()
                 }
             });
 

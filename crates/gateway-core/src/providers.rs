@@ -115,7 +115,7 @@ impl ProviderProfile {
     /// Return the provider's base hostname for URL-based detection.
     /// Uses self.hostname if set explicitly, otherwise derives it from base_url.
     /// e.g. 'https://api.openai.com/v1' -> 'api.openai.com'
-    /// 'http://100.75.163.92:20128/v1' -> '100.75.163.92'
+    /// 'http://127.0.0.1:20128/v1' -> '127.0.0.1'
     pub fn get_hostname(&self) -> String {
         if !self.hostname.trim().is_empty() {
             return self.hostname.trim().to_string();
@@ -215,18 +215,18 @@ impl ProviderRegistry {
             ],
             display_name: "9Router Gateway".to_string(),
             description: "9Router AI Gateway - OpenAI-compatible inference with live model catalog".to_string(),
-            signup_url: "http://100.75.163.92:20128/".to_string(),
+            signup_url: "http://127.0.0.1:20128/".to_string(),
             env_vars: vec![
-                "HERMES_CUSTOM_100_75_163_92_20128_API_KEY".to_string(),
-                "HERMES_CUSTOM_100_77_223_11_20128_API_KEY".to_string(),
+                "ROUTER9_API_KEY".to_string(),
+                "NINEROUTER_API_KEY".to_string(),
                 "NINEROUTER_API_KEY".to_string(),
                 "NINE_ROUTER_API_KEY".to_string(),
                 "ROUTER9_API_KEY".to_string(),
                 "ROUTER_9_API_KEY".to_string(),
                 "OPENAI_API_KEY".to_string(),
             ],
-            base_url: "http://100.75.163.92:20128/v1".to_string(),
-            models_url: "http://100.75.163.92:20128/v1/models".to_string(),
+            base_url: "http://127.0.0.1:20128/v1".to_string(),
+            models_url: "http://127.0.0.1:20128/v1/models".to_string(),
             auth_type: "api_key".to_string(),
             supports_health_check: true,
             supports_model_listing: true,
@@ -236,7 +236,7 @@ impl ProviderRegistry {
             native_reasoning_details_type: None,
             fallback_models: vec!["HermesCombo".to_string()],
             model_aliases: HashMap::new(),
-            hostname: "100.75.163.92".to_string(),
+            hostname: "127.0.0.1".to_string(),
             default_headers: HashMap::new(),
             default_max_tokens: None,
             unsupported_response_formats: Vec::new(),
@@ -464,8 +464,8 @@ mod tests {
     #[test]
     fn test_get_hostname() {
         let mut profile = ProviderProfile::default();
-        profile.base_url = "http://100.75.163.92:20128/v1".to_string();
-        assert_eq!(profile.get_hostname(), "100.75.163.92");
+        profile.base_url = "http://127.0.0.1:20128/v1".to_string();
+        assert_eq!(profile.get_hostname(), "127.0.0.1");
 
         profile.base_url = "https://api.openai.com/v1".to_string();
         assert_eq!(profile.get_hostname(), "api.openai.com");
@@ -504,7 +504,7 @@ mod tests {
         // Check pre-registered 9router
         let profile_9r = registry.get("9router").await.expect("9router must be registered");
         assert_eq!(profile_9r.name, "9router");
-        assert_eq!(profile_9r.base_url, "http://100.75.163.92:20128/v1");
+        assert_eq!(profile_9r.base_url, "http://127.0.0.1:20128/v1");
 
         // Alias lookup
         let by_alias = registry.get("router9").await.expect("alias router9 must resolve");

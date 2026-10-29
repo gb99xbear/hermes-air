@@ -27,3 +27,5 @@ urlencoding = "2.1"
 dashmap = { workspace = true }
 tokio-util = "0.7"
 
+tokio-tungstenite = { workspace = true }
+tungstenite = "0.21"

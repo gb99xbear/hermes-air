@@ -87,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 9);
+    assert_eq!(defs.len(), 14);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1011,7 +1011,7 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 9);
+    assert_eq!(defs.len(), 14);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1271,4 +1271,62 @@ async fn test_compress_command_and_preflight_auto_compaction_integration() {
     assert!(compacted_history[2].content.as_deref().unwrap().starts_with("Step 18:"));
     assert!(compacted_history[3].content.as_deref().unwrap().starts_with("Step 19:"));
     assert!(compacted_history[4].content.as_deref().unwrap().starts_with("Step 20:"));
+}
+
+#[tokio::test]
+async fn test_browser_automation_suite_integration() {
+    let registry = ToolRegistry::new();
+
+    // 1. Verify schema definitions
+    let defs = registry.get_definitions();
+    let browser_tools = ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_exec"];
+    for tool_name in &browser_tools {
+        assert!(defs.iter().any(|d| d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) == Some(*tool_name)));
+    }
+
+    // 2. Test SSRF protection via execute(browser_navigate)
+    let ssrf_call = ToolCall {
+        id: "browser_nav_ssrf".to_string(),
+        name: "browser_navigate".to_string(),
+        arguments: json!({
+            "url": "http://192.168.1.1/admin"
+        }),
+    };
+    let res = registry.execute(&ssrf_call).await;
+    assert!(!res.success);
+    assert!(res.output.contains("SSRF security violation") || res.output.contains("Blocked"));
+
+    // 3. Test missing required argument via execute(browser_type)
+    let invalid_type_call = ToolCall {
+        id: "browser_type_inv".to_string(),
+        name: "browser_type".to_string(),
+        arguments: json!({
+            "selector": "input#username"
+        }),
+    };
+    let res = registry.execute(&invalid_type_call).await;
+    assert!(!res.success);
+    assert!(res.output.contains("Missing required 'text'"));
+
+    // 4. Test missing selector in browser_type
+    let missing_sel_call = ToolCall {
+        id: "browser_type_nosel".to_string(),
+        name: "browser_type".to_string(),
+        arguments: json!({
+            "text": "hello"
+        }),
+    };
+    let res = registry.execute(&missing_sel_call).await;
+    assert!(!res.success);
+    assert!(res.output.contains("Missing required 'selector'"));
+
+    // 5. Test missing code in browser_exec
+    let missing_code_call = ToolCall {
+        id: "browser_exec_nocode".to_string(),
+        name: "browser_exec".to_string(),
+        arguments: json!({}),
+    };
+    let res = registry.execute(&missing_code_call).await;
+    assert!(!res.success);
+    assert!(res.output.contains("Missing required 'code'"));
 }

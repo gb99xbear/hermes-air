@@ -323,6 +323,98 @@ impl ToolRegistry {
                     }
                 }
             }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "browser_navigate",
+                    "description": "Navigate to a URL using browser automation with SSRF protection. Returns the page title, URL, and target ID.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "The URL to navigate to (must be public http/https, private IP ranges and internal hostnames are blocked)"
+                            }
+                        },
+                        "required": ["url"]
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "browser_snapshot",
+                    "description": "Get a clean textual accessibility and DOM snapshot of the current browser page, including interactive element references (@e1, @e2...).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "browser_click",
+                    "description": "Click an element on the current page by CSS selector or (x, y) coordinates.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector of element to click (e.g. 'button.submit', '#login')"
+                            },
+                            "x": {
+                                "type": "number",
+                                "description": "X coordinate in viewport pixels"
+                            },
+                            "y": {
+                                "type": "number",
+                                "description": "Y coordinate in viewport pixels"
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "browser_type",
+                    "description": "Type text into an input or textarea element identified by CSS selector.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector of element to type into (e.g. 'input#search')"
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Text to type into the element"
+                            }
+                        },
+                        "required": ["selector", "text"]
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "browser_exec",
+                    "description": "Execute browser automation JavaScript or CDP script commands on the active tab.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "description": "JavaScript or CDP script code to evaluate on the page"
+                            }
+                        },
+                        "required": ["code"]
+                    }
+                }
+            }),
         ]
     }
 
@@ -338,6 +430,11 @@ impl ToolRegistry {
             "web_extract" => self.execute_web_extract(call).await,
             "skills_list" => self.execute_skills_list(call).await,
             "skill_view" => self.execute_skill_view(call).await,
+            "browser_navigate" => self.execute_browser_navigate(call).await,
+            "browser_snapshot" => self.execute_browser_snapshot(call).await,
+            "browser_click" => self.execute_browser_click(call).await,
+            "browser_type" => self.execute_browser_type(call).await,
+            "browser_exec" => self.execute_browser_exec(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown tool: {}", other),
@@ -1126,6 +1223,156 @@ impl ToolRegistry {
             tool_call_id: call.id.clone(),
             output,
             success,
+        }
+    }
+
+    async fn execute_browser_navigate(&self, call: &ToolCall) -> ToolResult {
+        let url = match call.arguments.get("url").and_then(|v| v.as_str()) {
+            Some(u) => u,
+            None => {
+                return ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": "Missing required 'url' parameter for browser_navigate"
+                    }).to_string(),
+                    success: false,
+                };
+            }
+        };
+
+        match crate::browser::browser_navigate(url).await {
+            Ok(res) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| "{}".to_string()),
+                success: res.success,
+            },
+            Err(e) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                }).to_string(),
+                success: false,
+            },
+        }
+    }
+
+    async fn execute_browser_snapshot(&self, call: &ToolCall) -> ToolResult {
+        match crate::browser::browser_snapshot().await {
+            Ok(res) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| "{}".to_string()),
+                success: res.success,
+            },
+            Err(e) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                }).to_string(),
+                success: false,
+            },
+        }
+    }
+
+    async fn execute_browser_click(&self, call: &ToolCall) -> ToolResult {
+        let selector = call.arguments.get("selector").and_then(|v| v.as_str());
+        let x = call.arguments.get("x").and_then(|v| v.as_f64());
+        let y = call.arguments.get("y").and_then(|v| v.as_f64());
+
+        match crate::browser::browser_click(selector, x, y).await {
+            Ok(res) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| "{}".to_string()),
+                success: res.success,
+            },
+            Err(e) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                }).to_string(),
+                success: false,
+            },
+        }
+    }
+
+    async fn execute_browser_type(&self, call: &ToolCall) -> ToolResult {
+        let selector = match call.arguments.get("selector").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": "Missing required 'selector' parameter for browser_type"
+                    }).to_string(),
+                    success: false,
+                };
+            }
+        };
+
+        let text = match call.arguments.get("text").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => {
+                return ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": "Missing required 'text' parameter for browser_type"
+                    }).to_string(),
+                    success: false,
+                };
+            }
+        };
+
+        match crate::browser::browser_type(selector, text).await {
+            Ok(res) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| "{}".to_string()),
+                success: res.success,
+            },
+            Err(e) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                }).to_string(),
+                success: false,
+            },
+        }
+    }
+
+    async fn execute_browser_exec(&self, call: &ToolCall) -> ToolResult {
+        let code = match call.arguments.get("code").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": "Missing required 'code' parameter for browser_exec"
+                    }).to_string(),
+                    success: false,
+                };
+            }
+        };
+
+        match crate::browser::browser_exec(code).await {
+            Ok(res) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| "{}".to_string()),
+                success: res.success,
+            },
+            Err(e) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                }).to_string(),
+                success: false,
+            },
         }
     }
 }

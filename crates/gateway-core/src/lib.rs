@@ -8,6 +8,7 @@ pub mod providers;
 pub mod fuzzy_match;
 pub mod tools;
 pub mod web;
+pub mod browser;
 
 pub use commands::{
     build_model_keyboard, build_provider_keyboard, default_providers_list, handle_clear,
@@ -121,8 +122,8 @@ impl Gateway {
             .or_else(|_| std::env::var("OPENAI_BASE_URL"))
             .ok();
 
-        let env_api_key = std::env::var("HERMES_CUSTOM_100_75_163_92_20128_API_KEY")
-            .or_else(|_| std::env::var("HERMES_CUSTOM_100_77_223_11_20128_API_KEY"))
+        let env_api_key = std::env::var("ROUTER9_API_KEY")
+            .or_else(|_| std::env::var("NINEROUTER_API_KEY"))
             .or_else(|_| std::env::var("OPENAI_API_KEY"))
             .ok();
 
@@ -288,10 +289,10 @@ impl Gateway {
         let slug_lower = provider_slug.to_lowercase();
         if slug_lower.contains("9router") || slug_lower == "9router" {
             // Live query 9Router models API
-            let url = "http://100.75.163.92:20128/v1/models";
+            let url = "http://127.0.0.1:20128/v1/models";
             let client = reqwest::Client::new();
             let mut req = client.get(url).timeout(std::time::Duration::from_secs(3));
-            if let Ok(key) = std::env::var("HERMES_CUSTOM_100_75_163_92_20128_API_KEY") {
+            if let Ok(key) = std::env::var("ROUTER9_API_KEY") {
                 req = req.bearer_auth(key);
             }
             if let Ok(resp) = req.send().await {
