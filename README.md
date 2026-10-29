@@ -8,7 +8,7 @@ Hermes Air is a complete, native Rust re-implementation of the Hermes Agent Gate
 
 ## 🤖 Engineering & Transpilation Credits
 
-Hermes Air was systematically re-engineered and transpiled line-by-line from Python to pure async Rust utilizing **Google Gemini 3.8 Flash** (`ag/gemini-3.8-flash`) as the primary architectural coding engine, verified against 120+ strict automated unit and integration tests under zero-drift parity audit doctrine.
+Hermes Air was systematically re-engineered and transpiled line-by-line from Python to pure async Rust utilizing **Google Gemini 3.8 Flash** as the primary architectural coding engine, verified against 120+ strict automated unit and integration tests under zero-drift parity audit doctrine.
 
 ---
 
