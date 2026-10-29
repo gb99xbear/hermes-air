@@ -10,6 +10,7 @@ pub mod tools;
 pub mod web;
 pub mod browser;
 pub mod code_exec;
+pub mod turn_processor;
 
 pub use commands::{
     build_model_keyboard, build_provider_keyboard, default_providers_list, handle_clear,
@@ -26,6 +27,7 @@ pub use providers::{ProviderProfile, ProviderRegistry};
 pub use tools::{ToolCall, ToolRegistry, ToolResult};
 pub use code_exec::{CodeExecutionEngine, TruncationMetadata, truncate_stdout_text, spill_full_stdout, head_tail_split};
 pub use web::{web_extract, web_search, WebExtractItem, WebExtractResponse, WebSearchResponse, WebSearchResultItem};
+pub use turn_processor::{TurnProcessor, TurnEvent};
 
 use hermes_config::GatewayConfig;
 use hermes_platform_adapter::PlatformAdapter;
@@ -181,6 +183,29 @@ impl Gateway {
             false
         }
     }
+
+    pub fn turn_processor(&self) -> TurnProcessor {
+        let default_profile = self
+            .config
+            .profiles
+            .get(&self.config.gateway.default_profile)
+            .cloned()
+            .or_else(|| self.config.profiles.values().next().cloned());
+
+        TurnProcessor::new(
+            self.llm_client.clone(),
+            self.tool_registry.clone(),
+            self.prompt_assembler.clone(),
+            self.session_store.clone(),
+            self.compressor.clone(),
+            default_profile,
+        )
+    }
+
+    pub fn session_store(&self) -> Arc<Box<dyn SessionStore>> {
+        self.session_store.clone()
+    }
+
 
     pub async fn run(mut self) -> anyhow::Result<()> {
         info!("Starting Hermes Air Gateway");
