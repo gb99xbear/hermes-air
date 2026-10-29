@@ -22,6 +22,7 @@ pub enum SlashCommand {
     Whoami,
     Profile,
     Diff(Option<String>),
+    Compress(Option<String>),
 }
 
 impl SlashCommand {
@@ -37,13 +38,14 @@ impl SlashCommand {
             SlashCommand::Whoami => "whoami",
             SlashCommand::Profile => "profile",
             SlashCommand::Diff(_) => "diff",
+            SlashCommand::Compress(_) => "compress",
         }
     }
 
     pub fn busy_policy(&self) -> BusyPolicy {
         match self {
-            // Reject mid-turn commands that mutate model or personality
-            SlashCommand::Model(_) => BusyPolicy::Reject,
+            // Reject mid-turn commands that mutate model, personality, or compact session
+            SlashCommand::Model(_) | SlashCommand::Compress(_) => BusyPolicy::Reject,
 
             // Concurrent read-only diagnostic / info commands allowed mid-turn
             SlashCommand::Status
@@ -88,6 +90,7 @@ pub fn parse_command(text: &str) -> Option<SlashCommand> {
         "/whoami" => Some(SlashCommand::Whoami),
         "/profile" => Some(SlashCommand::Profile),
         "/diff" => Some(SlashCommand::Diff(args.map(|s| s.to_string()))),
+        "/compress" | "/compact" => Some(SlashCommand::Compress(args.map(|s| s.to_string()))),
         _ => None,
     }
 }
@@ -142,7 +145,7 @@ pub struct CommandContext<'a> {
 /// Format the Greeting for /start and /help
 pub fn handle_start_or_help(ctx: &CommandContext) -> String {
     format!(
-        "<b>Greetings!</b>\n\nI am your Hermes Gateway assistant. All systems are operational.\n\n<b>Active Model:</b> <code>{}</code>\n<b>Profile:</b> <code>{}</code>\n\n<b>Available Slash Commands:</b>\n• <code>/start</code> / <code>/help</code> — Show this greeting & command overview\n• <code>/status</code> — Display full system diagnostics, uptime & platform status\n• <code>/context</code> — Visual context window occupancy & token headroom bar\n• <code>/whoami</code> — Display user, chat, session UUID and platform scope\n• <code>/profile</code> — Display active agent profile configuration\n• <code>/diff</code> — Display recent git changes and file diffs\n• <code>/model</code> — View current active model & provider info\n• <code>/model &lt;name&gt;</code> — Dynamically switch active model (e.g. <code>/model ag/gemini-3.8-flash</code>)\n• <code>/stop</code> — Interrupt and cancel active running turn immediately\n• <code>/clear</code> / <code>/reset</code> — Reset conversation turn memory & session",
+        "<b>Greetings!</b>\n\nI am your Hermes Gateway assistant. All systems are operational.\n\n<b>Active Model:</b> <code>{}</code>\n<b>Profile:</b> <code>{}</code>\n\n<b>Available Slash Commands:</b>\n• <code>/start</code> / <code>/help</code> — Show this greeting & command overview\n• <code>/status</code> — Display full system diagnostics, uptime & platform status\n• <code>/context</code> — Visual context window occupancy & token headroom bar\n• <code>/whoami</code> — Display user, chat, session UUID and platform scope\n• <code>/profile</code> — Display active agent profile configuration\n• <code>/diff</code> — Display recent git changes and file diffs\n• <code>/model</code> — View current active model & provider info\n• <code>/model &lt;name&gt;</code> — Dynamically switch active model (e.g. <code>/model ag/gemini-3.8-flash</code>)\n• <code>/stop</code> — Interrupt and cancel active running turn immediately\n• <code>/compress</code> / <code>/compact</code> [focus] — Compact conversation context into structured snapshot\n• <code>/clear</code> / <code>/reset</code> — Reset conversation turn memory & session",
         ctx.active_model, ctx.active_profile
     )
 }
@@ -621,6 +624,18 @@ pub fn handle_clear() -> String {
         .to_string()
 }
 
+/// Format confirmation for manual /compress and /compact command
+pub fn handle_compress(
+    pre_count: usize,
+    post_count: usize,
+    tokens_saved: usize,
+) -> String {
+    format!(
+        "🗜️ Context compacted: {} messages → {} messages ({} tokens saved).",
+        pre_count, post_count, tokens_saved
+    )
+}
+
 /// Main dispatch entry point for slash commands
 pub fn handle_command(
     cmd: SlashCommand,
@@ -637,6 +652,7 @@ pub fn handle_command(
         SlashCommand::Whoami => handle_whoami(ctx),
         SlashCommand::Profile => handle_profile(ctx),
         SlashCommand::Diff(arg) => handle_diff(&arg),
+        SlashCommand::Compress(_) => handle_compress(ctx.transcript_count, 1.min(ctx.transcript_count), 0),
     }
 }
 
@@ -992,5 +1008,26 @@ mod tests {
         assert_eq!(tail_row[0].callback_data.as_deref(), Some("mb:back"));
         assert_eq!(tail_row[1].text, "🔄 Refresh");
         assert_eq!(tail_row[2].text, "✗ Cancel");
+    }
+
+    #[test]
+    fn test_parse_compress_commands() {
+        assert_eq!(parse_command("/compress"), Some(SlashCommand::Compress(None)));
+        assert_eq!(parse_command("/compact"), Some(SlashCommand::Compress(None)));
+        assert_eq!(
+            parse_command("/compress backend architecture"),
+            Some(SlashCommand::Compress(Some("backend architecture".to_string())))
+        );
+        assert_eq!(
+            parse_command("/compact memory-hygiene"),
+            Some(SlashCommand::Compress(Some("memory-hygiene".to_string())))
+        );
+        assert_eq!(SlashCommand::Compress(None).busy_policy(), BusyPolicy::Reject);
+    }
+
+    #[test]
+    fn test_handle_compress_formatting() {
+        let text = handle_compress(24, 5, 12500);
+        assert_eq!(text, "🗜️ Context compacted: 24 messages → 5 messages (12500 tokens saved).");
     }
 }

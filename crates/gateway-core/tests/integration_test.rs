@@ -1189,3 +1189,86 @@ async fn test_slash_commands_context_whoami_profile_diff() {
     let diff_out = handle_command(SlashCommand::Diff(None), &ctx, |_| Ok(()));
     assert!(!diff_out.is_empty());
 }
+
+
+#[tokio::test]
+async fn test_compress_command_and_preflight_auto_compaction_integration() {
+    use hermes_gateway_core::{
+        parse_command, handle_compress, SlashCommand, ContextCompressor,
+        SUMMARY_PREFIX, HISTORICAL_TASK_HEADING,
+    };
+    use hermes_session_store::{MemorySessionStore, SessionStore};
+    use hermes_protocol::{ChatMessage, Uuid};
+    use hermes_gateway_core::llm::LlmClient;
+    use std::sync::Arc;
+
+    // 1. Verify command parsing for /compress and /compact
+    assert_eq!(parse_command("/compress"), Some(SlashCommand::Compress(None)));
+    assert_eq!(parse_command("/compact"), Some(SlashCommand::Compress(None)));
+    assert_eq!(
+        parse_command("/compress backend api"),
+        Some(SlashCommand::Compress(Some("backend api".to_string())))
+    );
+
+    // 2. Setup mock session with 10 turns
+    let store: Arc<Box<dyn SessionStore>> = Arc::new(Box::new(MemorySessionStore::new()));
+    let session_id = Uuid::new_v4();
+
+    for i in 1..=20 {
+        let long_payload = format!("Comprehensive diagnostic turn {}. System reports high CPU utilization, memory pressure, active database locks in thread pool, and repeated HTTP 504 gateway timeout incidents across worker nodes. Detailed stack trace: error in worker_pool.rs line 214 caused by mutex deadlock in session scheduler. Investigated logs from /var/log/hermes/service.log with 100 matching error patterns and memory heap dump analysis.", i);
+        if i % 2 == 1 {
+            store.append_message(session_id, ChatMessage::user(format!("Step {}: {}", i, long_payload))).await.unwrap();
+        } else {
+            store.append_message(session_id, ChatMessage::assistant(format!("Step {}: Remediation details: {}", i, long_payload))).await.unwrap();
+        }
+    }
+
+    let initial_msgs = store.get_messages(session_id, None).await.unwrap();
+    assert_eq!(initial_msgs.len(), 20);
+    let initial_tokens = ContextCompressor::estimate_tokens(&initial_msgs);
+
+    // 3. Test ContextCompressor autonomous pre-flight threshold evaluation
+    // With 10 messages (~200 tokens) and small context window (200 tokens), 0.85 threshold is met
+    let mut compressor = ContextCompressor::new(0.85, 4);
+    assert!(compressor.should_compress(initial_tokens, 100)); // initial_tokens is ~130 tokens, exceeding 85% of 100
+    assert!(!compressor.should_compress(initial_tokens, 200_000));
+
+    // 4. Execute compaction on the session
+    let client = LlmClient::new(None, None);
+    let result = compressor
+        .compress_session(session_id, &store, &client, "gemini-2.5-flash", Some("backend error"), true)
+        .await
+        .unwrap();
+
+    assert!(result.compacted);
+    assert_eq!(result.pre_count, 20);
+    // Compaction anchor + 4 tail messages = 5
+    assert_eq!(result.post_count, 5);
+    assert!(result.tokens_saved > 0);
+
+    // 5. Verify format of the /compress confirmation message
+    let confirmation = handle_compress(result.pre_count, result.post_count, result.tokens_saved);
+    assert_eq!(
+        confirmation,
+        format!("🗜️ Context compacted: 20 messages → 5 messages ({} tokens saved).", result.tokens_saved)
+    );
+
+    // 6. Verify session store state after compaction
+    let compacted_history = store.get_messages(session_id, None).await.unwrap();
+    assert_eq!(compacted_history.len(), 5);
+
+    // Message 0 is the compaction anchor
+    let anchor = &compacted_history[0];
+    assert_eq!(anchor.role, "user");
+    let content = anchor.content.as_deref().unwrap();
+    assert!(content.starts_with(SUMMARY_PREFIX));
+    assert!(content.contains(HISTORICAL_TASK_HEADING));
+    assert!(content.contains("## Goal"));
+    assert!(content.contains("## Completed Actions"));
+
+    // Messages 1..=4 are the protected tail messages preserved verbatim
+    assert!(compacted_history[1].content.as_deref().unwrap().starts_with("Step 17:"));
+    assert!(compacted_history[2].content.as_deref().unwrap().starts_with("Step 18:"));
+    assert!(compacted_history[3].content.as_deref().unwrap().starts_with("Step 19:"));
+    assert!(compacted_history[4].content.as_deref().unwrap().starts_with("Step 20:"));
+}

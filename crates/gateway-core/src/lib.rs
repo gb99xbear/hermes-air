@@ -1,5 +1,6 @@
 // hermes-gateway-core - Core gateway logic
 pub mod commands;
+pub mod compression;
 pub mod llm;
 pub mod stream;
 pub mod prompt;
@@ -11,10 +12,11 @@ pub mod web;
 pub use commands::{
     build_model_keyboard, build_provider_keyboard, default_providers_list, handle_clear,
     handle_command, handle_context, handle_diff, handle_model, handle_profile,
-    handle_start_or_help, handle_status, handle_stop, handle_whoami, model_picker_card,
+    handle_start_or_help, handle_status, handle_stop, handle_whoami, handle_compress, model_picker_card,
     parse_command, provider_picker_header, BusyPolicy, CommandContext, ProviderItem,
     SlashCommand, MODEL_PAGE_SIZE,
 };
+pub use compression::{CompressionResult, ContextCompressor, HISTORICAL_TASK_HEADING, SUMMARY_PREFIX};
 pub use llm::{ChatMessage, ChatResponse, LlmClient, ToolCallRawExt};
 pub use stream::GatewayStreamConsumer;
 pub use prompt::PromptAssembler;
@@ -58,6 +60,7 @@ pub struct Gateway {
     provider_registry: Arc<ProviderRegistry>,
     tool_registry: Arc<ToolRegistry>,
     prompt_assembler: Arc<PromptAssembler>,
+    compressor: Arc<tokio::sync::Mutex<ContextCompressor>>,
     event_tx: mpsc::UnboundedSender<PlatformEvent>,
     event_rx: Option<mpsc::UnboundedReceiver<PlatformEvent>>,
     model_picker_states: Arc<RwLock<HashMap<i64, ModelPickerState>>>,
@@ -133,6 +136,7 @@ impl Gateway {
         let prompt_assembler = Arc::new(PromptAssembler::new());
 
         let active_turns = Arc::new(DashMap::new());
+        let compressor = Arc::new(tokio::sync::Mutex::new(ContextCompressor::default()));
 
         Ok(Self {
             config,
@@ -142,6 +146,7 @@ impl Gateway {
             provider_registry,
             tool_registry,
             prompt_assembler,
+            compressor,
             event_tx,
             event_rx: Some(event_rx),
             model_picker_states: Arc::new(RwLock::new(HashMap::new())),
@@ -224,6 +229,7 @@ impl Gateway {
         let provider_registry = self.provider_registry.clone();
         let model_picker_states = self.model_picker_states.clone();
         let active_turns = self.active_turns.clone();
+        let compressor = self.compressor.clone();
 
         let default_profile = self
             .config
@@ -251,6 +257,7 @@ impl Gateway {
                             &default_profile,
                             &event_loop_tg,
                             &active_turns,
+                            &compressor,
                         )
                         .await;
                     }
@@ -595,6 +602,7 @@ impl Gateway {
         profile: &Option<hermes_config::ProfileConfig>,
         tg_adapter: &Option<Arc<TelegramAdapter>>,
         active_turns: &Arc<DashMap<uuid::Uuid, CancellationToken>>,
+        compressor: &Arc<tokio::sync::Mutex<ContextCompressor>>,
     ) {
         // Handle Callback Query updates from Telegram (e.g. model selector taps)
         if let MessageContent::System { ref event, ref data } = msg.content {
@@ -811,6 +819,29 @@ impl Gateway {
                     }
                     handle_model(&Some(target.clone()), &active_model, |_| Ok(()))
                 }
+                SlashCommand::Compress(ref focus) => {
+                    let mut comp = compressor.lock().await;
+                    match comp.compress_session(
+                        msg.session_id,
+                        session_store,
+                        llm_client,
+                        &active_model,
+                        focus.as_deref(),
+                        true,
+                    ).await {
+                        Ok(res) => {
+                            if res.compacted {
+                                handle_compress(res.pre_count, res.post_count, res.tokens_saved)
+                            } else {
+                                format!("ℹ️ Session context is already compact ({} messages <= protected tail turns).", res.pre_count)
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Manual compression failed for session {}: {:?}", msg.session_id, e);
+                            format!("❌ Failed to compact context: {}", e)
+                        }
+                    }
+                }
                 other => handle_command(other, &ctx, |_| Ok(())),
             };
 
@@ -864,6 +895,38 @@ impl Gateway {
             .and_then(|p| p.system_prompt.as_deref());
         let temperature = profile.as_ref().map(|p| p.temperature).unwrap_or(0.7);
         let max_tokens = profile.as_ref().map(|p| p.max_tokens).unwrap_or(4096);
+
+        // Autonomous Pre-Flight Turn Gate: Check token occupancy & auto-compress if threshold exceeded
+        let context_window = profile
+            .as_ref()
+            .map(|p| p.max_tokens as usize)
+            .unwrap_or(128_000);
+
+        let current_history = session_store
+            .get_messages(msg.session_id, None)
+            .await
+            .unwrap_or_default();
+
+        let current_tokens = ContextCompressor::estimate_tokens(&current_history);
+        {
+            let mut comp = compressor.lock().await;
+            if comp.should_compress(current_tokens, context_window) {
+                info!(
+                    "Pre-flight compression triggered for session {}: ~{} tokens >= threshold {} of context_window {}",
+                    msg.session_id, current_tokens, comp.threshold, context_window
+                );
+                if let Err(e) = comp.compress_session(
+                    msg.session_id,
+                    session_store,
+                    llm_client,
+                    &active_model,
+                    None,
+                    false,
+                ).await {
+                    warn!("Autonomous pre-flight compaction failed for session {}: {:?}", msg.session_id, e);
+                }
+            }
+        }
 
         // Build active system prompt dynamically via PromptAssembler
         let active_system_prompt = prompt_assembler.build_system_prompt(system_prompt).await;
