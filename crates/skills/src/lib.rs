@@ -850,11 +850,15 @@ impl Curator {
     pub async fn generate_skill(&self, request: &str) -> Result<Skill, SkillError> {
         if let Some(llm) = &self.llm_client {
             let prompt = format!(
-                "Generate a skill for: {}. Follow the skill markdown format exactly.",
+                "Generate a skill for: {}. Follow the skill markdown format exactly with YAML frontmatter ---",
                 request
             );
-            let _response = llm.complete(&prompt).await?;
-            Ok(Skill::from_markdown(&PathBuf::from(""))?)
+            let response = llm.complete(&prompt).await?;
+            let (frontmatter, body) = Skill::parse_frontmatter(&response)?;
+            let mut skill: Skill = serde_yaml::from_str(&frontmatter)
+                .map_err(|e| SkillError::Parse(e.to_string()))?;
+            skill.content = body;
+            Ok(skill)
         } else {
             Err(SkillError::Validation("No LLM client configured".into()))
         }

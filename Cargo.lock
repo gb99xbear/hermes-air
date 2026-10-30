@@ -1479,10 +1479,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "hermes-acp-adapter"
-version = "0.1.0"
-
-[[package]]
 name = "hermes-config"
 version = "0.1.0"
 dependencies = [
@@ -1518,14 +1514,6 @@ dependencies = [
  "tracing",
  "uuid",
 ]
-
-[[package]]
-name = "hermes-dashboard-api"
-version = "0.1.0"
-
-[[package]]
-name = "hermes-desktop-backend"
-version = "0.1.0"
 
 [[package]]
 name = "hermes-gateway"
@@ -1634,10 +1622,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hermes-platform-email"
-version = "0.1.0"
-
-[[package]]
 name = "hermes-platform-slack"
 version = "0.1.0"
 dependencies = [
@@ -1668,10 +1652,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hermes-platform-sms"
-version = "0.1.0"
-
-[[package]]
 name = "hermes-platform-telegram"
 version = "0.1.0"
 dependencies = [
@@ -1689,10 +1669,6 @@ dependencies = [
  "tracing",
  "uuid",
 ]
-
-[[package]]
-name = "hermes-platform-webhook"
-version = "0.1.0"
 
 [[package]]
 name = "hermes-platform-whatsapp"
@@ -1807,10 +1783,6 @@ dependencies = [
  "uuid",
  "walkdir",
 ]
-
-[[package]]
-name = "hermes-tui-gateway"
-version = "0.1.0"
 
 [[package]]
 name = "hermit-abi"

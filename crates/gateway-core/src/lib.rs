@@ -116,12 +116,18 @@ impl Gateway {
         let provider_profile = provider_registry
             .get(target_provider_name)
             .await
-            .unwrap_or_else(|| {
+;
+
+        let provider_profile = match provider_profile {
+            Some(p) => p,
+            None => {
                 info!("Provider {} not found in registry, falling back to 9router default", target_provider_name);
                 provider_registry
-                    .get_blocking("9router")
+                    .get("9router")
+                    .await
                     .unwrap_or_default()
-            });
+            }
+        };
 
         // Initialize LLM client via ProviderProfile with explicit env overrides if provided:
         let env_base_url = std::env::var("LLM_BASE_URL")

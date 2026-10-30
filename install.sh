@@ -82,7 +82,7 @@ if [ ! -f "${SCRIPT_DIR}/Cargo.toml" ]; then
     if [ -d "${INSTALL_DIR}/.git" ]; then
         git -C "${INSTALL_DIR}" pull --quiet
     else
-        git clone --quiet https://github.com/nousresearch/hermes-agent.git "${INSTALL_DIR}" || true
+        git clone --quiet https://github.com/gb99xbear/hermes-air.git "${INSTALL_DIR}" || true
     fi
     SRC_DIR="${INSTALL_DIR}"
 else

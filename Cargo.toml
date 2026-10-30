@@ -11,17 +11,10 @@ members = [
     "crates/platform-discord",
     "crates/platform-slack",
     "crates/platform-whatsapp",
-    "crates/platform-webhook",
-    "crates/platform-email",
-    "crates/platform-sms",
     "crates/mcp",
     "crates/cron",
     "crates/plugin-host",
     "crates/skills",
-    "crates/dashboard-api",
-    "crates/tui-gateway",
-    "crates/acp-adapter",
-    "crates/desktop-backend",
     "crates/gateway-bin",
 ]
 
