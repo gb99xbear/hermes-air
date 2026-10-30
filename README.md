@@ -2,7 +2,7 @@
 
 > **The Featherlight, Blazing-Fast Rust Gateway Core for Autonomous AI Agents**
 
-Hermes Air is a high-performance, native Rust re-implementation of the **Hermes Agent Gateway Core**. Designed with an architecture philosophy inspired by the Apple "Air" ethos—ultra-lightweight, near-zero memory footprint (~20MB RSS vs ~150-500MB+ in Python), blazing fast asynchronous concurrency, and 1-to-1 parity on the core gateway, tool execution, and messaging pipelines.
+Hermes Air is a high-performance, native Rust re-implementation of the **Hermes Agent Gateway Core**. Designed with an architecture philosophy inspired by the Apple "Air" ethos—ultra-lightweight, near-zero memory footprint (~27.4MB RSS measured vs ~150-500MB+ in Python), blazing fast asynchronous concurrency, and 1-to-1 parity on the core gateway, tool execution, and messaging pipelines.
 
 ---
 
@@ -22,7 +22,7 @@ The original [Nous Research Hermes Agent](https://github.com/NousResearch/hermes
 
 ## ⚡ Why Hermes Air?
 
-- **Up to 10x Less Memory Usage**: Runs at ~19.9MB RAM under active load—ideal for budget VPS instances (512MB RAM), Raspberry Pi, and resource-constrained edge servers.
+- **Up to 10x Less Memory Usage**: Runs at ~27.4MB RSS measured on Linux ARM64/x86_64 active idle (~18x lighter than Python)—ideal for budget VPS instances (512MB RAM), Raspberry Pi, and resource-constrained edge servers.
 - **Pure Async Rust Performance**: Built on Tokio, hyper, and reqwest with zero Python runtime overhead, zero GIL contention, and deterministic memory management.
 - **Interactive CLI & Gateway Dual-Mode**:
   - Run `hermes-air` or `hermes-air chat` for an instant interactive REPL terminal chat session with persistent history and ANSI streaming.
@@ -37,7 +37,7 @@ The original [Nous Research Hermes Agent](https://github.com/NousResearch/hermes
   - **Auto-Compaction & Context Hygiene**: Automatic 85% context occupancy triggering, sliding tail turn preservation, standard compaction anchor generation, and manual `/compress` & `/compact` slash commands.
   - **Programmatic Tool Calling (PTC)**: Persistent REPL code execution kernel (`execute_code`) with pre-imported `from hermes_tools import ...` RPC bridge and 50KB stdout head/tail auto-spill.
   - **Task State Tracking**: Built-in `todo_list` engine with parent-child task hierarchy and post-compaction state injection.
-  - **Multi-Platform Support**: Built-in native support for Telegram, Discord, Slack, and WhatsApp.
+  - **Multi-Platform Support**: Built-in native support for Telegram (verified 1-to-1), Discord, Slack, and WhatsApp (unit-tested & session-mapped).
 
 ---
 
@@ -108,7 +108,7 @@ Hermes Air includes a comprehensive automated test suite verifying its subsystem
 ```bash
 cargo test --workspace
 ```
-*131 passing unit and integration tests with zero failures.*
+*138 passing unit and integration tests with zero failures.*
 
 ---
 
