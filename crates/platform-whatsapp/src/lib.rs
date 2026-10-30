@@ -399,6 +399,7 @@ struct WhatsAppMessageResponse {
 pub struct WhatsAppAdapter {
     base: BaseAdapter<WhatsAppConfig>,
     client: Client,
+    session_to_wa: Arc<dashmap::DashMap<Uuid, String>>,
     #[allow(dead_code)]
     pending_messages: Arc<RwLock<HashMap<MessageId, (OutgoingMessage, mpsc::UnboundedSender<DeliveryReceipt>)>>>,
 }
@@ -596,6 +597,7 @@ impl WhatsAppAdapter {
 
     fn convert_incoming_message(&self, msg: &WhatsAppMessage, _metadata: &WhatsAppMetadata) -> Result<IncomingMessage, PlatformError> {
         let session_id = self.session_id_from_wa_id(&msg.from);
+        self.session_to_wa.insert(session_id, msg.from.clone());
         let content = self.convert_message_content(msg)?;
         
         let timestamp = msg.timestamp.parse::<i64>()
@@ -838,11 +840,11 @@ impl WhatsAppAdapter {
     }
 
     fn wa_id_from_session(&self, session_id: Uuid) -> Result<String, PlatformError> {
-        // Extract WhatsApp ID from session UUID (first 8 bytes as hash)
+        if let Some(wa_id) = self.session_to_wa.get(&session_id) {
+            return Ok(wa_id.clone());
+        }
         let bytes = session_id.as_bytes();
         let hash = u64::from_le_bytes(bytes[..8].try_into().map_err(|_| PlatformError::Internal("Invalid session ID".into()))?);
-        // We can't reverse the hash, so we need to store mapping
-        // For now, use a placeholder - in production this would use a session store
         Ok(format!("wa_id_{:x}", hash))
     }
 
