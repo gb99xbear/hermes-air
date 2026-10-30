@@ -185,6 +185,8 @@ impl Gateway {
         })
     }
 
+    pub fn config(&self) -> &GatewayConfig { &self.config }
+
     pub fn provider_registry(&self) -> Arc<ProviderRegistry> {
         self.provider_registry.clone()
     }

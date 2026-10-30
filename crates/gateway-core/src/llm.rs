@@ -109,7 +109,7 @@ impl LlmClient {
             .unwrap_or_else(|| "http://127.0.0.1:20128/v1".to_string());
         
         let client = Client::builder()
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
 
@@ -142,7 +142,7 @@ impl LlmClient {
             .or_else(|| profile.resolve_api_key());
 
         let client = Client::builder()
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
 

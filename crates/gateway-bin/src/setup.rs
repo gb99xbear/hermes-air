@@ -17,7 +17,7 @@ impl SetupSection {
     pub fn from_str_relaxed(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "all" | "full" => Some(SetupSection::All),
-            "model" | "provider" | "models" | "providers" => Some(SetupSection::Model),
+            "model" | "provider" | "models" | "providers" | "agent" => Some(SetupSection::Model),
             "gateway" | "platform" | "platforms" | "messaging" => Some(SetupSection::Gateway),
             "tools" | "tool" | "browser" | "cdp" => Some(SetupSection::Tools),
             _ => None,

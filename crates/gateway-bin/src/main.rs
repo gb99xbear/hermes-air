@@ -314,6 +314,7 @@ async fn run_interactive_chat(
 
     let active_model_display = current_model_override
         .clone()
+        .or_else(|| gateway.config().get_profile(&gateway.config().gateway.default_profile).map(|p| p.model.clone()))
         .unwrap_or_else(|| "ag/gemini-3.8-flash".to_string());
 
     print_interactive_banner(&active_model_display, &session_id.to_string());
