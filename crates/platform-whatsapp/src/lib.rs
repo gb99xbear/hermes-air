@@ -1060,3 +1060,19 @@ pub async fn verify_webhook_signature(
     let expected_signature = hex::encode(result.into_bytes());
     Ok(signature == format!("sha256={}", expected_signature))
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_whatsapp_session_mapping_bi_directional() {
+        let adapter = WhatsAppAdapter::new();
+        let session_id = Uuid::new_v4();
+        let wa_id = "60123456789".to_string();
+
+        adapter.session_to_wa.insert(session_id, wa_id.clone());
+
+        let resolved = adapter.wa_id_from_session(session_id).expect("Session must resolve");
+        assert_eq!(resolved, wa_id, "WhatsApp session mapping must return the exact stored wa_id");
+    }
+}

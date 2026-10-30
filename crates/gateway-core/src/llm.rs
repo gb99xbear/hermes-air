@@ -393,7 +393,13 @@ impl LlmClient {
         let resp = request
             .send()
             .await
-            .with_context(|| format!("Failed to send request to LLM endpoint: {}", url))?;
+            .with_context(|| {
+                if url.contains("127.0.0.1:20128") || url.contains("localhost:20128") {
+                    format!("Failed to connect to local 9Router endpoint at {}. If you do not have 9Router running locally, switch to an external provider (e.g. OpenRouter or OpenAI) in your config.toml or run `hermes-gateway setup`.", url)
+                } else {
+                    format!("Failed to send request to LLM endpoint: {}", url)
+                }
+            })?;
 
         let status = resp.status();
         if !status.is_success() {
