@@ -1,7 +1,0 @@
-[package]
-name = "hermes-tui-gateway"
-version = "0.1.0"
-edition = "2021"
-description = "Hermes Gateway - tui-gateway"
-
-[dependencies]

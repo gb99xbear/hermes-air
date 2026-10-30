@@ -1,7 +1,0 @@
-[package]
-name = "hermes-platform-webhook"
-version = "0.1.0"
-edition = "2021"
-description = "Hermes Gateway - platform-webhook"
-
-[dependencies]

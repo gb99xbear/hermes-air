@@ -1,7 +1,0 @@
-[package]
-name = "hermes-acp-adapter"
-version = "0.1.0"
-edition = "2021"
-description = "Hermes Gateway - acp-adapter"
-
-[dependencies]

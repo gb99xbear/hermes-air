@@ -864,8 +864,29 @@ impl Curator {
         }
     }
 
-    pub async fn merge_skills(&self, _skills: Vec<String>) -> Result<Skill, SkillError> {
-        Err(SkillError::Validation("Not implemented".into()))
+    pub async fn merge_skills(&self, skills_content: Vec<String>) -> Result<Skill, SkillError> {
+        if let Some(llm) = &self.llm_client {
+            if skills_content.is_empty() {
+                return Err(SkillError::Validation("No skills provided to merge".into()));
+            }
+            let mut prompt = String::from("Merge the following skills into a single, unified Skill markdown file with YAML frontmatter ---
+
+");
+            for (idx, sc) in skills_content.iter().enumerate() {
+                prompt.push_str(&format!("=== Skill {} ===
+{}
+
+", idx + 1, sc));
+            }
+            let response = llm.complete(&prompt).await?;
+            let (frontmatter, body) = Skill::parse_frontmatter(&response)?;
+            let mut skill: Skill = serde_yaml::from_str(&frontmatter)
+                .map_err(|e| SkillError::Parse(e.to_string()))?;
+            skill.content = body;
+            Ok(skill)
+        } else {
+            Err(SkillError::Validation("No LLM client configured for skill merging".into()))
+        }
     }
 }
 

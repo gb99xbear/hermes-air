@@ -410,6 +410,7 @@ impl WhatsAppAdapter {
             base: BaseAdapter::new(Platform::WhatsApp),
             client: Client::new(),
             pending_messages: Arc::new(RwLock::new(HashMap::new())),
+            session_to_wa: Arc::new(dashmap::DashMap::new()),
         }
     }
 

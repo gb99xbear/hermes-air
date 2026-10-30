@@ -137,7 +137,9 @@ if [[ ":${PATH}:" != *":${INSTALL_BIN_DIR}:"* ]]; then
 fi
 
 # 7. Generate default config.toml if absent
-CONFIG_DEST="config.toml"
+CONFIG_DIR="${HOME}/.config/hermes-air"
+mkdir -p "${CONFIG_DIR}"
+CONFIG_DEST="${CONFIG_DIR}/config.toml"
 if [ ! -f "${CONFIG_DEST}" ]; then
     if [ -f "config.example.toml" ]; then
         echo -e "📄 Creating initial config from config.example.toml..."
