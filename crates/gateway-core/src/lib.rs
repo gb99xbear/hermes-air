@@ -1017,7 +1017,8 @@ impl Gateway {
                     {
                         Ok(rx) => {
                             info!("Streaming chat response directly via GatewayStreamConsumer for chat_id: {}", chat_id);
-                            let mut consumer = GatewayStreamConsumer::new(chat_id);
+                            let thread_id = adapter.thread_id_from_session(msg.session_id);
+                                            let mut consumer = GatewayStreamConsumer::new(chat_id).with_thread(thread_id);
                             let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
                             match consumer.consume_stream(rx, adapter, reply_to_id).await {
                                 Ok(acc) => {
@@ -1037,7 +1038,8 @@ impl Gateway {
                                         let p = std::path::Path::new(&img_path);
                                         if p.exists() {
                                             let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
-                                            let _ = adapter.send_photo_file(chat_id, None, p, None, reply_to_id).await;
+                                            let thread_id = adapter.thread_id_from_session(msg.session_id);
+                                            let _ = adapter.send_photo_file(chat_id, thread_id, p, None, reply_to_id).await;
                                         }
                                     }
                                 }
@@ -1059,6 +1061,7 @@ impl Gateway {
 
 // If not delivered via direct stream, run recursive tool loop
         if !streamed_delivery && final_text.is_empty() {
+            let mut progress_bubble_id: Option<(i64, i64)> = None;
             while iteration < max_tool_iterations {
                 if turn_token.is_cancelled() {
                     info!("Turn cancelled before iteration {} for session {}", iteration + 1, msg.session_id);
@@ -1095,7 +1098,8 @@ impl Gateway {
                                     if let Some(adapter) = tg_adapter {
                                         if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
                                             let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
-                                            let mut consumer = GatewayStreamConsumer::new(chat_id);
+                                            let thread_id = adapter.thread_id_from_session(msg.session_id);
+                                            let mut consumer = GatewayStreamConsumer::new(chat_id).with_thread(thread_id);
                                             // Deliver final completed text smoothly via stream consumer
                                             let (tx, rx) = tokio::sync::mpsc::channel(1);
                                             let _ = tx.send(text.clone()).await;
@@ -1106,7 +1110,8 @@ impl Gateway {
                                             for img_path in Self::extract_media_image_paths(&text) {
                                                 let p = std::path::Path::new(&img_path);
                                                 if p.exists() {
-                                                    let _ = adapter.send_photo_file(chat_id, None, p, None, reply_to_id).await;
+                                                    let thread_id = adapter.thread_id_from_session(msg.session_id);
+                                            let _ = adapter.send_photo_file(chat_id, thread_id, p, None, reply_to_id).await;
                                                 }
                                             }
                                         }
@@ -1128,7 +1133,7 @@ impl Gateway {
                                 messages.push(asst_call_msg);
 
                                 // Telegram live tool progress status message
-                                let mut progress_bubble_id: Option<(i64, i64)> = None; // (chat_id, message_id)
+                                // progress_bubble_id preserved from outer turn scope
                                 let tg_chat_id = if let Some(ref adapter) = tg_adapter {
                                     if msg.platform == Platform::Telegram {
                                         adapter.chat_id_from_session(msg.session_id).ok()
@@ -1163,7 +1168,8 @@ impl Gateway {
                                             }
                                             None => {
                                                 let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
-                                                if let Ok(sent) = adapter.send_chunk_with_fallback(cid, &progress_text, reply_to_id).await {
+                                                let thread_id = adapter.thread_id_from_session(msg.session_id);
+                                                if let Ok(sent) = adapter.send_chunk_with_fallback_and_thread(cid, thread_id, &progress_text, reply_to_id).await {
                                                     progress_bubble_id = Some((cid, sent.message_id));
                                                 }
                                             }
@@ -1179,7 +1185,8 @@ impl Gateway {
                                             let p = std::path::Path::new(&img_path);
                                             if p.exists() {
                                                 let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
-                                                let _ = adapter.send_photo_file(cid, None, p, None, reply_to_id).await;
+                                                let thread_id = adapter.thread_id_from_session(msg.session_id);
+                                                let _ = adapter.send_photo_file(cid, thread_id, p, None, reply_to_id).await;
                                             }
                                         }
                                     }
