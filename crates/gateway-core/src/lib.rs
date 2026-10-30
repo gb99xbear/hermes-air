@@ -7,6 +7,7 @@ pub mod stream;
 pub mod prompt;
 pub mod providers;
 pub mod fuzzy_match;
+pub mod session_search;
 pub mod tools;
 pub mod web;
 pub mod browser;
@@ -167,8 +168,13 @@ impl Gateway {
 
         let delegation_manager = Arc::new(DelegationManager::new());
 
+        let session_store_arc: Arc<Box<dyn SessionStore>> = Arc::new(session_store);
+
         let tool_registry = Arc::new(
-            ToolRegistry::new().with_cron_scheduler(cron_scheduler.clone()).with_delegation_manager(delegation_manager.clone())
+            ToolRegistry::new()
+                .with_cron_scheduler(cron_scheduler.clone())
+                .with_delegation_manager(delegation_manager.clone())
+                .with_session_store(session_store_arc.clone())
         );
         let prompt_assembler = Arc::new(PromptAssembler::new());
 
@@ -178,7 +184,7 @@ impl Gateway {
         Ok(Self {
             config,
             relay_server,
-            session_store: Arc::new(session_store),
+            session_store: session_store_arc,
             llm_client,
             provider_registry,
             tool_registry,

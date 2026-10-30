@@ -7,6 +7,19 @@ use redis::{aio::ConnectionManager, AsyncCommands, Client, RedisError};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Summary of a session for search and discovery
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionSummary {
+    pub session_id: Uuid,
+    pub title: Option<String>,
+    pub started_at: String,
+    pub last_active: String,
+    pub message_count: usize,
+    pub preview: String,
+    pub source: String,
+    pub model: Option<String>,
+}
+
 #[async_trait]
 pub trait SessionStore: Send + Sync {
     async fn get(&self, id: Uuid) -> Result<Option<Session>, SessionStoreError>;
@@ -26,6 +39,11 @@ pub trait SessionStore: Send + Sync {
     // Session model override persistence (1-to-1 matching Python gateway/session.py)
     async fn set_model_override(&self, session_id: Uuid, model: Option<String>) -> Result<(), SessionStoreError>;
     async fn get_model_override(&self, session_id: Uuid) -> Result<Option<String>, SessionStoreError>;
+
+    // Long-term conversation recall across sessions
+    async fn search_sessions(&self, query: Option<&str>, limit: usize, sort_newest: bool) -> Result<Vec<SessionSummary>, SessionStoreError>;
+    async fn get_session_messages_bounded(&self, session_id: &Uuid, offset: Option<usize>, limit: Option<usize>) -> Result<Vec<ChatMessage>, SessionStoreError>;
+    async fn scroll_around_message(&self, session_id: &Uuid, message_id: &str, window: usize) -> Result<Vec<ChatMessage>, SessionStoreError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -357,6 +375,102 @@ impl SessionStore for RedisSessionStore {
         }
         Ok(data)
     }
+
+    async fn search_sessions(&self, query: Option<&str>, limit: usize, sort_newest: bool) -> Result<Vec<SessionSummary>, SessionStoreError> {
+        let mut conn = self.conn.clone();
+        let pattern = format!("{}*", self.key_prefix);
+        let keys: Vec<String> = conn.keys(&pattern).await?;
+        let mut summaries = Vec::new();
+
+        for key in keys {
+            if let Some(id_str) = key.strip_prefix(&self.key_prefix) {
+                if id_str.starts_with("messages:") || id_str.starts_with("model_override:") || id_str.starts_with("profile:") || id_str.starts_with("platform:") {
+                    continue;
+                }
+                if let Ok(id) = Uuid::parse_str(id_str) {
+                    if let Some(session) = self.get(id).await? {
+                        let msgs = self.get_messages(id, None).await.unwrap_or_default();
+                        let message_count = msgs.len();
+                        let preview = msgs.last().and_then(|m| m.content.clone()).unwrap_or_default();
+                        
+                        let matches = match query {
+                            Some(q) if !q.trim().is_empty() => {
+                                let q_lower = q.to_lowercase();
+                                let terms: Vec<&str> = q_lower.split_whitespace().collect();
+                                let title = session.metadata.get("title").and_then(|v| v.as_str()).map(|t| t.to_lowercase()).unwrap_or_default();
+                                let all_text = msgs.iter().filter_map(|m| m.content.as_deref()).map(|c| c.to_lowercase()).collect::<Vec<_>>().join(" ");
+                                let combined = format!("{} {}", title, all_text);
+                                terms.iter().all(|term| combined.contains(term))
+                            }
+                            _ => true,
+                        };
+
+                        if matches {
+                            let title = session.metadata.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let model = self.get_model_override(id).await.unwrap_or(None);
+                            summaries.push((session.created_at, SessionSummary {
+                                session_id: id,
+                                title,
+                                started_at: session.created_at.to_string(),
+                                last_active: session.updated_at.to_string(),
+                                message_count,
+                                preview,
+                                source: session.platform.as_str().to_string(),
+                                model,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        if sort_newest {
+            summaries.sort_by(|a, b| b.0.cmp(&a.0));
+        } else {
+            summaries.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+
+        Ok(summaries.into_iter().map(|(_, s)| s).take(limit).collect())
+    }
+
+    async fn get_session_messages_bounded(&self, session_id: &Uuid, offset: Option<usize>, limit: Option<usize>) -> Result<Vec<ChatMessage>, SessionStoreError> {
+        let msgs = self.get_messages(*session_id, None).await?;
+        let start = offset.unwrap_or(0);
+        if start >= msgs.len() {
+            return Ok(Vec::new());
+        }
+        let end = match limit {
+            Some(lim) => std::cmp::min(start + lim, msgs.len()),
+            None => msgs.len(),
+        };
+        Ok(msgs[start..end].to_vec())
+    }
+
+    async fn scroll_around_message(&self, session_id: &Uuid, message_id: &str, window: usize) -> Result<Vec<ChatMessage>, SessionStoreError> {
+        let msgs = self.get_messages(*session_id, None).await?;
+        if msgs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let idx = match message_id.parse::<usize>() {
+            Ok(i) if i < msgs.len() => Some(i),
+            _ => {
+                msgs.iter().position(|m| {
+                    m.tool_call_id.as_deref() == Some(message_id) ||
+                    m.content.as_deref().map(|c| c.contains(message_id)).unwrap_or(false)
+                })
+            }
+        };
+
+        match idx {
+            Some(center) => {
+                let start = center.saturating_sub(window);
+                let end = std::cmp::min(center + window + 1, msgs.len());
+                Ok(msgs[start..end].to_vec())
+            }
+            None => Ok(Vec::new()),
+        }
+    }
 }
 
 /// In-memory session store (for testing or single-instance)
@@ -483,6 +597,91 @@ impl SessionStore for MemorySessionStore {
 
     async fn get_model_override(&self, session_id: Uuid) -> Result<Option<String>, SessionStoreError> {
         Ok(self.model_overrides.get(&session_id).map(|v| v.clone()))
+    }
+
+    async fn search_sessions(&self, query: Option<&str>, limit: usize, sort_newest: bool) -> Result<Vec<SessionSummary>, SessionStoreError> {
+        let mut summaries = Vec::new();
+        for entry in self.sessions.iter() {
+            let session = entry.value();
+            let id = session.id;
+            let msgs = self.messages.get(&id).map(|m| m.clone()).unwrap_or_default();
+            let message_count = msgs.len();
+            let preview = msgs.last().and_then(|m| m.content.clone()).unwrap_or_default();
+
+            let matches = match query {
+                Some(q) if !q.trim().is_empty() => {
+                    let q_lower = q.to_lowercase();
+                    let terms: Vec<&str> = q_lower.split_whitespace().collect();
+                    let title = session.metadata.get("title").and_then(|v| v.as_str()).map(|t| t.to_lowercase()).unwrap_or_default();
+                    let all_text = msgs.iter().filter_map(|m| m.content.as_deref()).map(|c| c.to_lowercase()).collect::<Vec<_>>().join(" ");
+                    let combined = format!("{} {}", title, all_text);
+                    terms.iter().all(|term| combined.contains(term))
+                }
+                _ => true,
+            };
+
+            if matches {
+                let title = session.metadata.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let model = self.model_overrides.get(&id).map(|m| m.clone());
+                summaries.push((session.created_at, SessionSummary {
+                    session_id: id,
+                    title,
+                    started_at: session.created_at.to_string(),
+                    last_active: session.updated_at.to_string(),
+                    message_count,
+                    preview,
+                    source: session.platform.as_str().to_string(),
+                    model,
+                }));
+            }
+        }
+
+        if sort_newest {
+            summaries.sort_by(|a, b| b.0.cmp(&a.0));
+        } else {
+            summaries.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+
+        Ok(summaries.into_iter().map(|(_, s)| s).take(limit).collect())
+    }
+
+    async fn get_session_messages_bounded(&self, session_id: &Uuid, offset: Option<usize>, limit: Option<usize>) -> Result<Vec<ChatMessage>, SessionStoreError> {
+        let msgs = self.messages.get(session_id).map(|m| m.clone()).unwrap_or_default();
+        let start = offset.unwrap_or(0);
+        if start >= msgs.len() {
+            return Ok(Vec::new());
+        }
+        let end = match limit {
+            Some(lim) => std::cmp::min(start + lim, msgs.len()),
+            None => msgs.len(),
+        };
+        Ok(msgs[start..end].to_vec())
+    }
+
+    async fn scroll_around_message(&self, session_id: &Uuid, message_id: &str, window: usize) -> Result<Vec<ChatMessage>, SessionStoreError> {
+        let msgs = self.messages.get(session_id).map(|m| m.clone()).unwrap_or_default();
+        if msgs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let idx = match message_id.parse::<usize>() {
+            Ok(i) if i < msgs.len() => Some(i),
+            _ => {
+                msgs.iter().position(|m| {
+                    m.tool_call_id.as_deref() == Some(message_id) ||
+                    m.content.as_deref().map(|c| c.contains(message_id)).unwrap_or(false)
+                })
+            }
+        };
+
+        match idx {
+            Some(center) => {
+                let start = center.saturating_sub(window);
+                let end = std::cmp::min(center + window + 1, msgs.len());
+                Ok(msgs[start..end].to_vec())
+            }
+            None => Ok(Vec::new()),
+        }
     }
 }
 
@@ -653,5 +852,66 @@ mod tests {
 
         store.clear_messages(session_id).await.unwrap();
         assert_eq!(store.get_model_override(session_id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_session_search_memory_store_shapes() {
+        let store = MemorySessionStore::new();
+        let session_1 = Uuid::new_v4();
+        let session_2 = Uuid::new_v4();
+
+        let mut sess1 = Session {
+            id: session_1,
+            profile: "default".to_string(),
+            platform: Platform::Telegram,
+            platform_session_id: "tg_1".to_string(),
+            state: SessionState::Active,
+            created_at: time::OffsetDateTime::now_utc(),
+            updated_at: time::OffsetDateTime::now_utc(),
+            metadata: std::collections::HashMap::new(),
+        };
+        sess1.metadata.insert("title".to_string(), serde_json::json!("Rust systems engineering"));
+        store.set(&sess1).await.unwrap();
+
+        let mut sess2 = Session {
+            id: session_2,
+            profile: "default".to_string(),
+            platform: Platform::Discord,
+            platform_session_id: "dc_1".to_string(),
+            state: SessionState::Active,
+            created_at: time::OffsetDateTime::now_utc(),
+            updated_at: time::OffsetDateTime::now_utc(),
+            metadata: std::collections::HashMap::new(),
+        };
+        sess2.metadata.insert("title".to_string(), serde_json::json!("Python recall research"));
+        store.set(&sess2).await.unwrap();
+
+        store.append_message(session_1, ChatMessage::user("How do we optimize async Rust runtime?")).await.unwrap();
+        store.append_message(session_1, ChatMessage::assistant("We utilize Tokio and lightweight channels.")).await.unwrap();
+        store.append_message(session_1, ChatMessage::user("What about zero-copy buffers?")).await.unwrap();
+
+        store.append_message(session_2, ChatMessage::user("Looking for conversation recall algorithms.")).await.unwrap();
+        store.append_message(session_2, ChatMessage::assistant("Session search with FTS and window scrolling.")).await.unwrap();
+
+        // 1. Browse Shape: query=None, returns all matching sessions
+        let browse = store.search_sessions(None, 10, true).await.unwrap();
+        assert_eq!(browse.len(), 2);
+
+        // 2. Discovery Shape: query Some("zero-copy") matches session 1
+        let search_rust = store.search_sessions(Some("zero-copy"), 10, true).await.unwrap();
+        assert_eq!(search_rust.len(), 1);
+        assert_eq!(search_rust[0].session_id, session_1);
+        assert_eq!(search_rust[0].message_count, 3);
+
+        // 3. Read Shape: bounded retrieval
+        let read_bounded = store.get_session_messages_bounded(&session_1, Some(1), Some(2)).await.unwrap();
+        assert_eq!(read_bounded.len(), 2);
+        assert_eq!(read_bounded[0].role, "assistant");
+        assert_eq!(read_bounded[1].role, "user");
+
+        // 4. Scroll Shape: scroll around message index 1 with window 1 (should return [0, 1, 2])
+        let scroll_window = store.scroll_around_message(&session_1, "1", 1).await.unwrap();
+        assert_eq!(scroll_window.len(), 3);
+        assert_eq!(scroll_window[1].content.as_deref(), Some("We utilize Tokio and lightweight channels."));
     }
 }

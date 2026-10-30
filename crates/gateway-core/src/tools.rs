@@ -66,6 +66,7 @@ pub struct ToolRegistry {
     pub todo_store: Arc<crate::todo::TodoStore>,
     pub cron_scheduler: Option<Arc<hermes_cron::CronScheduler>>,
     pub delegation_manager: Option<Arc<crate::delegation::DelegationManager>>,
+    pub session_search: Option<Arc<crate::session_search::SessionSearchEngine>>,
 }
 
 impl Default for ToolRegistry {
@@ -82,6 +83,7 @@ impl ToolRegistry {
             todo_store: Arc::new(crate::todo::TodoStore::default()),
             cron_scheduler: None,
             delegation_manager: None,
+            session_search: None,
         }
     }
 
@@ -92,7 +94,18 @@ impl ToolRegistry {
             todo_store: Arc::new(crate::todo::TodoStore::default()),
             cron_scheduler: None,
             delegation_manager: None,
+            session_search: None,
         }
+    }
+
+    pub fn with_session_search(mut self, session_search: Arc<crate::session_search::SessionSearchEngine>) -> Self {
+        self.session_search = Some(session_search);
+        self
+    }
+
+    pub fn with_session_store(mut self, session_store: Arc<Box<dyn hermes_session_store::SessionStore>>) -> Self {
+        self.session_search = Some(Arc::new(crate::session_search::SessionSearchEngine::new(session_store)));
+        self
     }
 
     pub fn with_todo_store(mut self, todo_store: Arc<crate::todo::TodoStore>) -> Self {
@@ -682,6 +695,7 @@ impl ToolRegistry {
                     }
                 }
             }),
+            crate::session_search::SessionSearchEngine::get_definition(),
         ]
     }
 
@@ -705,6 +719,7 @@ impl ToolRegistry {
             "todo_list" => self.execute_todo_list(call).await,
             "cronjob_manage" => self.execute_cronjob_manage(call).await,
             "execute_code" => self.execute_code(call).await,
+            "session_search" => self.execute_session_search(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown core tool: {}", other),
@@ -735,6 +750,7 @@ impl ToolRegistry {
             "cronjob_manage" => self.execute_cronjob_manage(call).await,
             "execute_code" => self.execute_code(call).await,
             "delegate_task" => self.execute_delegate_task(call).await,
+            "session_search" => self.execute_session_search(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown tool: {}", other),
@@ -1750,6 +1766,7 @@ impl ToolRegistry {
             todo_store: self.todo_store.clone(),
             cron_scheduler: self.cron_scheduler.clone(),
             delegation_manager: self.delegation_manager.clone(),
+            session_search: self.session_search.clone(),
         });
 
         match self.code_engine.execute(session_id, code, reset, None, Some(tool_reg)).await {
@@ -2471,6 +2488,7 @@ impl ToolRegistry {
                     todo_store: self.todo_store.clone(),
                     cron_scheduler: self.cron_scheduler.clone(),
                     delegation_manager: self.delegation_manager.clone(),
+                    session_search: self.session_search.clone(),
                 });
 
                 let res = manager.spawn_tasks(tasks, parent_session_id, llm_client, self_registry).await;
@@ -2488,6 +2506,36 @@ impl ToolRegistry {
                 }).to_string(),
                 success: false,
             },
+        }
+    }
+
+
+    pub async fn execute_session_search(&self, call: &ToolCall) -> ToolResult {
+        if let Some(engine) = &self.session_search {
+            match engine.execute(&call.arguments).await {
+                Ok(output) => ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output,
+                    success: true,
+                },
+                Err(e) => ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": e
+                    }).to_string(),
+                    success: false,
+                },
+            }
+        } else {
+            ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "success": false,
+                    "error": "SessionSearchEngine is not configured on this ToolRegistry"
+                }).to_string(),
+                success: false,
+            }
         }
     }
 

@@ -15,7 +15,7 @@ The original [Nous Research Hermes Agent](https://github.com/NousResearch/hermes
 - Interactive Setup Wizard (`hermes-air setup`).
 - Production Telegram Bot API with native media, forum topics, and progressive streaming.
 - Production Discord Gateway & REST client with mention filtering and thread sessions.
-- Comprehensive 17-tool execution runtime (including 9-strategy fuzzy matching patch engine and headless browser automation).
+- Comprehensive 20-tool execution runtime (including 9-strategy fuzzy matching patch engine and headless browser automation).
 - 85% Auto-compaction & context hygiene engine.
 
 ---
@@ -41,7 +41,7 @@ The original [Nous Research Hermes Agent](https://github.com/NousResearch/hermes
 
 ---
 
-## 🛠️ Built-in Tools Inventory (17 Core Tools)
+## 🛠️ Built-in Tools Inventory (20 Core Tools)
 
 Hermes Air exposes a comprehensive OpenAI function-calling toolset:
 
@@ -62,6 +62,9 @@ Hermes Air exposes a comprehensive OpenAI function-calling toolset:
 15. `skill_view`: Full skill markdown viewer with linked files resolution.
 16. `todo_list`: In-memory revisioned task list manager for multi-step workflows.
 17. `execute_code`: Persistent Python REPL session with `hermes_tools` RPC helpers.
+18. `cronjob_manage`: Scheduled autonomous job management with cron expression parser.
+19. `delegate_task`: Autonomous multi-agent task spawning, steering, and coordination.
+20. `session_search`: 1-to-1 long-term conversation recall across 4 operational shapes (discovery, browse, read, scroll).
 
 ---
 
@@ -108,7 +111,7 @@ Hermes Air includes a comprehensive automated test suite verifying its subsystem
 ```bash
 cargo test --workspace
 ```
-*148 passing unit and integration tests with zero failures.*
+*154 passing unit and integration tests with zero failures.*
 
 ---
 

@@ -87,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 19);
+    assert_eq!(defs.len(), 20);
 
     let names: Vec<&str> = defs
         .iter()
@@ -104,6 +104,7 @@ async fn test_tool_registry_get_definitions() {
     assert!(names.contains(&"skills_list"));
     assert!(names.contains(&"skill_view"));
     assert!(names.contains(&"todo_list"));
+    assert!(names.contains(&"session_search"));
 
     for def in &defs {
         assert_eq!(def.get("type").and_then(|t| t.as_str()), Some("function"));
@@ -1012,7 +1013,7 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 19);
+    assert_eq!(defs.len(), 20);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1804,4 +1805,122 @@ async fn test_delegate_task_tool_integration() {
     let stop_result = registry.execute(&stop_call).await;
     assert!(!stop_result.success);
     assert!(stop_result.output.contains("No live subagent"));
+}
+
+#[tokio::test]
+async fn test_session_search_tool_integration() {
+    use hermes_protocol::{ChatMessage, Platform, Session, SessionState};
+    use hermes_session_store::{MemorySessionStore, SessionStore};
+    use std::sync::Arc;
+
+    let store: Arc<Box<dyn SessionStore>> = Arc::new(Box::new(MemorySessionStore::new()));
+    let registry = ToolRegistry::new().with_session_store(store.clone());
+
+    // 1. Verify session_search tool definition exists in get_definitions
+    let defs = registry.get_definitions();
+    let ss_def = defs.iter().find(|d| d["function"]["name"] == "session_search");
+    assert!(ss_def.is_some(), "session_search definition must be registered in ToolRegistry");
+
+    // 2. Populate store with test sessions
+    let sid1 = uuid::Uuid::new_v4();
+    let sid2 = uuid::Uuid::new_v4();
+
+    let mut session1 = Session {
+        id: sid1,
+        profile: "default".to_string(),
+        platform: Platform::Telegram,
+        platform_session_id: "tg_integration_1".to_string(),
+        state: SessionState::Active,
+        created_at: time::OffsetDateTime::now_utc(),
+        updated_at: time::OffsetDateTime::now_utc(),
+        metadata: std::collections::HashMap::new(),
+    };
+    session1.metadata.insert("title".to_string(), serde_json::json!("Rust Gateway Core Discussion"));
+    store.set(&session1).await.unwrap();
+
+    let mut session2 = Session {
+        id: sid2,
+        profile: "default".to_string(),
+        platform: Platform::Discord,
+        platform_session_id: "dc_integration_2".to_string(),
+        state: SessionState::Active,
+        created_at: time::OffsetDateTime::now_utc(),
+        updated_at: time::OffsetDateTime::now_utc(),
+        metadata: std::collections::HashMap::new(),
+    };
+    session2.metadata.insert("title".to_string(), serde_json::json!("Python Recall Architecture"));
+    store.set(&session2).await.unwrap();
+
+    store.append_message(sid1, ChatMessage::user("Can you explain the session_search tool implementation?")).await.unwrap();
+    store.append_message(sid1, ChatMessage::assistant("It implements discovery, browse, read, and scroll shapes in Rust.")).await.unwrap();
+    store.append_message(sid1, ChatMessage::user("What is the maximum message content cap?")).await.unwrap();
+    store.append_message(sid1, ChatMessage::assistant("The cap is 2000 characters per message to prevent context explosion.")).await.unwrap();
+
+    store.append_message(sid2, ChatMessage::user("How does FTS5 ranking demote cron jobs?")).await.unwrap();
+    store.append_message(sid2, ChatMessage::assistant("Cron jobs are demoted to prevent recall blindness.")).await.unwrap();
+
+    // 3. Test Browse Shape via ToolRegistry::execute
+    let browse_call = ToolCall {
+        id: "call_ss_browse".to_string(),
+        name: "session_search".to_string(),
+        arguments: serde_json::json!({}),
+    };
+    let browse_res = registry.execute(&browse_call).await;
+    assert!(browse_res.success);
+    let browse_val: serde_json::Value = serde_json::from_str(&browse_res.output).unwrap();
+    assert_eq!(browse_val["mode"], "browse");
+    assert_eq!(browse_val["count"], 2);
+
+    // 4. Test Discovery Shape via ToolRegistry::execute
+    let disc_call = ToolCall {
+        id: "call_ss_disc".to_string(),
+        name: "session_search".to_string(),
+        arguments: serde_json::json!({
+            "query": "maximum message content cap",
+            "limit": 5,
+            "detail": "adaptive"
+        }),
+    };
+    let disc_res = registry.execute(&disc_call).await;
+    assert!(disc_res.success);
+    let disc_val: serde_json::Value = serde_json::from_str(&disc_res.output).unwrap();
+    assert_eq!(disc_val["mode"], "discover");
+    assert_eq!(disc_val["count"], 1);
+    assert_eq!(disc_val["results"][0]["session_id"], sid1.to_string());
+
+    // 5. Test Read Shape via ToolRegistry::execute
+    let read_call = ToolCall {
+        id: "call_ss_read".to_string(),
+        name: "session_search".to_string(),
+        arguments: serde_json::json!({
+            "session_id": sid1.to_string(),
+            "head": 2,
+            "tail": 2
+        }),
+    };
+    let read_res = registry.execute(&read_call).await;
+    assert!(read_res.success);
+    let read_val: serde_json::Value = serde_json::from_str(&read_res.output).unwrap();
+    assert_eq!(read_val["mode"], "read");
+    assert_eq!(read_val["session_id"], sid1.to_string());
+    assert_eq!(read_val["message_count"], 4);
+
+    // 6. Test Scroll Shape via ToolRegistry::execute
+    let scroll_call = ToolCall {
+        id: "call_ss_scroll".to_string(),
+        name: "session_search".to_string(),
+        arguments: serde_json::json!({
+            "session_id": sid1.to_string(),
+            "around_message_id": "1",
+            "window": 1
+        }),
+    };
+    let scroll_res = registry.execute(&scroll_call).await;
+    assert!(scroll_res.success);
+    let scroll_val: serde_json::Value = serde_json::from_str(&scroll_res.output).unwrap();
+    assert_eq!(scroll_val["mode"], "scroll");
+    assert_eq!(scroll_val["session_id"], sid1.to_string());
+    let messages = scroll_val["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[1]["anchor"], true);
 }
