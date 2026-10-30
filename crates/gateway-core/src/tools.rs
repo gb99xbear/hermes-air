@@ -65,6 +65,7 @@ pub struct ToolRegistry {
     pub code_engine: Arc<crate::code_exec::CodeExecutionEngine>,
     pub todo_store: Arc<crate::todo::TodoStore>,
     pub cron_scheduler: Option<Arc<hermes_cron::CronScheduler>>,
+    pub delegation_manager: Option<Arc<crate::delegation::DelegationManager>>,
 }
 
 impl Default for ToolRegistry {
@@ -80,6 +81,7 @@ impl ToolRegistry {
             code_engine: Arc::new(crate::code_exec::CodeExecutionEngine::default()),
             todo_store: Arc::new(crate::todo::TodoStore::default()),
             cron_scheduler: None,
+            delegation_manager: None,
         }
     }
 
@@ -89,11 +91,17 @@ impl ToolRegistry {
             code_engine: Arc::new(crate::code_exec::CodeExecutionEngine::default()),
             todo_store: Arc::new(crate::todo::TodoStore::default()),
             cron_scheduler: None,
+            delegation_manager: None,
         }
     }
 
     pub fn with_todo_store(mut self, todo_store: Arc<crate::todo::TodoStore>) -> Self {
         self.todo_store = todo_store;
+        self
+    }
+
+    pub fn with_delegation_manager(mut self, delegation_manager: Arc<crate::delegation::DelegationManager>) -> Self {
+        self.delegation_manager = Some(delegation_manager);
         self
     }
 
@@ -599,6 +607,63 @@ impl ToolRegistry {
             serde_json::json!({
                 "type": "function",
                 "function": {
+                    "name": "delegate_task",
+                    "description": "Spawn one or more subagents in isolated contexts, or manage running ones. For action='spawn', runs subagent tasks with fresh context and returns consolidated summaries. For action='list', returns running subagents. For action='steer', injects course-correction text mid-flight. For action='stop', cancels a running subagent.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "tasks": {
+                                "type": "array",
+                                "description": "List of tasks to execute as subagents",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "goal": {
+                                            "type": "string",
+                                            "description": "What this subagent should accomplish. Be specific and self-contained."
+                                        },
+                                        "context": {
+                                            "type": "string",
+                                            "description": "Background this child needs: file paths, error messages, constraints."
+                                        },
+                                        "output_schema": {
+                                            "type": "object",
+                                            "description": "Optional JSON Schema this child's final answer must validate against."
+                                        },
+                                        "images": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "Optional image file paths or URLs this child must see."
+                                        },
+                                        "group": {
+                                            "type": "string",
+                                            "description": "Optional result-delivery bucket within this call."
+                                        }
+                                    },
+                                    "required": ["goal"]
+                                }
+                            },
+                            "action": {
+                                "type": "string",
+                                "description": "Default 'spawn'. Options: 'spawn', 'list', 'steer', 'stop'.",
+                                "enum": ["spawn", "list", "steer", "stop"]
+                            },
+                            "subagent_id": {
+                                "type": "string",
+                                "description": "Target subagent ID for action='steer' or action='stop'."
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": "Course-correction instruction for action='steer'."
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
                     "name": "execute_code",
                     "description": "Run Python that calls Hermes tools programmatically. Use when you need 3+ tool calls with logic between them: filtering/reducing large outputs before they enter context, branching, or loops (N pages/files, retry on failure). Use normal tool calls for single calls, results you must reason over in full, or anything needing user interaction.\n\nCalls run in a persistent session kernel: variables, imports, and loaded data survive across execute_code calls, so build on earlier work instead of re-loading it. A timed-out or interrupted call loses that state.\n\nAvailable via `from hermes_tools import ...`:\n\n  web_search(query: str, limit: int = 5) -> dict\n    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}\n  web_extract(urls: list[str], char_limit: int = None) -> dict\n    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer).\n  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}\n  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file.\n  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}\n  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n    Replaces old_string with new_string in the file.\n  terminal(command: str, timeout=None, workdir=None) -> dict\n    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}\n\nLimits: 5-minute timeout, max 50 tool calls per call. Stdout over 50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\nScripts run in the session's working directory. Interpreter: the project's activated venv/conda python when one is active (VIRTUAL_ENV/CONDA_PREFIX — matches terminal()); otherwise Hermes's own python (the common case — stdlib plus Hermes's deps; check `import x` before relying on project packages).\n\nHelpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. json_parse(text) — tolerant json.loads for terminal() output; shell_quote(s) — shlex.quote for dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential backoff.",
                     "parameters": {
@@ -618,6 +683,34 @@ impl ToolRegistry {
                 }
             }),
         ]
+    }
+
+    pub async fn execute_core(&self, call: &ToolCall) -> ToolResult {
+        match call.name.as_str() {
+            "terminal" => self.execute_terminal(call).await,
+            "read_file" => self.execute_read_file(call).await,
+            "write_file" => self.execute_write_file(call).await,
+            "patch" => self.execute_patch(call).await,
+            "search_files" => self.execute_search_files(call).await,
+            "web_search" => self.execute_web_search(call).await,
+            "web_extract" => self.execute_web_extract(call).await,
+            "skills_list" => self.execute_skills_list(call).await,
+            "skill_view" => self.execute_skill_view(call).await,
+            "browser_navigate" => self.execute_browser_navigate(call).await,
+            "browser_snapshot" => self.execute_browser_snapshot(call).await,
+            "browser_click" => self.execute_browser_click(call).await,
+            "browser_type" => self.execute_browser_type(call).await,
+            "browser_take_screenshot" => self.execute_browser_take_screenshot(call).await,
+            "browser_exec" => self.execute_browser_exec(call).await,
+            "todo_list" => self.execute_todo_list(call).await,
+            "cronjob_manage" => self.execute_cronjob_manage(call).await,
+            "execute_code" => self.execute_code(call).await,
+            other => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: format!("Unknown core tool: {}", other),
+                success: false,
+            },
+        }
     }
 
     pub async fn execute(&self, call: &ToolCall) -> ToolResult {
@@ -641,6 +734,7 @@ impl ToolRegistry {
             "todo_list" => self.execute_todo_list(call).await,
             "cronjob_manage" => self.execute_cronjob_manage(call).await,
             "execute_code" => self.execute_code(call).await,
+            "delegate_task" => self.execute_delegate_task(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown tool: {}", other),
@@ -1655,6 +1749,7 @@ impl ToolRegistry {
             code_engine: self.code_engine.clone(),
             todo_store: self.todo_store.clone(),
             cron_scheduler: self.cron_scheduler.clone(),
+            delegation_manager: self.delegation_manager.clone(),
         });
 
         match self.code_engine.execute(session_id, code, reset, None, Some(tool_reg)).await {
@@ -2264,6 +2359,133 @@ impl ToolRegistry {
                     "error": format!("Unknown cron action '{}'", unknown)
                 })
                 .to_string(),
+                success: false,
+            },
+        }
+    }
+
+    pub async fn execute_delegate_task(&self, call: &ToolCall) -> ToolResult {
+        let manager = match &self.delegation_manager {
+            Some(m) => m.clone(),
+            None => {
+                return ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": "DelegationManager is not initialized or configured on this registry."
+                    }).to_string(),
+                    success: false,
+                };
+            }
+        };
+
+        let action_str = call.arguments.get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("spawn")
+            .trim()
+            .to_lowercase();
+
+        match action_str.as_str() {
+            "list" => {
+                let res = manager.list_active().await;
+                ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                    success: true,
+                }
+            }
+            "steer" => {
+                let subagent_id = call.arguments.get("subagent_id").and_then(|v| v.as_str()).unwrap_or("");
+                let message = call.arguments.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                let res = manager.steer(subagent_id, message).await;
+                let success = res.get("status").and_then(|v| v.as_str()) == Some("queued");
+                ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                    success,
+                }
+            }
+            "stop" => {
+                let subagent_id = call.arguments.get("subagent_id").and_then(|v| v.as_str()).unwrap_or("");
+                let res = manager.stop(subagent_id).await;
+                let success = res.get("status").and_then(|v| v.as_str()) == Some("interrupt_requested");
+                ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                    success,
+                }
+            }
+            "spawn" => {
+                let mut tasks = Vec::new();
+
+                // Accept either 'tasks' array or legacy single 'goal'/'context'
+                if let Some(tasks_arr) = call.arguments.get("tasks").and_then(|v| v.as_array()) {
+                    for t in tasks_arr {
+                        if let Some(goal) = t.get("goal").and_then(|v| v.as_str()) {
+                            let context = t.get("context").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let output_schema = t.get("output_schema").cloned();
+                            let images = t.get("images").and_then(|v| v.as_array()).map(|arr| {
+                                arr.iter().filter_map(|s| s.as_str().map(|str_val| str_val.to_string())).collect()
+                            });
+                            let group = t.get("group").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            tasks.push(crate::delegation::TaskSpec {
+                                goal: goal.to_string(),
+                                context,
+                                output_schema,
+                                images,
+                                group,
+                            });
+                        }
+                    }
+                } else if let Some(goal) = call.arguments.get("goal").and_then(|v| v.as_str()) {
+                    let context = call.arguments.get("context").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let output_schema = call.arguments.get("output_schema").cloned();
+                    let images = call.arguments.get("images").and_then(|v| v.as_array()).map(|arr| {
+                        arr.iter().filter_map(|s| s.as_str().map(|str_val| str_val.to_string())).collect()
+                    });
+                    tasks.push(crate::delegation::TaskSpec {
+                        goal: goal.to_string(),
+                        context,
+                        output_schema,
+                        images,
+                        group: None,
+                    });
+                }
+
+                if tasks.is_empty() {
+                    return ToolResult {
+                        tool_call_id: call.id.clone(),
+                        output: serde_json::json!({
+                            "success": false,
+                            "error": "action='spawn' requires 'tasks' array or 'goal' argument."
+                        }).to_string(),
+                        success: false,
+                    };
+                }
+
+                let parent_session_id = uuid::Uuid::new_v4();
+                let llm_client = Arc::new(crate::llm::LlmClient::new(None, None));
+                let self_registry = Arc::new(Self {
+                    skill_registry: self.skill_registry.clone(),
+                    code_engine: self.code_engine.clone(),
+                    todo_store: self.todo_store.clone(),
+                    cron_scheduler: self.cron_scheduler.clone(),
+                    delegation_manager: self.delegation_manager.clone(),
+                });
+
+                let res = manager.spawn_tasks(tasks, parent_session_id, llm_client, self_registry).await;
+                ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                    success: true,
+                }
+            }
+            unknown => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "success": false,
+                    "error": format!("Unknown delegation action '{}'. Expected 'spawn', 'list', 'steer', or 'stop'.", unknown)
+                }).to_string(),
                 success: false,
             },
         }

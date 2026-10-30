@@ -13,6 +13,7 @@ pub mod browser;
 pub mod code_exec;
 pub mod reflection;
 pub mod turn_processor;
+pub mod delegation;
 
 pub use commands::{
     build_model_keyboard, build_provider_keyboard, default_providers_list, handle_clear,
@@ -32,6 +33,7 @@ pub use code_exec::{CodeExecutionEngine, TruncationMetadata, truncate_stdout_tex
 pub use web::{web_extract, web_search, WebExtractItem, WebExtractResponse, WebSearchResponse, WebSearchResultItem};
 pub use reflection::{BackgroundReviewConfig, BackgroundReviewEngine, LearningSignal, SKILL_REVIEW_PROMPT, MEMORY_REVIEW_PROMPT, COMBINED_REVIEW_PROMPT};
 pub use turn_processor::{TurnProcessor, TurnEvent};
+pub use delegation::{DelegationAction, DelegationManager, SubagentRunOutcome, SubagentState, TaskSpec};
 
 use hermes_config::GatewayConfig;
 use hermes_platform_adapter::PlatformAdapter;
@@ -68,6 +70,7 @@ pub struct Gateway {
     llm_client: Arc<LlmClient>,
     provider_registry: Arc<ProviderRegistry>,
     tool_registry: Arc<ToolRegistry>,
+    delegation_manager: Arc<DelegationManager>,
     cron_scheduler: Arc<hermes_cron::CronScheduler>,
     prompt_assembler: Arc<PromptAssembler>,
     compressor: Arc<tokio::sync::Mutex<ContextCompressor>>,
@@ -162,8 +165,10 @@ impl Gateway {
         );
         let _ = cron_scheduler.start().await;
 
+        let delegation_manager = Arc::new(DelegationManager::new());
+
         let tool_registry = Arc::new(
-            ToolRegistry::new().with_cron_scheduler(cron_scheduler.clone())
+            ToolRegistry::new().with_cron_scheduler(cron_scheduler.clone()).with_delegation_manager(delegation_manager.clone())
         );
         let prompt_assembler = Arc::new(PromptAssembler::new());
 
@@ -177,6 +182,7 @@ impl Gateway {
             llm_client,
             provider_registry,
             tool_registry,
+            delegation_manager: delegation_manager.clone(),
             cron_scheduler,
             prompt_assembler,
             compressor,
@@ -188,6 +194,10 @@ impl Gateway {
     }
 
     pub fn config(&self) -> &GatewayConfig { &self.config }
+
+    pub fn delegation_manager(&self) -> Arc<DelegationManager> {
+        self.delegation_manager.clone()
+    }
 
     pub fn provider_registry(&self) -> Arc<ProviderRegistry> {
         self.provider_registry.clone()
@@ -1180,7 +1190,7 @@ impl Gateway {
                                 for call in calls {
                                     if turn_token.is_cancelled() {
                                         info!("Turn cancelled mid-tool execution for session {}", msg.session_id);
-                                        if let (Some(ref adapter), Some((cid, mid))) = (&tg_adapter, progress_bubble_id) {
+                                        if let (Some(ref _adapter), Some((_cid, _mid))) = (&tg_adapter, progress_bubble_id) {
                                             // keep progress bubble permanently
                                         }
                                         active_turns.remove(&msg.session_id);
@@ -1231,7 +1241,7 @@ impl Gateway {
                                 }
 
                                 // Delete or clean up progress bubble on tool completion
-                                if let (Some(ref adapter), Some((cid, mid))) = (&tg_adapter, progress_bubble_id) {
+                                if let (Some(ref _adapter), Some((_cid, _mid))) = (&tg_adapter, progress_bubble_id) {
                                     // keep progress bubble permanently
                                 }
                             }

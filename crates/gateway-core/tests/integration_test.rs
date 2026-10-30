@@ -87,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 18);
+    assert_eq!(defs.len(), 19);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1012,7 +1012,7 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 18);
+    assert_eq!(defs.len(), 19);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1719,4 +1719,89 @@ Always check Cargo.lock presence and freshness before running cargo build.
     assert_eq!(skill.name, "cargo-lock-check");
     assert_eq!(skill.description, "Verify Cargo.lock before invoking cargo build");
     assert!(skill.content.contains("Always check Cargo.lock"));
+}
+
+#[tokio::test]
+async fn test_delegate_task_tool_integration() {
+    use hermes_gateway_core::delegation::DelegationManager;
+    use hermes_gateway_core::tools::{ToolCall, ToolRegistry};
+    use std::sync::Arc;
+
+    let delegation_manager = Arc::new(DelegationManager::new());
+    let registry = ToolRegistry::new().with_delegation_manager(delegation_manager.clone());
+
+    // 1. Verify delegate_task definition schema
+    let defs = registry.get_definitions();
+    let delegate_def = defs.iter().find(|d| {
+        d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) == Some("delegate_task")
+    }).expect("delegate_task tool must be present in ToolRegistry definitions");
+
+    let params = &delegate_def["function"]["parameters"];
+    assert!(params["properties"].get("tasks").is_some());
+    assert!(params["properties"].get("action").is_some());
+    assert!(params["properties"].get("subagent_id").is_some());
+    assert!(params["properties"].get("message").is_some());
+
+    // 2. Test action="list" via execute
+    let list_call = ToolCall {
+        id: "call_list_1".to_string(),
+        name: "delegate_task".to_string(),
+        arguments: serde_json::json!({
+            "action": "list"
+        }),
+    };
+    let list_result = registry.execute(&list_call).await;
+    assert!(list_result.success);
+    let list_val: serde_json::Value = serde_json::from_str(&list_result.output).unwrap();
+    assert_eq!(list_val["action"], "list");
+    assert_eq!(list_val["count"], 0);
+
+    // 3. Test action="spawn" via execute
+    let spawn_call = ToolCall {
+        id: "call_spawn_1".to_string(),
+        name: "delegate_task".to_string(),
+        arguments: serde_json::json!({
+            "action": "spawn",
+            "tasks": [
+                {
+                    "goal": "Calculate arithmetic 2 + 2",
+                    "context": "Testing subagent delegation engine in Rust"
+                }
+            ]
+        }),
+    };
+    let spawn_result = registry.execute(&spawn_call).await;
+    assert!(spawn_result.success, "Spawn should succeed: {}", spawn_result.output);
+    let spawn_val: serde_json::Value = serde_json::from_str(&spawn_result.output).unwrap();
+    assert_eq!(spawn_val["action"], "spawn");
+    assert_eq!(spawn_val["count"], 1);
+    let subagent_res = &spawn_val["results"][0];
+    assert_eq!(subagent_res["status"], "completed");
+    assert!(subagent_res["summary"].as_str().unwrap().contains("Calculate arithmetic 2 + 2"));
+
+    // 4. Test action="steer" and action="stop" on non-existent subagent
+    let steer_call = ToolCall {
+        id: "call_steer_1".to_string(),
+        name: "delegate_task".to_string(),
+        arguments: serde_json::json!({
+            "action": "steer",
+            "subagent_id": "non_existent_sub",
+            "message": "Change strategy now"
+        }),
+    };
+    let steer_result = registry.execute(&steer_call).await;
+    assert!(!steer_result.success);
+    assert!(steer_result.output.contains("No live subagent"));
+
+    let stop_call = ToolCall {
+        id: "call_stop_1".to_string(),
+        name: "delegate_task".to_string(),
+        arguments: serde_json::json!({
+            "action": "stop",
+            "subagent_id": "non_existent_sub"
+        }),
+    };
+    let stop_result = registry.execute(&stop_call).await;
+    assert!(!stop_result.success);
+    assert!(stop_result.output.contains("No live subagent"));
 }
