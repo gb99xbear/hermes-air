@@ -11,6 +11,7 @@ pub mod tools;
 pub mod web;
 pub mod browser;
 pub mod code_exec;
+pub mod reflection;
 pub mod turn_processor;
 
 pub use commands::{
@@ -29,6 +30,7 @@ pub use providers::{ProviderProfile, ProviderRegistry};
 pub use tools::{ToolCall, ToolRegistry, ToolResult};
 pub use code_exec::{CodeExecutionEngine, TruncationMetadata, truncate_stdout_text, spill_full_stdout, head_tail_split};
 pub use web::{web_extract, web_search, WebExtractItem, WebExtractResponse, WebSearchResponse, WebSearchResultItem};
+pub use reflection::{BackgroundReviewConfig, BackgroundReviewEngine, LearningSignal, SKILL_REVIEW_PROMPT, MEMORY_REVIEW_PROMPT, COMBINED_REVIEW_PROMPT};
 pub use turn_processor::{TurnProcessor, TurnEvent};
 
 use hermes_config::GatewayConfig;

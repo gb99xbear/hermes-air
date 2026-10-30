@@ -3,6 +3,7 @@ use crate::commands::{handle_command, parse_command, CommandContext, SlashComman
 use crate::compression::ContextCompressor;
 use crate::llm::{ChatMessage, ChatResponse, LlmClient};
 use crate::prompt::PromptAssembler;
+use crate::reflection::{BackgroundReviewConfig, BackgroundReviewEngine};
 use crate::tools::ToolRegistry;
 use hermes_config::ProfileConfig;
 use hermes_session_store::SessionStore;
@@ -41,6 +42,7 @@ pub struct TurnProcessor {
     prompt_assembler: Arc<PromptAssembler>,
     session_store: Arc<Box<dyn SessionStore>>,
     compressor: Arc<tokio::sync::Mutex<ContextCompressor>>,
+    reflection_engine: Arc<BackgroundReviewEngine>,
     profile: Option<ProfileConfig>,
 }
 
@@ -53,14 +55,26 @@ impl TurnProcessor {
         compressor: Arc<tokio::sync::Mutex<ContextCompressor>>,
         profile: Option<ProfileConfig>,
     ) -> Self {
+        let reflection_engine = Arc::new(BackgroundReviewEngine::new(
+            BackgroundReviewConfig::default(),
+            llm_client.clone(),
+            tool_registry.skill_registry.clone(),
+        ));
+
         Self {
             llm_client,
             tool_registry,
             prompt_assembler,
             session_store,
             compressor,
+            reflection_engine,
             profile,
         }
+    }
+
+    pub fn with_reflection_engine(mut self, reflection_engine: Arc<BackgroundReviewEngine>) -> Self {
+        self.reflection_engine = reflection_engine;
+        self
     }
 
     pub fn llm_client(&self) -> Arc<LlmClient> {
@@ -73,6 +87,10 @@ impl TurnProcessor {
 
     pub fn session_store(&self) -> Arc<Box<dyn SessionStore>> {
         self.session_store.clone()
+    }
+
+    pub fn reflection_engine(&self) -> Arc<BackgroundReviewEngine> {
+        self.reflection_engine.clone()
     }
 
     /// Process a turn for a given session.
@@ -296,11 +314,21 @@ impl TurnProcessor {
                     match response {
                         ChatResponse::Text(text) => {
                             let asst_msg = ChatMessage::assistant(text.clone());
-                            let _ = self.session_store.append_message(session_id, asst_msg).await;
+                            let _ = self.session_store.append_message(session_id, asst_msg.clone()).await;
 
                             // Stream chunks to listener
                             let _ = event_tx.send(TurnEvent::Token(text.clone())).await;
                             let _ = event_tx.send(TurnEvent::Finished(text.clone())).await;
+
+                            // Trigger background review without blocking response delivery
+                            let mut reflection_messages = messages.clone();
+                            reflection_messages.push(asst_msg);
+                            self.reflection_engine.maybe_spawn_review(
+                                session_id,
+                                &reflection_messages,
+                                &active_model,
+                            );
+
                             return Ok(text);
                         }
                         ChatResponse::ToolCalls(calls) => {
@@ -364,7 +392,15 @@ impl TurnProcessor {
             final_text = "Halted: Maximum tool iterations reached.".to_string();
             let _ = event_tx.send(TurnEvent::Finished(final_text.clone())).await;
             let asst_msg = ChatMessage::assistant(final_text.clone());
-            let _ = self.session_store.append_message(session_id, asst_msg).await;
+            let _ = self.session_store.append_message(session_id, asst_msg.clone()).await;
+
+            let mut reflection_messages = messages.clone();
+            reflection_messages.push(asst_msg);
+            self.reflection_engine.maybe_spawn_review(
+                session_id,
+                &reflection_messages,
+                &active_model,
+            );
         }
 
         Ok(final_text)

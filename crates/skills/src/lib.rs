@@ -349,6 +349,11 @@ impl SkillRegistry {
         Ok(())
     }
 
+    pub async fn register(&self, skill: Skill) {
+        let mut skills_lock = self.skills.write().await;
+        skills_lock.insert(skill.name.clone(), skill);
+    }
+
     pub async fn get(&self, name: &str) -> Option<Skill> {
         self.skills.read().await.get(name).cloned()
     }

@@ -1653,3 +1653,70 @@ async fn test_cronjob_manage_tool_integration() {
     let list_json2: serde_json::Value = serde_json::from_str(&list_res2.output).unwrap();
     assert_eq!(list_json2["count"], 0);
 }
+
+
+#[tokio::test]
+async fn test_background_review_and_reflection_integration() {
+    use hermes_gateway_core::reflection::{
+        BackgroundReviewConfig, BackgroundReviewEngine, LearningSignal,
+        SKILL_REVIEW_PROMPT, MEMORY_REVIEW_PROMPT, COMBINED_REVIEW_PROMPT,
+    };
+    use hermes_gateway_core::llm::{ChatMessage, LlmClient};
+    use hermes_skills::SkillRegistry;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    // Verify prompts are non-empty and well-formed
+    assert!(SKILL_REVIEW_PROMPT.contains("Review the conversation above and update the skill library"));
+    assert!(MEMORY_REVIEW_PROMPT.contains("Review the conversation above and consider saving to memory"));
+    assert!(COMBINED_REVIEW_PROMPT.contains("**Memory**") && COMBINED_REVIEW_PROMPT.contains("**Skills**"));
+
+    let skill_registry = Arc::new(SkillRegistry::default());
+    let provider_profile = hermes_gateway_core::providers::ProviderProfile::default();
+    let llm_client = Arc::new(LlmClient::from_provider_profile(&provider_profile, None, None));
+
+    let config = BackgroundReviewConfig {
+        enabled: true,
+        interval_turns: 1,
+        min_messages: 2,
+        max_history_messages: 20,
+    };
+
+    let engine = Arc::new(BackgroundReviewEngine::new(config, llm_client, skill_registry.clone()));
+
+    // 1. Signal detection test
+    let history = vec![
+        ChatMessage::user("How do I build this crate?".to_string()),
+        ChatMessage::assistant("You run cargo build directly.".to_string()),
+        ChatMessage::user("Stop doing that, don't build without checking dependencies first!".to_string()),
+        ChatMessage::assistant("Understood, the solution is checking Cargo.lock before running builds.".to_string()),
+    ];
+
+    let signals = BackgroundReviewEngine::detect_learning_signals(&history);
+    assert_eq!(signals.len(), 2);
+    assert!(matches!(signals[0], LearningSignal::UserCorrection(_)));
+    assert!(matches!(signals[1], LearningSignal::TechnicalSolution(_)));
+
+    assert!(engine.should_review(&history));
+
+    // 2. Non-blocking maybe_spawn_review invocation
+    let session_id = Uuid::new_v4();
+    engine.maybe_spawn_review(session_id, &history, "test-model");
+
+    // 3. Test skill curation/persistence
+    let sample_skill_md = r#"---
+name: "cargo-lock-check"
+description: "Verify Cargo.lock before invoking cargo build"
+---
+# Cargo Lock Check
+Always check Cargo.lock presence and freshness before running cargo build.
+"#;
+    BackgroundReviewEngine::persist_extracted_learnings(&skill_registry, sample_skill_md).await;
+
+    let loaded = skill_registry.get("cargo-lock-check").await;
+    assert!(loaded.is_some(), "Curated skill should be registered in SkillRegistry");
+    let skill = loaded.unwrap();
+    assert_eq!(skill.name, "cargo-lock-check");
+    assert_eq!(skill.description, "Verify Cargo.lock before invoking cargo build");
+    assert!(skill.content.contains("Always check Cargo.lock"));
+}
