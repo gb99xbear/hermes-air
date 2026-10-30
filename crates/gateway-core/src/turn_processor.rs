@@ -170,13 +170,14 @@ impl TurnProcessor {
                 SlashCommand::Compress(ref focus) => {
                     let mut comp = self.compressor.lock().await;
                     match comp
-                        .compress_session(
+                        .compress_session_with_todo(
                             session_id,
                             &self.session_store,
                             &self.llm_client,
                             &active_model,
                             focus.as_deref(),
                             true,
+                            Some(&self.tool_registry.todo_store),
                         )
                         .await
                     {
@@ -225,13 +226,14 @@ impl TurnProcessor {
             let mut comp = self.compressor.lock().await;
             if comp.should_compress(current_tokens, context_window) {
                 let _ = comp
-                    .compress_session(
+                    .compress_session_with_todo(
                         session_id,
                         &self.session_store,
                         &self.llm_client,
                         &active_model,
                         None,
                         false,
+                        Some(&self.tool_registry.todo_store),
                     )
                     .await;
             }

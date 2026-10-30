@@ -5,6 +5,7 @@ use tracing::{info, warn};
 use anyhow::Result;
 
 use crate::llm::LlmClient;
+use crate::todo::{TodoStore, TODO_INJECTION_HEADER};
 
 pub const SUMMARY_PREFIX: &str = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:";
 
@@ -71,6 +72,15 @@ impl ContextCompressor {
                 (text_len + tools_len) / 4 + 4
             })
             .sum()
+    }
+
+    /// Strip stale todo snapshot header and content from a string
+    pub fn strip_stale_todo_snapshot(text: &str) -> String {
+        if let Some(idx) = text.find(TODO_INJECTION_HEADER) {
+            text[..idx].trim_end().to_string()
+        } else {
+            text.to_string()
+        }
     }
 
     /// Formats the prompt dispatched to the LLM for structured summarization
@@ -202,6 +212,28 @@ Compact snapshot active. Continue with the latest user instruction."#,
         focus_topic: Option<&str>,
         _force: bool,
     ) -> Result<CompressionResult> {
+        self.compress_session_with_todo(
+            session_id,
+            session_store,
+            llm_client,
+            model,
+            focus_topic,
+            _force,
+            None,
+        ).await
+    }
+
+    /// Compresses session transcript with active todo list injection matching Python Hermes
+    pub async fn compress_session_with_todo(
+        &mut self,
+        session_id: Uuid,
+        session_store: &Arc<Box<dyn SessionStore>>,
+        llm_client: &LlmClient,
+        model: &str,
+        focus_topic: Option<&str>,
+        _force: bool,
+        todo_store: Option<&TodoStore>,
+    ) -> Result<CompressionResult> {
         let full_transcript = session_store.get_messages(session_id, None).await?;
         let total_count = full_transcript.len();
 
@@ -266,10 +298,38 @@ Compact snapshot active. Continue with the latest user instruction."#,
         };
 
         // Construct new transcript: [compaction_anchor] + tail_messages
-        let mut new_transcript = Vec::with_capacity(1 + tail_messages.len());
+        let mut new_transcript = Vec::with_capacity(2 + tail_messages.len());
         new_transcript.push(compaction_anchor);
         for tail_msg in tail_messages {
             new_transcript.push(tail_msg.clone());
+        }
+
+        // If todo_store has active tasks, inject formatted todo list into post-compression transcript
+        if let Some(ts) = todo_store {
+            if let Some(todo_snapshot) = ts.format_for_injection().await {
+                let mut merged = false;
+                if let Some(tail) = new_transcript.last_mut() {
+                    if tail.role == "user" {
+                        let orig_content = tail.content.as_deref().unwrap_or("");
+                        let stripped = Self::strip_stale_todo_snapshot(orig_content);
+                        if !stripped.trim().is_empty() {
+                            tail.content = Some(format!("{}\n\n{}", stripped, todo_snapshot));
+                            merged = true;
+                        } else if orig_content.contains(TODO_INJECTION_HEADER) {
+                            tail.content = Some(todo_snapshot.clone());
+                            merged = true;
+                        }
+                    }
+                }
+                if !merged {
+                    new_transcript.push(ChatMessage {
+                        role: "user".to_string(),
+                        content: Some(todo_snapshot),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+            }
         }
 
         let post_count = new_transcript.len();
@@ -412,6 +472,47 @@ mod tests {
         assert_eq!(new_history[4].content.as_deref(), Some("Assistant response 8"));
 
         assert_eq!(compressor.compression_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_compress_session_with_todo_injection() {
+        let store: Arc<Box<dyn SessionStore>> = Arc::new(Box::new(MemorySessionStore::new()));
+        let session_id = Uuid::new_v4();
+
+        for i in 1..=8 {
+            if i % 2 == 1 {
+                store.append_message(session_id, ChatMessage::user(format!("User message {}", i))).await.unwrap();
+            } else {
+                store.append_message(session_id, ChatMessage::assistant(format!("Assistant response {}", i))).await.unwrap();
+            }
+        }
+
+        let todo_store = TodoStore::new();
+        todo_store.write(&[
+            serde_json::json!({ "id": "t1", "content": "Refactor codebase", "status": "in_progress" }),
+            serde_json::json!({ "id": "t2", "content": "Write tests", "status": "pending" }),
+        ], false).await;
+
+        let mut compressor = ContextCompressor::new(0.85, 4);
+        let client = LlmClient::new(None, None);
+
+        let res = compressor.compress_session_with_todo(
+            session_id,
+            &store,
+            &client,
+            "test-model",
+            None,
+            true,
+            Some(&todo_store),
+        ).await.unwrap();
+
+        assert!(res.compacted);
+        let new_history = store.get_messages(session_id, None).await.unwrap();
+        let last_msg = new_history.last().unwrap();
+        let content = last_msg.content.as_deref().unwrap();
+        assert!(content.contains(TODO_INJECTION_HEADER));
+        assert!(content.contains("t1. Refactor codebase (in_progress)"));
+        assert!(content.contains("t2. Write tests (pending)"));
     }
 
     #[tokio::test]

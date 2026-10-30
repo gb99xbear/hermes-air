@@ -1,6 +1,7 @@
 // hermes-gateway-core - Core gateway logic
 pub mod commands;
 pub mod compression;
+pub mod todo;
 pub mod llm;
 pub mod stream;
 pub mod prompt;
@@ -20,6 +21,7 @@ pub use commands::{
     SlashCommand, MODEL_PAGE_SIZE,
 };
 pub use compression::{CompressionResult, ContextCompressor, HISTORICAL_TASK_HEADING, SUMMARY_PREFIX};
+pub use todo::{TodoItem, TodoStore, todo_tool, TODO_INJECTION_HEADER, VALID_STATUSES, MAX_TODO_CONTENT_CHARS, MAX_TODO_ITEMS};
 pub use llm::{ChatMessage, ChatResponse, LlmClient, ToolCallRawExt};
 pub use stream::GatewayStreamConsumer;
 pub use prompt::PromptAssembler;
@@ -849,13 +851,14 @@ impl Gateway {
                 }
                 SlashCommand::Compress(ref focus) => {
                     let mut comp = compressor.lock().await;
-                    match comp.compress_session(
+                    match comp.compress_session_with_todo(
                         msg.session_id,
                         session_store,
                         llm_client,
                         &active_model,
                         focus.as_deref(),
                         true,
+                        Some(&tool_registry.todo_store),
                     ).await {
                         Ok(res) => {
                             if res.compacted {
@@ -943,13 +946,14 @@ impl Gateway {
                     "Pre-flight compression triggered for session {}: ~{} tokens >= threshold {} of context_window {}",
                     msg.session_id, current_tokens, comp.threshold, context_window
                 );
-                if let Err(e) = comp.compress_session(
+                if let Err(e) = comp.compress_session_with_todo(
                     msg.session_id,
                     session_store,
                     llm_client,
                     &active_model,
                     None,
                     false,
+                    Some(&tool_registry.todo_store),
                 ).await {
                     warn!("Autonomous pre-flight compaction failed for session {}: {:?}", msg.session_id, e);
                 }

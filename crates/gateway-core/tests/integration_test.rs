@@ -87,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 16);
+    assert_eq!(defs.len(), 17);
 
     let names: Vec<&str> = defs
         .iter()
@@ -103,6 +103,7 @@ async fn test_tool_registry_get_definitions() {
     assert!(names.contains(&"web_extract"));
     assert!(names.contains(&"skills_list"));
     assert!(names.contains(&"skill_view"));
+    assert!(names.contains(&"todo_list"));
 
     for def in &defs {
         assert_eq!(def.get("type").and_then(|t| t.as_str()), Some("function"));
@@ -1011,7 +1012,7 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 16);
+    assert_eq!(defs.len(), 17);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1432,4 +1433,89 @@ async fn test_execute_code_integration() {
     let res_nocode = registry.execute(&call_nocode).await;
     assert!(!res_nocode.success);
     assert!(res_nocode.output.contains("No code provided"));
+}
+
+
+#[tokio::test]
+async fn test_todo_list_tool_definition_and_execution() {
+    let registry = ToolRegistry::new();
+    let defs = registry.get_definitions();
+
+    // 1. Verify schema definition
+    let todo_def = defs
+        .iter()
+        .find(|d| d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) == Some("todo_list"))
+        .expect("todo_list tool definition must exist");
+
+    let func = todo_def.get("function").unwrap();
+    assert_eq!(func.get("name").and_then(|n| n.as_str()), Some("todo_list"));
+    let params = func.get("parameters").unwrap();
+    let props = params.get("properties").unwrap();
+    assert!(props.get("todos").is_some());
+    assert!(props.get("merge").is_some());
+
+    // 2. Read empty initial list
+    let read_call = ToolCall {
+        id: "call_todo_read".to_string(),
+        name: "todo_list".to_string(),
+        arguments: json!({}),
+    };
+    let read_res = registry.execute(&read_call).await;
+    assert!(read_res.success);
+    let read_json: serde_json::Value = serde_json::from_str(&read_res.output).unwrap();
+    assert_eq!(read_json["todos"].as_array().unwrap().len(), 0);
+    assert_eq!(read_json["revision"], 0);
+    assert_eq!(read_json["summary"]["total"], 0);
+
+    // 3. Write items (replace / fresh)
+    let write_call = ToolCall {
+        id: "call_todo_write".to_string(),
+        name: "todo_list".to_string(),
+        arguments: json!({
+            "todos": [
+                { "id": "t1", "content": "First task", "status": "pending" },
+                { "id": "t2", "content": "Second task", "status": "in_progress" }
+            ],
+            "merge": false
+        }),
+    };
+    let write_res = registry.execute(&write_call).await;
+    assert!(write_res.success);
+    let write_json: serde_json::Value = serde_json::from_str(&write_res.output).unwrap();
+    assert_eq!(write_json["todos"].as_array().unwrap().len(), 2);
+    assert_eq!(write_json["revision"], 1);
+    assert_eq!(write_json["summary"]["total"], 2);
+    assert_eq!(write_json["summary"]["pending"], 1);
+    assert_eq!(write_json["summary"]["in_progress"], 1);
+
+    // 4. Merge update
+    let merge_call = ToolCall {
+        id: "call_todo_merge".to_string(),
+        name: "todo_list".to_string(),
+        arguments: json!({
+            "todos": [
+                { "id": "t1", "status": "completed" },
+                { "id": "t3", "content": "Third task", "status": "pending" }
+            ],
+            "merge": true
+        }),
+    };
+    let merge_res = registry.execute(&merge_call).await;
+    assert!(merge_res.success);
+    let merge_json: serde_json::Value = serde_json::from_str(&merge_res.output).unwrap();
+    assert_eq!(merge_json["todos"].as_array().unwrap().len(), 3);
+    assert_eq!(merge_json["revision"], 2);
+    assert_eq!(merge_json["summary"]["total"], 3);
+    assert_eq!(merge_json["summary"]["completed"], 1);
+    assert_eq!(merge_json["summary"]["in_progress"], 1);
+    assert_eq!(merge_json["summary"]["pending"], 1);
+
+    // 5. Verify format_for_injection from registry.todo_store
+    let formatted = registry.todo_store.format_for_injection().await;
+    assert!(formatted.is_some());
+    let text = formatted.unwrap();
+    assert!(text.contains("[Your active task list was preserved across context compression]"));
+    assert!(text.contains("- [>] t2. Second task (in_progress)"));
+    assert!(text.contains("- [ ] t3. Third task (pending)"));
+    assert!(!text.contains("t1")); // completed item omitted from active injection
 }

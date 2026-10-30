@@ -63,6 +63,7 @@ pub struct ReadResultPayload {
 pub struct ToolRegistry {
     pub skill_registry: Arc<SkillRegistry>,
     pub code_engine: Arc<crate::code_exec::CodeExecutionEngine>,
+    pub todo_store: Arc<crate::todo::TodoStore>,
 }
 
 impl Default for ToolRegistry {
@@ -76,6 +77,7 @@ impl ToolRegistry {
         Self {
             skill_registry: Arc::new(SkillRegistry::default()),
             code_engine: Arc::new(crate::code_exec::CodeExecutionEngine::default()),
+            todo_store: Arc::new(crate::todo::TodoStore::default()),
         }
     }
 
@@ -83,7 +85,13 @@ impl ToolRegistry {
         Self {
             skill_registry,
             code_engine: Arc::new(crate::code_exec::CodeExecutionEngine::default()),
+            todo_store: Arc::new(crate::todo::TodoStore::default()),
         }
+    }
+
+    pub fn with_todo_store(mut self, todo_store: Arc<crate::todo::TodoStore>) -> Self {
+        self.todo_store = todo_store;
+        self
     }
 
     pub fn get_definitions(&self) -> Vec<serde_json::Value> {
@@ -447,6 +455,58 @@ impl ToolRegistry {
             serde_json::json!({
                 "type": "function",
                 "function": {
+                    "name": "todo_list",
+                    "description": "Track a task list for multi-step work (3+ steps). Use for complex tasks with 3+ steps or when the user provides multiple tasks. For 'all N items' tasks, enumerate every instance as its own checklist item so none are silently dropped. Call with no parameters to read the current list.\nList order is priority. Only ONE item in_progress at a time. Break large phases into subtasks via parent. Mark an item completed only after the work is verified done, never based on intent. If something fails, cancel it and add a revised item. Always returns the full current list.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "todos": {
+                                "type": "array",
+                                "description": "Task items to write.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "type": "string"
+                                        },
+                                        "content": {
+                                            "type": "string",
+                                            "description": "Task description"
+                                        },
+                                        "status": {
+                                            "type": "string",
+                                            "enum": [
+                                                "pending",
+                                                "in_progress",
+                                                "completed",
+                                                "cancelled"
+                                            ]
+                                        },
+                                        "parent": {
+                                            "type": "string",
+                                            "description": "Optional id of another item, making this a nested subtask. Omit for top-level."
+                                        }
+                                    },
+                                    "required": [
+                                        "id",
+                                        "content",
+                                        "status"
+                                    ]
+                                }
+                            },
+                            "merge": {
+                                "type": "boolean",
+                                "description": "true: update existing items by id, add new ones. false (default): replace the entire list with a fresh plan.",
+                                "default": false
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
                     "name": "execute_code",
                     "description": "Run Python that calls Hermes tools programmatically. Use when you need 3+ tool calls with logic between them: filtering/reducing large outputs before they enter context, branching, or loops (N pages/files, retry on failure). Use normal tool calls for single calls, results you must reason over in full, or anything needing user interaction.\n\nCalls run in a persistent session kernel: variables, imports, and loaded data survive across execute_code calls, so build on earlier work instead of re-loading it. A timed-out or interrupted call loses that state.\n\nAvailable via `from hermes_tools import ...`:\n\n  web_search(query: str, limit: int = 5) -> dict\n    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}\n  web_extract(urls: list[str], char_limit: int = None) -> dict\n    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer).\n  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}\n  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file.\n  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}\n  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n    Replaces old_string with new_string in the file.\n  terminal(command: str, timeout=None, workdir=None) -> dict\n    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}\n\nLimits: 5-minute timeout, max 50 tool calls per call. Stdout over 50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\nScripts run in the session's working directory. Interpreter: the project's activated venv/conda python when one is active (VIRTUAL_ENV/CONDA_PREFIX — matches terminal()); otherwise Hermes's own python (the common case — stdlib plus Hermes's deps; check `import x` before relying on project packages).\n\nHelpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. json_parse(text) — tolerant json.loads for terminal() output; shell_quote(s) — shlex.quote for dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential backoff.",
                     "parameters": {
@@ -486,6 +546,7 @@ impl ToolRegistry {
             "browser_type" => self.execute_browser_type(call).await,
             "browser_take_screenshot" => self.execute_browser_take_screenshot(call).await,
             "browser_exec" => self.execute_browser_exec(call).await,
+            "todo_list" => self.execute_todo_list(call).await,
             "execute_code" => self.execute_code(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
@@ -1449,6 +1510,31 @@ impl ToolRegistry {
         }
     }
 
+    pub async fn execute_todo_list(&self, call: &ToolCall) -> ToolResult {
+        let todos_arg = call.arguments.get("todos");
+        let merge = call
+            .arguments
+            .get("merge")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        match crate::todo::todo_tool(todos_arg, merge, &self.todo_store).await {
+            Ok(val) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string()),
+                success: true,
+            },
+            Err(e) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "error": e
+                })
+                .to_string(),
+                success: false,
+            },
+        }
+    }
+
     async fn execute_code(&self, call: &ToolCall) -> ToolResult {
         let code = match call.arguments.get("code").and_then(|v| v.as_str()) {
             Some(c) => c,
@@ -1474,6 +1560,7 @@ impl ToolRegistry {
         let tool_reg = Arc::new(Self {
             skill_registry: self.skill_registry.clone(),
             code_engine: self.code_engine.clone(),
+            todo_store: self.todo_store.clone(),
         });
 
         match self.code_engine.execute(session_id, code, reset, None, Some(tool_reg)).await {
