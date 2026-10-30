@@ -66,6 +66,7 @@ pub struct Gateway {
     llm_client: Arc<LlmClient>,
     provider_registry: Arc<ProviderRegistry>,
     tool_registry: Arc<ToolRegistry>,
+    cron_scheduler: Arc<hermes_cron::CronScheduler>,
     prompt_assembler: Arc<PromptAssembler>,
     compressor: Arc<tokio::sync::Mutex<ContextCompressor>>,
     event_tx: mpsc::UnboundedSender<PlatformEvent>,
@@ -145,7 +146,23 @@ impl Gateway {
             env_api_key,
         ));
 
-        let tool_registry = Arc::new(ToolRegistry::new());
+        let cron_persistence = std::env::var("HOME")
+            .ok()
+            .map(|h| std::path::PathBuf::from(h).join(".hermes/cron/jobs.json"));
+        let cron_scheduler = Arc::new(
+            hermes_cron::CronScheduler::new(cron_persistence)
+                .await
+                .unwrap_or_else(|_| {
+                    // Fallback to in-memory scheduler if initialization fails
+                    futures::executor::block_on(hermes_cron::CronScheduler::new(None))
+                        .expect("CronScheduler fallback must succeed")
+                })
+        );
+        let _ = cron_scheduler.start().await;
+
+        let tool_registry = Arc::new(
+            ToolRegistry::new().with_cron_scheduler(cron_scheduler.clone())
+        );
         let prompt_assembler = Arc::new(PromptAssembler::new());
 
         let active_turns = Arc::new(DashMap::new());
@@ -158,6 +175,7 @@ impl Gateway {
             llm_client,
             provider_registry,
             tool_registry,
+            cron_scheduler,
             prompt_assembler,
             compressor,
             event_tx,
@@ -173,6 +191,10 @@ impl Gateway {
 
     pub fn llm_client(&self) -> Arc<LlmClient> {
         self.llm_client.clone()
+    }
+
+    pub fn cron_scheduler(&self) -> Arc<hermes_cron::CronScheduler> {
+        self.cron_scheduler.clone()
     }
 
     pub fn active_turns(&self) -> Arc<DashMap<uuid::Uuid, CancellationToken>> {

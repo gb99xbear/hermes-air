@@ -64,6 +64,7 @@ pub struct ToolRegistry {
     pub skill_registry: Arc<SkillRegistry>,
     pub code_engine: Arc<crate::code_exec::CodeExecutionEngine>,
     pub todo_store: Arc<crate::todo::TodoStore>,
+    pub cron_scheduler: Option<Arc<hermes_cron::CronScheduler>>,
 }
 
 impl Default for ToolRegistry {
@@ -78,6 +79,7 @@ impl ToolRegistry {
             skill_registry: Arc::new(SkillRegistry::default()),
             code_engine: Arc::new(crate::code_exec::CodeExecutionEngine::default()),
             todo_store: Arc::new(crate::todo::TodoStore::default()),
+            cron_scheduler: None,
         }
     }
 
@@ -86,11 +88,17 @@ impl ToolRegistry {
             skill_registry,
             code_engine: Arc::new(crate::code_exec::CodeExecutionEngine::default()),
             todo_store: Arc::new(crate::todo::TodoStore::default()),
+            cron_scheduler: None,
         }
     }
 
     pub fn with_todo_store(mut self, todo_store: Arc<crate::todo::TodoStore>) -> Self {
         self.todo_store = todo_store;
+        self
+    }
+
+    pub fn with_cron_scheduler(mut self, cron_scheduler: Arc<hermes_cron::CronScheduler>) -> Self {
+        self.cron_scheduler = Some(cron_scheduler);
         self
     }
 
@@ -507,6 +515,90 @@ impl ToolRegistry {
             serde_json::json!({
                 "type": "function",
                 "function": {
+                    "name": "cronjob_manage",
+                    "description": "Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).\n\nJobs run on the main agent model (whatever `hermes model` is set to when they fire) unless pinned.\n\nJobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Jobs run on the main agent model (whatever `hermes model` is set to when they fire) unless the user pins one. Prefer updating an existing job over creating near-duplicates.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "paused": {
+                                "type": "boolean",
+                                "description": "Create only: persist disabled atomically. Resume to schedule; explicit run remains available. Default false."
+                            },
+                            "paused_reason": {
+                                "type": "string",
+                                "description": "Create only: auditable reason; requires paused=true."
+                            },
+                            "action": {
+                                "type": "string",
+                                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                            },
+                            "job_id": {
+                                "type": "string",
+                                "description": "Required for update/pause/resume/remove/run."
+                            },
+                            "pinned": {
+                                "type": "boolean",
+                                "description": "For create/update. ONLY set when the user explicitly asks to pin (or unpin) a job's model. pinned=true locks the CURRENT main agent model (and its provider) onto the job so later `hermes model` / `/model` changes never touch it; pinned=false releases the lock so the job follows the main agent model again. Never set it on your own initiative: by default jobs follow the main model."
+                            },
+                            "prompt": {
+                                "type": "string",
+                                "description": "For create: the full self-contained prompt (paired with any skills as the task instruction). For run: optional transient context for that single fire (never persisted)."
+                            },
+                            "schedule": {
+                                "type": "string",
+                                "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'."
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "Optional human-friendly name"
+                            },
+                            "repeat": {
+                                "type": "integer",
+                                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+                            },
+                            "deliver": {
+                                "type": "string",
+                                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'."
+                            },
+                            "failure_deliver": {
+                                "type": "string",
+                                "description": "Optional override target for FAILURE notices only (same grammar as deliver). When set, engine failure/interruption notices go here instead of the deliver target; 'local' suppresses them entirely (state still recorded in cron list/run history). Use for jobs delivering into shared channels where failure noise is unwanted. Omit = failures follow deliver (default). On update, '' clears."
+                            },
+                            "skills": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Optional ordered skill names loaded before the cron prompt. On update, [] clears."
+                            },
+                            "script": {
+                                "type": "string",
+                                "description": "Optional script run each tick; stdout is injected into the agent's prompt as context (with no_agent=True the script IS the job). Relative paths resolve under ~/.hermes/scripts/; .sh/.bash via bash, else Python. On update, '' clears."
+                            },
+                            "monitor": {
+                                "type": "string",
+                                "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick) or a script path (same rules as `script`, run each tick) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps) or every tick looks changed. Incompatible with no_agent. On update, '' clears."
+                            },
+                            "no_agent": {
+                                "type": "boolean",
+                                "default": false,
+                                "description": "True = no LLM: the scheduler runs `script` (required) on schedule and delivers its stdout verbatim; empty stdout sends nothing (watchdog pattern). Use for script-only pings with fixed output; keep False for anything needing reasoning."
+                            },
+                            "context_from": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Optional job ID(s) whose most recent completed output is injected as context each run — chains jobs (A collects, B processes). For a job's OWN previous output prefer `continuity`. On update, [] clears."
+                            }
+                        },
+                        "required": ["action"]
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
                     "name": "execute_code",
                     "description": "Run Python that calls Hermes tools programmatically. Use when you need 3+ tool calls with logic between them: filtering/reducing large outputs before they enter context, branching, or loops (N pages/files, retry on failure). Use normal tool calls for single calls, results you must reason over in full, or anything needing user interaction.\n\nCalls run in a persistent session kernel: variables, imports, and loaded data survive across execute_code calls, so build on earlier work instead of re-loading it. A timed-out or interrupted call loses that state.\n\nAvailable via `from hermes_tools import ...`:\n\n  web_search(query: str, limit: int = 5) -> dict\n    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}\n  web_extract(urls: list[str], char_limit: int = None) -> dict\n    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer).\n  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}\n  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file.\n  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}\n  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n    Replaces old_string with new_string in the file.\n  terminal(command: str, timeout=None, workdir=None) -> dict\n    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}\n\nLimits: 5-minute timeout, max 50 tool calls per call. Stdout over 50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\nScripts run in the session's working directory. Interpreter: the project's activated venv/conda python when one is active (VIRTUAL_ENV/CONDA_PREFIX — matches terminal()); otherwise Hermes's own python (the common case — stdlib plus Hermes's deps; check `import x` before relying on project packages).\n\nHelpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. json_parse(text) — tolerant json.loads for terminal() output; shell_quote(s) — shlex.quote for dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential backoff.",
                     "parameters": {
@@ -547,6 +639,7 @@ impl ToolRegistry {
             "browser_take_screenshot" => self.execute_browser_take_screenshot(call).await,
             "browser_exec" => self.execute_browser_exec(call).await,
             "todo_list" => self.execute_todo_list(call).await,
+            "cronjob_manage" => self.execute_cronjob_manage(call).await,
             "execute_code" => self.execute_code(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
@@ -1561,6 +1654,7 @@ impl ToolRegistry {
             skill_registry: self.skill_registry.clone(),
             code_engine: self.code_engine.clone(),
             todo_store: self.todo_store.clone(),
+            cron_scheduler: self.cron_scheduler.clone(),
         });
 
         match self.code_engine.execute(session_id, code, reset, None, Some(tool_reg)).await {
@@ -1582,4 +1676,597 @@ impl ToolRegistry {
             },
         }
     }
+
+    pub async fn execute_cronjob_manage(&self, call: &ToolCall) -> ToolResult {
+        let action = match call.arguments.get("action").and_then(|v| v.as_str()) {
+            Some(a) => a.trim().to_lowercase(),
+            None => {
+                return ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": "Missing required field 'action'"
+                    })
+                    .to_string(),
+                    success: false,
+                };
+            }
+        };
+
+        let scheduler = match &self.cron_scheduler {
+            Some(s) => s.clone(),
+            None => {
+                return ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::json!({
+                        "success": false,
+                        "error": "CronScheduler is not initialized or configured"
+                    })
+                    .to_string(),
+                    success: false,
+                };
+            }
+        };
+
+        match action.as_str() {
+            "create" => {
+                let schedule = match call.arguments.get("schedule").and_then(|v| v.as_str()) {
+                    Some(s) if !s.trim().is_empty() => s.to_string(),
+                    _ => {
+                        return ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::json!({
+                                "success": false,
+                                "error": "schedule is required for create"
+                            })
+                            .to_string(),
+                            success: false,
+                        };
+                    }
+                };
+
+                let prompt = call.arguments.get("prompt").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let skills = call.arguments.get("skills").and_then(|v| {
+                    v.as_array().map(|arr| {
+                        arr.iter().filter_map(|s| s.as_str().map(|str_val| str_val.to_string())).collect()
+                    })
+                });
+
+                let no_agent = call.arguments.get("no_agent").and_then(|v| v.as_bool()).unwrap_or(false);
+                let script = call.arguments.get("script").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+                if no_agent {
+                    if script.is_none() {
+                        return ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::json!({
+                                "success": false,
+                                "error": "create with no_agent=True requires a script — the script is the job."
+                            })
+                            .to_string(),
+                            success: false,
+                        };
+                    }
+                } else if prompt.is_none() && skills.as_ref().map(|s: &Vec<String>| s.is_empty()).unwrap_or(true) {
+                    return ToolResult {
+                        tool_call_id: call.id.clone(),
+                        output: serde_json::json!({
+                            "success": false,
+                            "error": "create requires either prompt or at least one skill"
+                        })
+                        .to_string(),
+                        success: false,
+                    };
+                }
+
+                let params = hermes_cron::CreateJobParams {
+                    schedule,
+                    prompt,
+                    name: call.arguments.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    session_id: call.arguments.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    deliver: call.arguments.get("deliver").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    failure_deliver: call.arguments.get("failure_deliver").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    skills,
+                    paused: call.arguments.get("paused").and_then(|v| v.as_bool()),
+                    paused_reason: call.arguments.get("paused_reason").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    pinned: call.arguments.get("pinned").and_then(|v| v.as_bool()),
+                    model: call.arguments.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    provider: call.arguments.get("provider").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    base_url: call.arguments.get("base_url").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    script,
+                    monitor: call.arguments.get("monitor").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    no_agent: Some(no_agent),
+                    repeat: call.arguments.get("repeat").and_then(|v| {
+                        if let Some(i) = v.as_i64() {
+                            Some(i.to_string())
+                        } else {
+                            v.as_str().map(|s| s.to_string())
+                        }
+                    }),
+                };
+
+                match scheduler.create_job(params).await {
+                    Ok(job) => {
+                        let prompt_preview = if job.prompt.len() > 100 {
+                            format!("{}...", &job.prompt[..100])
+                        } else {
+                            job.prompt.clone()
+                        };
+
+                        let job_payload = serde_json::json!({
+                            "job_id": job.id,
+                            "name": job.name,
+                            "skill": job.skill,
+                            "skills": job.skills,
+                            "prompt_preview": prompt_preview,
+                            "model": job.model,
+                            "provider": job.provider,
+                            "pinned": job.pinned,
+                            "base_url": job.base_url,
+                            "schedule": job.schedule_display,
+                            "repeat": job.repeat,
+                            "deliver": job.deliver,
+                            "next_run_at": job.next_run_at,
+                            "last_run_at": job.last_run_at,
+                            "last_status": job.last_status,
+                            "last_delivery_error": null,
+                            "last_delivery_unverified": null,
+                            "last_fire_error": null,
+                            "last_error": job.last_error,
+                            "enabled": job.enabled,
+                            "state": job.state,
+                            "paused_at": job.paused_at,
+                            "paused_reason": job.paused_reason,
+                        });
+
+                        let res = serde_json::json!({
+                            "success": true,
+                            "job_id": job.id,
+                            "name": job.name,
+                            "skill": job.skill,
+                            "skills": job.skills,
+                            "schedule": job.schedule_display,
+                            "repeat": job.repeat,
+                            "deliver": job.deliver,
+                            "next_run_at": job.next_run_at,
+                            "job": job_payload,
+                            "message": format!("Cron job '{}' created.", job.name),
+                            "gateway_running": true
+                        });
+                        ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            success: true,
+                        }
+                    }
+                    Err(e) => ToolResult {
+                        tool_call_id: call.id.clone(),
+                        output: serde_json::json!({
+                            "success": false,
+                            "error": e.to_string()
+                        })
+                        .to_string(),
+                        success: false,
+                    },
+                }
+            }
+            "list" => {
+                let jobs = scheduler.list_jobs().await;
+                let formatted_jobs: Vec<serde_json::Value> = jobs.iter().map(|job| {
+                    let prompt_preview = if job.prompt.len() > 100 {
+                        format!("{}...", &job.prompt[..100])
+                    } else {
+                        job.prompt.clone()
+                    };
+                    serde_json::json!({
+                        "job_id": job.id,
+                        "name": job.name,
+                        "skill": job.skill,
+                        "skills": job.skills,
+                        "prompt_preview": prompt_preview,
+                        "model": job.model,
+                        "provider": job.provider,
+                        "pinned": job.pinned,
+                        "base_url": job.base_url,
+                        "schedule": job.schedule_display,
+                        "repeat": job.repeat,
+                        "deliver": job.deliver,
+                        "next_run_at": job.next_run_at,
+                        "last_run_at": job.last_run_at,
+                        "last_status": job.last_status,
+                        "last_delivery_error": null,
+                        "last_delivery_unverified": null,
+                        "last_fire_error": null,
+                        "last_error": job.last_error,
+                        "enabled": job.enabled,
+                        "state": job.state,
+                        "paused_at": job.paused_at,
+                        "paused_reason": job.paused_reason,
+                    })
+                }).collect();
+
+                let res = serde_json::json!({
+                    "success": true,
+                    "count": formatted_jobs.len(),
+                    "jobs": formatted_jobs,
+                    "gateway_running": true
+                });
+
+                ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                    success: true,
+                }
+            }
+            "update" => {
+                let job_id = match call.arguments.get("job_id").and_then(|v| v.as_str()) {
+                    Some(id) if !id.trim().is_empty() => id.trim().to_string(),
+                    _ => {
+                        return ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::json!({
+                                "success": false,
+                                "error": "job_id is required for action 'update'"
+                            })
+                            .to_string(),
+                            success: false,
+                        };
+                    }
+                };
+
+                let params = hermes_cron::UpdateJobParams {
+                    job_id: job_id.clone(),
+                    prompt: call.arguments.get("prompt").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    name: call.arguments.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    schedule: call.arguments.get("schedule").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    deliver: call.arguments.get("deliver").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    failure_deliver: call.arguments.get("failure_deliver").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    skills: call.arguments.get("skills").and_then(|v| {
+                        v.as_array().map(|arr| {
+                            arr.iter().filter_map(|s| s.as_str().map(|str_val| str_val.to_string())).collect()
+                        })
+                    }),
+                    paused: call.arguments.get("paused").and_then(|v| v.as_bool()),
+                    pinned: call.arguments.get("pinned").and_then(|v| v.as_bool()),
+                    model: call.arguments.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    provider: call.arguments.get("provider").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    base_url: call.arguments.get("base_url").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    script: call.arguments.get("script").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    monitor: call.arguments.get("monitor").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    no_agent: call.arguments.get("no_agent").and_then(|v| v.as_bool()),
+                    repeat: call.arguments.get("repeat").and_then(|v| {
+                        if let Some(i) = v.as_i64() {
+                            Some(i.to_string())
+                        } else {
+                            v.as_str().map(|s| s.to_string())
+                        }
+                    }),
+                };
+
+                match scheduler.update_job(params).await {
+                    Ok(job) => {
+                        let prompt_preview = if job.prompt.len() > 100 {
+                            format!("{}...", &job.prompt[..100])
+                        } else {
+                            job.prompt.clone()
+                        };
+                        let job_payload = serde_json::json!({
+                            "job_id": job.id,
+                            "name": job.name,
+                            "skill": job.skill,
+                            "skills": job.skills,
+                            "prompt_preview": prompt_preview,
+                            "model": job.model,
+                            "provider": job.provider,
+                            "pinned": job.pinned,
+                            "base_url": job.base_url,
+                            "schedule": job.schedule_display,
+                            "repeat": job.repeat,
+                            "deliver": job.deliver,
+                            "next_run_at": job.next_run_at,
+                            "last_run_at": job.last_run_at,
+                            "last_status": job.last_status,
+                            "last_delivery_error": null,
+                            "last_delivery_unverified": null,
+                            "last_fire_error": null,
+                            "last_error": job.last_error,
+                            "enabled": job.enabled,
+                            "state": job.state,
+                            "paused_at": job.paused_at,
+                            "paused_reason": job.paused_reason,
+                        });
+                        let res = serde_json::json!({
+                            "success": true,
+                            "job": job_payload
+                        });
+                        ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            success: true,
+                        }
+                    }
+                    Err(e) => ToolResult {
+                        tool_call_id: call.id.clone(),
+                        output: serde_json::json!({
+                            "success": false,
+                            "error": e.to_string()
+                        })
+                        .to_string(),
+                        success: false,
+                    },
+                }
+            }
+            "pause" => {
+                let job_id = match call.arguments.get("job_id").and_then(|v| v.as_str()) {
+                    Some(id) if !id.trim().is_empty() => id.trim(),
+                    _ => {
+                        return ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::json!({
+                                "success": false,
+                                "error": "job_id is required for action 'pause'"
+                            })
+                            .to_string(),
+                            success: false,
+                        };
+                    }
+                };
+
+                let reason = call.arguments.get("reason").or_else(|| call.arguments.get("paused_reason")).and_then(|v| v.as_str()).map(|s| s.to_string());
+
+                match scheduler.pause_job(job_id, reason).await {
+                    Ok(job) => {
+                        let prompt_preview = if job.prompt.len() > 100 {
+                            format!("{}...", &job.prompt[..100])
+                        } else {
+                            job.prompt.clone()
+                        };
+                        let job_payload = serde_json::json!({
+                            "job_id": job.id,
+                            "name": job.name,
+                            "skill": job.skill,
+                            "skills": job.skills,
+                            "prompt_preview": prompt_preview,
+                            "model": job.model,
+                            "provider": job.provider,
+                            "pinned": job.pinned,
+                            "base_url": job.base_url,
+                            "schedule": job.schedule_display,
+                            "repeat": job.repeat,
+                            "deliver": job.deliver,
+                            "next_run_at": job.next_run_at,
+                            "last_run_at": job.last_run_at,
+                            "last_status": job.last_status,
+                            "last_delivery_error": null,
+                            "last_delivery_unverified": null,
+                            "last_fire_error": null,
+                            "last_error": job.last_error,
+                            "enabled": job.enabled,
+                            "state": job.state,
+                            "paused_at": job.paused_at,
+                            "paused_reason": job.paused_reason,
+                        });
+                        let res = serde_json::json!({
+                            "success": true,
+                            "job": job_payload
+                        });
+                        ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            success: true,
+                        }
+                    }
+                    Err(e) => ToolResult {
+                        tool_call_id: call.id.clone(),
+                        output: serde_json::json!({
+                            "success": false,
+                            "error": e.to_string()
+                        })
+                        .to_string(),
+                        success: false,
+                    },
+                }
+            }
+            "resume" => {
+                let job_id = match call.arguments.get("job_id").and_then(|v| v.as_str()) {
+                    Some(id) if !id.trim().is_empty() => id.trim(),
+                    _ => {
+                        return ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::json!({
+                                "success": false,
+                                "error": "job_id is required for action 'resume'"
+                            })
+                            .to_string(),
+                            success: false,
+                        };
+                    }
+                };
+
+                match scheduler.resume_job(job_id).await {
+                    Ok(job) => {
+                        let prompt_preview = if job.prompt.len() > 100 {
+                            format!("{}...", &job.prompt[..100])
+                        } else {
+                            job.prompt.clone()
+                        };
+                        let job_payload = serde_json::json!({
+                            "job_id": job.id,
+                            "name": job.name,
+                            "skill": job.skill,
+                            "skills": job.skills,
+                            "prompt_preview": prompt_preview,
+                            "model": job.model,
+                            "provider": job.provider,
+                            "pinned": job.pinned,
+                            "base_url": job.base_url,
+                            "schedule": job.schedule_display,
+                            "repeat": job.repeat,
+                            "deliver": job.deliver,
+                            "next_run_at": job.next_run_at,
+                            "last_run_at": job.last_run_at,
+                            "last_status": job.last_status,
+                            "last_delivery_error": null,
+                            "last_delivery_unverified": null,
+                            "last_fire_error": null,
+                            "last_error": job.last_error,
+                            "enabled": job.enabled,
+                            "state": job.state,
+                            "paused_at": job.paused_at,
+                            "paused_reason": job.paused_reason,
+                        });
+                        let res = serde_json::json!({
+                            "success": true,
+                            "job": job_payload
+                        });
+                        ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            success: true,
+                        }
+                    }
+                    Err(e) => ToolResult {
+                        tool_call_id: call.id.clone(),
+                        output: serde_json::json!({
+                            "success": false,
+                            "error": e.to_string()
+                        })
+                        .to_string(),
+                        success: false,
+                    },
+                }
+            }
+            "remove" => {
+                let job_id = match call.arguments.get("job_id").and_then(|v| v.as_str()) {
+                    Some(id) if !id.trim().is_empty() => id.trim(),
+                    _ => {
+                        return ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::json!({
+                                "success": false,
+                                "error": "job_id is required for action 'remove'"
+                            })
+                            .to_string(),
+                            success: false,
+                        };
+                    }
+                };
+
+                match scheduler.remove_job(job_id).await {
+                    Ok(job) => {
+                        let res = serde_json::json!({
+                            "success": true,
+                            "message": format!("Cron job '{}' removed.", job.name),
+                            "removed_job": {
+                                "id": job.id,
+                                "name": job.name,
+                                "schedule": job.schedule_display
+                            }
+                        });
+                        ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            success: true,
+                        }
+                    }
+                    Err(e) => ToolResult {
+                        tool_call_id: call.id.clone(),
+                        output: serde_json::json!({
+                            "success": false,
+                            "error": e.to_string()
+                        })
+                        .to_string(),
+                        success: false,
+                    },
+                }
+            }
+            "run" | "run_now" | "trigger" => {
+                let job_id = match call.arguments.get("job_id").and_then(|v| v.as_str()) {
+                    Some(id) if !id.trim().is_empty() => id.trim(),
+                    _ => {
+                        return ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::json!({
+                                "success": false,
+                                "error": "job_id is required for action 'run'"
+                            })
+                            .to_string(),
+                            success: false,
+                        };
+                    }
+                };
+
+                let extra_prompt = call.arguments.get("prompt").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+                match scheduler.run_job_now(job_id, extra_prompt).await {
+                    Ok(job) => {
+                        let prompt_preview = if job.prompt.len() > 100 {
+                            format!("{}...", &job.prompt[..100])
+                        } else {
+                            job.prompt.clone()
+                        };
+                        let job_payload = serde_json::json!({
+                            "job_id": job.id,
+                            "name": job.name,
+                            "skill": job.skill,
+                            "skills": job.skills,
+                            "prompt_preview": prompt_preview,
+                            "model": job.model,
+                            "provider": job.provider,
+                            "pinned": job.pinned,
+                            "base_url": job.base_url,
+                            "schedule": job.schedule_display,
+                            "repeat": job.repeat,
+                            "deliver": job.deliver,
+                            "next_run_at": job.next_run_at,
+                            "last_run_at": job.last_run_at,
+                            "last_status": job.last_status,
+                            "last_delivery_error": null,
+                            "last_delivery_unverified": null,
+                            "last_fire_error": null,
+                            "last_error": job.last_error,
+                            "enabled": job.enabled,
+                            "state": job.state,
+                            "paused_at": job.paused_at,
+                            "paused_reason": job.paused_reason,
+                            "executed": true,
+                            "execution_mode": "background",
+                            "delegation_id": format!("deleg_{}", &job.id[..std::cmp::min(8, job.id.len())])
+                        });
+
+                        let res = serde_json::json!({
+                            "success": true,
+                            "job": job_payload,
+                            "note": "The job is running in the background. You and the user can keep working; its outcome re-enters the conversation as a new message when it finishes. Do not wait or poll — just continue."
+                        });
+
+                        ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            success: true,
+                        }
+                    }
+                    Err(e) => ToolResult {
+                        tool_call_id: call.id.clone(),
+                        output: serde_json::json!({
+                            "success": false,
+                            "error": e.to_string()
+                        })
+                        .to_string(),
+                        success: false,
+                    },
+                }
+            }
+            unknown => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "success": false,
+                    "error": format!("Unknown cron action '{}'", unknown)
+                })
+                .to_string(),
+                success: false,
+            },
+        }
+    }
+
 }

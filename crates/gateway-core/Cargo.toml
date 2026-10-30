@@ -6,6 +6,7 @@ description = "Hermes Gateway - Core Logic"
 
 [dependencies]
 hermes-config = { path = "../config" }
+hermes-cron = { path = "../cron" }
 hermes-relay = { path = "../relay" }
 hermes-session-store = { path = "../session-store" }
 hermes-protocol = { path = "../protocol" }

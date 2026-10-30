@@ -1544,6 +1544,7 @@ dependencies = [
  "dashmap 6.2.1",
  "futures",
  "hermes-config",
+ "hermes-cron",
  "hermes-platform-adapter",
  "hermes-platform-telegram",
  "hermes-protocol",

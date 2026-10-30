@@ -87,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 17);
+    assert_eq!(defs.len(), 18);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1012,7 +1012,7 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 17);
+    assert_eq!(defs.len(), 18);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1518,4 +1518,138 @@ async fn test_todo_list_tool_definition_and_execution() {
     assert!(text.contains("- [>] t2. Second task (in_progress)"));
     assert!(text.contains("- [ ] t3. Third task (pending)"));
     assert!(!text.contains("t1")); // completed item omitted from active injection
+}
+
+#[tokio::test]
+async fn test_cronjob_manage_tool_integration() {
+    let cron_scheduler = std::sync::Arc::new(hermes_cron::CronScheduler::new(None).await.expect("scheduler init"));
+    let registry = ToolRegistry::new().with_cron_scheduler(cron_scheduler);
+
+    // 1. Verify cronjob_manage tool definition exists
+    let defs = registry.get_definitions();
+    let cron_def = defs.iter().find(|d| d["function"]["name"] == "cronjob_manage");
+    assert!(cron_def.is_some(), "cronjob_manage tool definition must be registered");
+
+    // 2. Action: create
+    let create_call = ToolCall {
+        id: "call_cron_create".to_string(),
+        name: "cronjob_manage".to_string(),
+        arguments: json!({
+            "action": "create",
+            "schedule": "every 30m",
+            "prompt": "Run periodic health scan",
+            "name": "health-scan",
+            "deliver": "origin",
+            "pinned": true
+        }),
+    };
+    let create_res = registry.execute(&create_call).await;
+    assert!(create_res.success, "create should succeed: {}", create_res.output);
+    let create_json: serde_json::Value = serde_json::from_str(&create_res.output).unwrap();
+    assert_eq!(create_json["success"], true);
+    let job_id = create_json["job_id"].as_str().unwrap().to_string();
+    assert_eq!(create_json["name"], "health-scan");
+    assert_eq!(create_json["job"]["pinned"], true);
+    assert_eq!(create_json["job"]["state"], "scheduled");
+
+    // 3. Action: list
+    let list_call = ToolCall {
+        id: "call_cron_list".to_string(),
+        name: "cronjob_manage".to_string(),
+        arguments: json!({
+            "action": "list"
+        }),
+    };
+    let list_res = registry.execute(&list_call).await;
+    assert!(list_res.success, "list should succeed");
+    let list_json: serde_json::Value = serde_json::from_str(&list_res.output).unwrap();
+    assert_eq!(list_json["success"], true);
+    assert_eq!(list_json["count"], 1);
+    assert_eq!(list_json["jobs"][0]["job_id"], job_id);
+
+    // 4. Action: update
+    let update_call = ToolCall {
+        id: "call_cron_update".to_string(),
+        name: "cronjob_manage".to_string(),
+        arguments: json!({
+            "action": "update",
+            "job_id": job_id,
+            "prompt": "Run deep health scan",
+            "name": "deep-health-scan"
+        }),
+    };
+    let update_res = registry.execute(&update_call).await;
+    assert!(update_res.success, "update should succeed: {}", update_res.output);
+    let update_json: serde_json::Value = serde_json::from_str(&update_res.output).unwrap();
+    assert_eq!(update_json["success"], true);
+    assert_eq!(update_json["job"]["name"], "deep-health-scan");
+
+    // 5. Action: pause
+    let pause_call = ToolCall {
+        id: "call_cron_pause".to_string(),
+        name: "cronjob_manage".to_string(),
+        arguments: json!({
+            "action": "pause",
+            "job_id": job_id,
+            "paused_reason": "scheduled maintenance"
+        }),
+    };
+    let pause_res = registry.execute(&pause_call).await;
+    assert!(pause_res.success, "pause should succeed: {}", pause_res.output);
+    let pause_json: serde_json::Value = serde_json::from_str(&pause_res.output).unwrap();
+    assert_eq!(pause_json["job"]["state"], "paused");
+    assert_eq!(pause_json["job"]["enabled"], false);
+    assert_eq!(pause_json["job"]["paused_reason"], "scheduled maintenance");
+
+    // 6. Action: resume
+    let resume_call = ToolCall {
+        id: "call_cron_resume".to_string(),
+        name: "cronjob_manage".to_string(),
+        arguments: json!({
+            "action": "resume",
+            "job_id": job_id
+        }),
+    };
+    let resume_res = registry.execute(&resume_call).await;
+    assert!(resume_res.success, "resume should succeed: {}", resume_res.output);
+    let resume_json: serde_json::Value = serde_json::from_str(&resume_res.output).unwrap();
+    assert_eq!(resume_json["job"]["state"], "scheduled");
+    assert_eq!(resume_json["job"]["enabled"], true);
+
+    // 7. Action: run
+    let run_call = ToolCall {
+        id: "call_cron_run".to_string(),
+        name: "cronjob_manage".to_string(),
+        arguments: json!({
+            "action": "run",
+            "job_id": job_id,
+            "prompt": "Transient fire context"
+        }),
+    };
+    let run_res = registry.execute(&run_call).await;
+    assert!(run_res.success, "run should succeed: {}", run_res.output);
+    let run_json: serde_json::Value = serde_json::from_str(&run_res.output).unwrap();
+    assert_eq!(run_json["success"], true);
+    assert_eq!(run_json["job"]["executed"], true);
+    assert_eq!(run_json["job"]["execution_mode"], "background");
+
+    // 8. Action: remove
+    let remove_call = ToolCall {
+        id: "call_cron_remove".to_string(),
+        name: "cronjob_manage".to_string(),
+        arguments: json!({
+            "action": "remove",
+            "job_id": job_id
+        }),
+    };
+    let remove_res = registry.execute(&remove_call).await;
+    assert!(remove_res.success, "remove should succeed: {}", remove_res.output);
+    let remove_json: serde_json::Value = serde_json::from_str(&remove_res.output).unwrap();
+    assert_eq!(remove_json["success"], true);
+    assert_eq!(remove_json["removed_job"]["id"], job_id);
+
+    // Verify empty list after remove
+    let list_res2 = registry.execute(&list_call).await;
+    let list_json2: serde_json::Value = serde_json::from_str(&list_res2.output).unwrap();
+    assert_eq!(list_json2["count"], 0);
 }
