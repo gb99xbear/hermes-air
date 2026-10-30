@@ -108,7 +108,7 @@ Hermes Air includes a comprehensive automated test suite verifying its subsystem
 ```bash
 cargo test --workspace
 ```
-*138 passing unit and integration tests with zero failures.*
+*148 passing unit and integration tests with zero failures.*
 
 ---
 
