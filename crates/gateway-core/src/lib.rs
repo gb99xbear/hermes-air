@@ -992,7 +992,7 @@ impl Gateway {
         }
 
         let tool_definitions = tool_registry.get_definitions();
-        let max_tool_iterations = 10;
+        let max_tool_iterations = 30;
         let mut iteration = 0;
         let mut final_text = String::new();
         let mut streamed_delivery = false;
@@ -1024,9 +1024,17 @@ impl Gateway {
                                     }
                                     streamed_delivery = true;
                                     final_text = acc.clone();
-                                    let asst_msg = ChatMessage::assistant(acc);
+                                    let asst_msg = ChatMessage::assistant(acc.clone());
                                     if let Err(e) = session_store.append_message(msg.session_id, asst_msg).await {
                                         warn!("Failed to persist assistant message for session {}: {:?}", msg.session_id, e);
+                                    }
+                                    // Also check for MEDIA images in streamed response
+                                    for img_path in Self::extract_media_image_paths(&acc) {
+                                        let p = std::path::Path::new(&img_path);
+                                        if p.exists() {
+                                            let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
+                                            let _ = adapter.send_photo_file(chat_id, None, p, None, reply_to_id).await;
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -1086,10 +1094,17 @@ impl Gateway {
                                             let mut consumer = GatewayStreamConsumer::new(chat_id);
                                             // Deliver final completed text smoothly via stream consumer
                                             let (tx, rx) = tokio::sync::mpsc::channel(1);
-                                            let _ = tx.send(text).await;
+                                            let _ = tx.send(text.clone()).await;
                                             drop(tx);
                                             let _ = consumer.consume_stream(rx, adapter, reply_to_id).await;
                                             streamed_delivery = true;
+                                            // Deliver MEDIA images if present
+                                            for img_path in Self::extract_media_image_paths(&text) {
+                                                let p = std::path::Path::new(&img_path);
+                                                if p.exists() {
+                                                    let _ = adapter.send_photo_file(chat_id, None, p, None, reply_to_id).await;
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1108,31 +1123,73 @@ impl Gateway {
                                 }
                                 messages.push(asst_call_msg);
 
-                                // Notify user via Telegram typing action while executing tools
-                                if let Some(ref adapter) = tg_adapter {
-                                    if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
-                                        let adapter_clone = adapter.clone();
-                                        tokio::spawn(async move {
-                                            let _ = adapter_clone.send_chat_action(chat_id, "typing").await;
-                                        });
+                                // Telegram live tool progress status message
+                                let mut progress_bubble_id: Option<(i64, i64)> = None; // (chat_id, message_id)
+                                let tg_chat_id = if let Some(ref adapter) = tg_adapter {
+                                    if msg.platform == Platform::Telegram {
+                                        adapter.chat_id_from_session(msg.session_id).ok()
+                                    } else {
+                                        None
                                     }
-                                }
+                                } else {
+                                    None
+                                };
 
                                 // Execute each tool call and append tool result to context and store
                                 for call in calls {
                                     if turn_token.is_cancelled() {
                                         info!("Turn cancelled mid-tool execution for session {}", msg.session_id);
+                                        if let (Some(ref adapter), Some((cid, mid))) = (&tg_adapter, progress_bubble_id) {
+                                            let _ = adapter.delete_message(cid, mid).await;
+                                        }
                                         active_turns.remove(&msg.session_id);
                                         return;
                                     }
 
+                                    let progress_text = format!("🔧 Running tool: {}...", call.name);
+                                    if let (Some(ref adapter), Some(cid)) = (&tg_adapter, tg_chat_id) {
+                                        let adapter_clone = adapter.clone();
+                                        tokio::spawn(async move {
+                                            let _ = adapter_clone.send_chat_action(cid, "typing").await;
+                                        });
+
+                                        match progress_bubble_id {
+                                            Some((cid, mid)) => {
+                                                let _ = adapter.edit_text(cid, mid, &progress_text).await;
+                                            }
+                                            None => {
+                                                let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
+                                                if let Ok(sent) = adapter.send_chunk_with_fallback(cid, &progress_text, reply_to_id).await {
+                                                    progress_bubble_id = Some((cid, sent.message_id));
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     info!("Executing tool call {} (id: {}) in agent loop", call.name, call.id);
                                     let result = tool_registry.execute(&call).await;
+
+                                    // If tool output directly emits MEDIA image tags, also deliver them
+                                    if let (Some(ref adapter), Some(cid)) = (&tg_adapter, tg_chat_id) {
+                                        for img_path in Self::extract_media_image_paths(&result.output) {
+                                            let p = std::path::Path::new(&img_path);
+                                            if p.exists() {
+                                                let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
+                                                let _ = adapter.send_photo_file(cid, None, p, None, reply_to_id).await;
+                                            }
+                                        }
+                                    }
+
                                     let tool_msg = ChatMessage::tool(result.tool_call_id, result.output);
                                     if let Err(e) = session_store.append_message(msg.session_id, tool_msg.clone()).await {
                                         warn!("Failed to persist tool result for session {}: {:?}", msg.session_id, e);
                                     }
                                     messages.push(tool_msg);
+                                }
+
+                                // Delete or clean up progress bubble on tool completion
+                                if let (Some(ref adapter), Some((cid, mid))) = (&tg_adapter, progress_bubble_id) {
+                                    let _ = adapter.delete_message(cid, mid).await;
                                 }
                             }
                         }
@@ -1172,14 +1229,60 @@ impl Gateway {
         }
     }
 
+    pub fn extract_media_image_paths(text: &str) -> Vec<String> {
+    let mut images = Vec::new();
+    let image_extensions = [".png", ".jpg", ".jpeg", ".webp"];
+    let mut search_from = 0;
+    while let Some(idx) = text[search_from..].find("MEDIA:") {
+        let start = search_from + idx + "MEDIA:".len();
+        let rem = &text[start..];
+        let end = rem.find(|c: char| c.is_whitespace() || c == '`' || c == '"' || c == '\'').unwrap_or(rem.len());
+        let raw_path = rem[..end].trim();
+        let lower = raw_path.to_lowercase();
+        if image_extensions.iter().any(|ext| lower.ends_with(ext)) {
+            images.push(raw_path.to_string());
+        }
+        search_from = start + end;
+    }
+    images
+}
+
     async fn dispatch_outgoing(outgoing: OutgoingMessage, tg_adapter: &Option<Arc<TelegramAdapter>>) {
         match outgoing.platform {
             Platform::Telegram => {
                 if let Some(adapter) = tg_adapter {
-                    if let Err(e) = adapter.send(outgoing).await {
+                    // Check if outgoing text contains MEDIA:<path> tags for native image delivery
+                    let mut media_images = Vec::new();
+                    if let MessageContent::Text { ref text } = outgoing.content {
+                        media_images = Self::extract_media_image_paths(text);
+                    }
+
+                    if let Err(e) = adapter.send(outgoing.clone()).await {
                         error!("Failed to send Telegram reply: {:?}", e);
                     } else {
                         info!("Telegram reply sent successfully");
+                    }
+
+                    // For every MEDIA image file that exists on disk, send native photo
+                    for img_path in media_images {
+                        let path = std::path::Path::new(&img_path);
+                        if path.exists() {
+                            info!("Delivering native Telegram photo for MEDIA tag: {}", img_path);
+                            let img_msg = OutgoingMessage {
+                                id: MessageId::new(),
+                                session_id: outgoing.session_id,
+                                platform: Platform::Telegram,
+                                reply_to: outgoing.reply_to,
+                                content: MessageContent::Image {
+                                    url: img_path.clone(),
+                                    caption: None,
+                                },
+                                metadata: outgoing.metadata.clone(),
+                            };
+                            if let Err(e) = adapter.send(img_msg).await {
+                                warn!("Failed to deliver native Telegram photo for {}: {:?}", img_path, e);
+                            }
+                        }
                     }
                 } else {
                     warn!("No active Telegram adapter available to dispatch response");

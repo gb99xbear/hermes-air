@@ -629,6 +629,24 @@ impl TelegramAdapter {
         self.edit_message_text(chat_id, message_id, text).await
     }
 
+    pub async fn delete_message(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+    ) -> Result<(), PlatformError> {
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+        });
+        match self.make_request::<bool>("deleteMessage", &body).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                warn!("[telegram] Failed to delete message {} in chat {}: {:?}", message_id, chat_id, e);
+                Ok(()) // Treat deletion errors leniently
+            }
+        }
+    }
+
     pub async fn send_message_with_keyboard(
         &self,
         chat_id: i64,
@@ -809,6 +827,130 @@ impl TelegramAdapter {
             }
             Err(other_err) => Err(other_err),
         }
+    }
+
+    pub async fn send_photo_file(
+        &self,
+        chat_id: i64,
+        message_thread_id: Option<i64>,
+        photo_path: &Path,
+        caption: Option<&str>,
+        reply_to_message_id: Option<i64>,
+    ) -> Result<SentMessage, PlatformError> {
+        let file_name = photo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("photo.png")
+            .to_string();
+        let file_bytes = tokio::fs::read(photo_path)
+            .await
+            .map_err(|e| PlatformError::Internal(format!("Failed to read photo file: {}", e)))?;
+
+        let mime_type = match photo_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "webp" => "image/webp",
+            "gif" => "image/gif",
+            _ => "image/png",
+        };
+
+        let url = self.api_url("sendPhoto");
+        let config = self.base.config.as_ref().expect("Not initialized");
+
+        let truncated = truncate_caption_1024(caption);
+        let has_caption = truncated.is_some();
+        let html_caption = truncated.clone();
+        let plain_caption = truncated.as_deref().map(strip_html_tags);
+
+        // Attempt 1: with HTML parse_mode if caption is present
+        if has_caption {
+            let mut form = reqwest::multipart::Form::new()
+                .text("chat_id", chat_id.to_string());
+            if let Some(thread_id) = message_thread_id {
+                form = form.text("message_thread_id", thread_id.to_string());
+            }
+            if let Some(reply_id) = reply_to_message_id {
+                form = form.text("reply_to_message_id", reply_id.to_string());
+            }
+            if let Some(cap) = &html_caption {
+                form = form.text("caption", cap.clone());
+                form = form.text("parse_mode", "HTML");
+            }
+            let part = reqwest::multipart::Part::bytes(file_bytes.clone())
+                .file_name(file_name.clone())
+                .mime_str(mime_type)
+                .unwrap_or_else(|_| reqwest::multipart::Part::bytes(file_bytes.clone()).file_name(file_name.clone()));
+            form = form.part("photo", part);
+
+            let resp = self
+                .client
+                .post(&url)
+                .multipart(form)
+                .timeout(std::time::Duration::from_secs(config.timeout_secs))
+                .send()
+                .await
+                .map_err(|e| PlatformError::Network(e.to_string()))?;
+
+            let status = resp.status();
+            let tg_resp: TelegramResponse<SentMessage> = resp
+                .json()
+                .await
+                .map_err(|e| PlatformError::Internal(e.to_string()))?;
+
+            if tg_resp.ok {
+                if let Some(sent) = tg_resp.result {
+                    return Ok(sent);
+                }
+            } else {
+                let code = tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string());
+                let message = tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string());
+                let status_code = code.parse::<u16>().unwrap_or(0);
+                if !looks_like_parse_error(status_code, &message) {
+                    return Err(PlatformError::Api { code, message });
+                }
+                warn!("[telegram] sendPhoto HTML caption failed, retrying plain");
+            }
+        }
+
+        // Send without parse_mode (or caption is None / fallback)
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string());
+        if let Some(thread_id) = message_thread_id {
+            form = form.text("message_thread_id", thread_id.to_string());
+        }
+        if let Some(reply_id) = reply_to_message_id {
+            form = form.text("reply_to_message_id", reply_id.to_string());
+        }
+        if let Some(cap) = &plain_caption {
+            form = form.text("caption", cap.clone());
+        }
+        let part = reqwest::multipart::Part::bytes(file_bytes)
+            .file_name(file_name.clone())
+            .mime_str(mime_type)
+            .unwrap_or_else(|_| reqwest::multipart::Part::bytes(vec![]));
+        form = form.part("photo", part);
+
+        let resp = self
+            .client
+            .post(&url)
+            .multipart(form)
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .send()
+            .await
+            .map_err(|e| PlatformError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        let tg_resp: TelegramResponse<SentMessage> = resp
+            .json()
+            .await
+            .map_err(|e| PlatformError::Internal(e.to_string()))?;
+
+        if !tg_resp.ok {
+            return Err(PlatformError::Api {
+                code: tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string()),
+                message: tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string()),
+            });
+        }
+        tg_resp.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
     }
 
     pub async fn send_voice(
@@ -1809,36 +1951,43 @@ impl PlatformAdapter for TelegramAdapter {
                 })
             }
             MessageContent::Image { url, caption } => {
-                let req = SendPhotoRequest {
-                    chat_id,
-                    message_thread_id: thread_id,
-                    photo: url.clone(),
-                    caption: caption.clone(),
-                    parse_mode: Some("HTML".to_string()),
-                    reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
-                };
+                let reply_to_id = msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64());
+                let sent: SentMessage = if let Some(stripped_path) = url.strip_prefix("file://") {
+                    self.send_photo_file(chat_id, thread_id, Path::new(stripped_path), caption.as_deref(), reply_to_id).await?
+                } else if Path::new(url).exists() {
+                    self.send_photo_file(chat_id, thread_id, Path::new(url), caption.as_deref(), reply_to_id).await?
+                } else {
+                    let req = SendPhotoRequest {
+                        chat_id,
+                        message_thread_id: thread_id,
+                        photo: url.clone(),
+                        caption: caption.clone(),
+                        parse_mode: Some("HTML".to_string()),
+                        reply_to_message_id: reply_to_id,
+                    };
 
-                let sent: SentMessage = match self.make_request("sendPhoto", &req).await {
-                    Ok(sent) => sent,
-                    Err(PlatformError::Api { code, message }) => {
-                        let status_code = code.parse::<u16>().unwrap_or(0);
-                        if looks_like_parse_error(status_code, &message) {
-                            warn!("[telegram] sendPhoto HTML caption failed, retrying without parse_mode");
-                            let plain_caption = caption.as_deref().map(strip_html_tags);
-                            let plain_req = SendPhotoRequest {
-                                chat_id,
-                                message_thread_id: thread_id,
-                                photo: url.clone(),
-                                caption: plain_caption,
-                                parse_mode: None,
-                                reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
-                            };
-                            self.make_request("sendPhoto", &plain_req).await?
-                        } else {
-                            return Err(PlatformError::Api { code, message });
+                    match self.make_request("sendPhoto", &req).await {
+                        Ok(sent) => sent,
+                        Err(PlatformError::Api { code, message }) => {
+                            let status_code = code.parse::<u16>().unwrap_or(0);
+                            if looks_like_parse_error(status_code, &message) {
+                                warn!("[telegram] sendPhoto HTML caption failed, retrying without parse_mode");
+                                let plain_caption = caption.as_deref().map(strip_html_tags);
+                                let plain_req = SendPhotoRequest {
+                                    chat_id,
+                                    message_thread_id: thread_id,
+                                    photo: url.clone(),
+                                    caption: plain_caption,
+                                    parse_mode: None,
+                                    reply_to_message_id: reply_to_id,
+                                };
+                                self.make_request("sendPhoto", &plain_req).await?
+                            } else {
+                                return Err(PlatformError::Api { code, message });
+                            }
                         }
+                        Err(other) => return Err(other),
                     }
-                    Err(other) => return Err(other),
                 };
 
                 Ok(DeliveryReceipt {

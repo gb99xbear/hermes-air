@@ -1552,6 +1552,7 @@ name = "hermes-gateway-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "dashmap 6.2.1",
  "futures",
  "hermes-config",

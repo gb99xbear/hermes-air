@@ -87,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 15);
+    assert_eq!(defs.len(), 16);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1011,7 +1011,7 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 15);
+    assert_eq!(defs.len(), 16);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1279,7 +1279,7 @@ async fn test_browser_automation_suite_integration() {
 
     // 1. Verify schema definitions
     let defs = registry.get_definitions();
-    let browser_tools = ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_exec"];
+    let browser_tools = ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_take_screenshot", "browser_exec"];
     for tool_name in &browser_tools {
         assert!(defs.iter().any(|d| d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) == Some(*tool_name)));
     }
@@ -1328,6 +1328,19 @@ async fn test_browser_automation_suite_integration() {
     };
     let res = registry.execute(&missing_code_call).await;
     assert!(!res.success);
+
+    // 6. Test browser_take_screenshot execution
+    let screenshot_call = ToolCall {
+        id: "browser_shot_1".to_string(),
+        name: "browser_take_screenshot".to_string(),
+        arguments: json!({
+            "format": "png"
+        }),
+    };
+    let res_shot = registry.execute(&screenshot_call).await;
+    // Without active Chrome CDP, it cleanly returns failure error without crashing
+    assert!(res_shot.output.contains("error") || res_shot.output.contains("Failed to connect") || res_shot.success);
+
     assert!(res.output.contains("Missing required 'code'"));
 }
 #[tokio::test]

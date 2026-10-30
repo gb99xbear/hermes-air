@@ -406,6 +406,30 @@ impl ToolRegistry {
             serde_json::json!({
                 "type": "function",
                 "function": {
+                    "name": "browser_take_screenshot",
+                    "description": "Take a screenshot of the current page so you can inspect it visually. Returns image file path and MEDIA:<file_path> tag. Format can be png or jpeg.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "format": {
+                                "type": "string",
+                                "enum": ["png", "jpeg"],
+                                "description": "Image format: png (lossless) or jpeg (compressed). Default: png"
+                            },
+                            "quality": {
+                                "type": "integer",
+                                "description": "Compression quality for jpeg format (1-100). Default: 80",
+                                "minimum": 1,
+                                "maximum": 100
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
                     "name": "browser_exec",
                     "description": "Execute browser automation JavaScript or CDP script commands on the active tab.",
                     "parameters": {
@@ -460,6 +484,7 @@ impl ToolRegistry {
             "browser_snapshot" => self.execute_browser_snapshot(call).await,
             "browser_click" => self.execute_browser_click(call).await,
             "browser_type" => self.execute_browser_type(call).await,
+            "browser_take_screenshot" => self.execute_browser_take_screenshot(call).await,
             "browser_exec" => self.execute_browser_exec(call).await,
             "execute_code" => self.execute_code(call).await,
             other => ToolResult {
@@ -1355,6 +1380,27 @@ impl ToolRegistry {
         };
 
         match crate::browser::browser_type(selector, text).await {
+            Ok(res) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| "{}".to_string()),
+                success: res.success,
+            },
+            Err(e) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                }).to_string(),
+                success: false,
+            },
+        }
+    }
+
+    async fn execute_browser_take_screenshot(&self, call: &ToolCall) -> ToolResult {
+        let format = call.arguments.get("format").and_then(|v| v.as_str());
+        let quality = call.arguments.get("quality").and_then(|v| v.as_u64()).map(|q| q as u32);
+
+        match crate::browser::browser_take_screenshot(format, quality).await {
             Ok(res) => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| "{}".to_string()),

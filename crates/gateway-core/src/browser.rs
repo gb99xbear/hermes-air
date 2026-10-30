@@ -81,6 +81,16 @@ pub struct ActionResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenshotResult {
+    pub success: bool,
+    pub file_path: String,
+    pub format: String,
+    pub media_tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecResult {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -172,6 +182,71 @@ impl BrowserClient {
     }
 
     /// Execute JavaScript expression on the given page target via CDP session
+    /// Send an arbitrary CDP method call over WebSocket and wait for result
+    pub async fn send_cdp_command(&self, target: &CdpTarget, method: &str, params: Value) -> Result<Value, ToolError> {
+        use futures::{SinkExt, StreamExt};
+        use tokio_tungstenite::connect_async;
+        use tungstenite::Message;
+
+        let ws_url_str = match &target.websocket_debugger_url {
+            Some(u) => u.clone(),
+            None => {
+                let parsed = Url::parse(&self.cdp_base_url)
+                    .map_err(|e| ToolError::InvalidUrl(e.to_string()))?;
+                let host = parsed.host_str().unwrap_or("127.0.0.1");
+                let port = parsed.port().unwrap_or(9222);
+                format!("ws://{}:{}/devtools/page/{}", host, port, target.id)
+            }
+        };
+
+        let (mut ws_stream, _) = tokio::time::timeout(
+            Duration::from_secs(5),
+            connect_async(&ws_url_str),
+        )
+        .await
+        .map_err(|_| ToolError::RequestError("WebSocket connect timed out".to_string()))?
+        .map_err(|e| ToolError::RequestError(format!("WebSocket connect failed to {}: {}", ws_url_str, e)))?;
+
+        let req_id = 1;
+        let cdp_msg = serde_json::json!({
+            "id": req_id,
+            "method": method,
+            "params": params
+        });
+
+        ws_stream
+            .send(Message::Text(cdp_msg.to_string()))
+            .await
+            .map_err(|e| ToolError::RequestError(format!("Failed to send CDP message: {}", e)))?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(2000), ws_stream.next()).await {
+                if let Ok(Message::Text(text)) = msg {
+                    if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                        if val.get("id").and_then(|i| i.as_i64()) == Some(req_id) {
+                            if let Some(res) = val.get("result") {
+                                let _ = ws_stream.close(None).await;
+                                return Ok(res.clone());
+                            }
+                            if let Some(err) = val.get("error") {
+                                let _ = ws_stream.close(None).await;
+                                return Err(ToolError::ExecutionError(err.to_string()));
+                            }
+                            let _ = ws_stream.close(None).await;
+                            return Ok(val);
+                        }
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        let _ = ws_stream.close(None).await;
+        Err(ToolError::ExecutionError(format!("CDP command {} timed out waiting for response", method)))
+    }
+
     pub async fn eval_js(&self, target: &CdpTarget, script: &str) -> Result<Value, ToolError> {
         self.eval_via_websocket(target, script).await
     }
@@ -447,6 +522,66 @@ impl BrowserClient {
             error: None,
         })
     }
+
+    /// Capture screenshot via CDP Page.captureScreenshot and save to disk
+    pub async fn take_screenshot(&self, format: Option<&str>, quality: Option<u32>) -> Result<ScreenshotResult, ToolError> {
+        use base64::Engine;
+        use std::time::SystemTime;
+
+        let target = self.get_or_create_page_target().await?;
+        let fmt = match format.unwrap_or("png").to_lowercase().as_str() {
+            "jpeg" | "jpg" => "jpeg",
+            _ => "png",
+        };
+
+        let mut params = serde_json::json!({
+            "format": fmt,
+            "fromSurface": true
+        });
+
+        if fmt == "jpeg" {
+            let q = quality.unwrap_or(80).min(100);
+            params["quality"] = serde_json::json!(q);
+        }
+
+        let res = self.send_cdp_command(&target, "Page.captureScreenshot", params).await?;
+        let b64_data = res.get("data").and_then(|d| d.as_str()).ok_or_else(|| {
+            ToolError::ExecutionError("CDP Page.captureScreenshot returned no data".to_string())
+        })?;
+
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64_data)
+            .map_err(|e| ToolError::ParseError(format!("Failed to decode screenshot base64 data: {}", e)))?;
+
+        let screenshots_dir = std::path::PathBuf::from("/tmp/hermes_browser_screenshots");
+        tokio::fs::create_dir_all(&screenshots_dir)
+            .await
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to create screenshots directory: {}", e)))?;
+
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+
+        let ext = if fmt == "jpeg" { "jpg" } else { "png" };
+        let file_path = screenshots_dir.join(format!("screenshot-{}.{}", timestamp, ext));
+        let file_path_str = file_path.to_string_lossy().to_string();
+
+        tokio::fs::write(&file_path, bytes)
+            .await
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to save screenshot file: {}", e)))?;
+
+        let media_tag = format!("MEDIA:{}", file_path_str);
+
+        Ok(ScreenshotResult {
+            success: true,
+            file_path: file_path_str,
+            format: fmt.to_string(),
+            media_tag,
+            error: None,
+        })
+    }
+
 }
 
 // Global convenience functions matching Python Hermes signatures
@@ -475,6 +610,12 @@ pub async fn browser_exec(code: &str) -> Result<ExecResult, ToolError> {
     let client = BrowserClient::default();
     client.exec_script(code).await
 }
+
+pub async fn browser_take_screenshot(format: Option<&str>, quality: Option<u32>) -> Result<ScreenshotResult, ToolError> {
+    let client = BrowserClient::default();
+    client.take_screenshot(format, quality).await
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -508,5 +649,19 @@ mod tests {
         let client = BrowserClient::default();
         let res = client.click(None, None, None).await;
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_screenshot_result_serialization() {
+        let res = ScreenshotResult {
+            success: true,
+            file_path: "/tmp/hermes_browser_screenshots/screenshot-123.png".to_string(),
+            format: "png".to_string(),
+            media_tag: "MEDIA:/tmp/hermes_browser_screenshots/screenshot-123.png".to_string(),
+            error: None,
+        };
+        let json = serde_json::to_string(&res).expect("serialize screenshot");
+        assert!(json.contains("MEDIA:/tmp/hermes_browser_screenshots/screenshot-123.png"));
+        assert!(json.contains("\"success\":true"));
     }
 }

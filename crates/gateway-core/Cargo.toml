@@ -29,4 +29,5 @@ tokio-util = "0.7"
 
 tokio-tungstenite = { workspace = true }
 tungstenite = "0.21"
+base64 = "0.22"
 sha2 = "0.10"
