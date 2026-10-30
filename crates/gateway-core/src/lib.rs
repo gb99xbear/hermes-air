@@ -1140,7 +1140,7 @@ impl Gateway {
                                     if turn_token.is_cancelled() {
                                         info!("Turn cancelled mid-tool execution for session {}", msg.session_id);
                                         if let (Some(ref adapter), Some((cid, mid))) = (&tg_adapter, progress_bubble_id) {
-                                            let _ = adapter.delete_message(cid, mid).await;
+                                            // keep progress bubble permanently
                                         }
                                         active_turns.remove(&msg.session_id);
                                         return;
@@ -1189,7 +1189,7 @@ impl Gateway {
 
                                 // Delete or clean up progress bubble on tool completion
                                 if let (Some(ref adapter), Some((cid, mid))) = (&tg_adapter, progress_bubble_id) {
-                                    let _ = adapter.delete_message(cid, mid).await;
+                                    // keep progress bubble permanently
                                 }
                             }
                         }
