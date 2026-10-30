@@ -1018,7 +1018,7 @@ impl Gateway {
                         Ok(rx) => {
                             info!("Streaming chat response directly via GatewayStreamConsumer for chat_id: {}", chat_id);
                             let mut consumer = GatewayStreamConsumer::new(chat_id);
-                            let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
+                            let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
                             match consumer.consume_stream(rx, adapter, reply_to_id).await {
                                 Ok(acc) => {
                                     if turn_token.is_cancelled() {
@@ -1036,7 +1036,7 @@ impl Gateway {
                                     for img_path in Self::extract_media_image_paths(&acc) {
                                         let p = std::path::Path::new(&img_path);
                                         if p.exists() {
-                                            let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
+                                            let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
                                             let _ = adapter.send_photo_file(chat_id, None, p, None, reply_to_id).await;
                                         }
                                     }
@@ -1094,7 +1094,7 @@ impl Gateway {
                                 if tg_adapter.is_some() && msg.platform == Platform::Telegram {
                                     if let Some(adapter) = tg_adapter {
                                         if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
-                                            let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
+                                            let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
                                             let mut consumer = GatewayStreamConsumer::new(chat_id);
                                             // Deliver final completed text smoothly via stream consumer
                                             let (tx, rx) = tokio::sync::mpsc::channel(1);
@@ -1162,7 +1162,7 @@ impl Gateway {
                                                 let _ = adapter.edit_text(cid, mid, &progress_text).await;
                                             }
                                             None => {
-                                                let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
+                                                let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
                                                 if let Ok(sent) = adapter.send_chunk_with_fallback(cid, &progress_text, reply_to_id).await {
                                                     progress_bubble_id = Some((cid, sent.message_id));
                                                 }
@@ -1178,7 +1178,7 @@ impl Gateway {
                                         for img_path in Self::extract_media_image_paths(&result.output) {
                                             let p = std::path::Path::new(&img_path);
                                             if p.exists() {
-                                                let reply_to_id = msg.raw.as_ref().and_then(|r| r.get("message_id")).and_then(|m| m.as_i64());
+                                                let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
                                                 let _ = adapter.send_photo_file(cid, None, p, None, reply_to_id).await;
                                             }
                                         }
