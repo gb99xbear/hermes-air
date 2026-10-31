@@ -73,6 +73,11 @@ pub struct ToolRegistry {
     /// this execution context, which makes clarify report itself unavailable
     /// (mirrors the Python callback being unset).
     pub clarify_ui: Option<Arc<dyn crate::clarify::ClarifyUi>>,
+    /// xAI credential resolution for `x_search`. `None` = the tool reports
+    /// itself unavailable (no `XAI_API_KEY`, no OAuth bearer).
+    pub xai_credentials: Option<Arc<dyn crate::x_search::XaiCredentialProvider>>,
+    /// Shared HTTP client for outbound tool calls.
+    pub http_client: reqwest::Client,
 }
 
 impl Default for ToolRegistry {
@@ -95,6 +100,8 @@ impl ToolRegistry {
                 crate::skill_manager::default_skills_dir(),
             )),
             clarify_ui: None,
+            xai_credentials: None,
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -111,6 +118,8 @@ impl ToolRegistry {
                 crate::skill_manager::default_skills_dir(),
             )),
             clarify_ui: None,
+            xai_credentials: None,
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -132,6 +141,15 @@ impl ToolRegistry {
     /// Attach the platform UI the `clarify` tool asks through.
     pub fn with_clarify_ui(mut self, clarify_ui: Arc<dyn crate::clarify::ClarifyUi>) -> Self {
         self.clarify_ui = Some(clarify_ui);
+        self
+    }
+
+    /// Attach the xAI credential provider the `x_search` tool resolves through.
+    pub fn with_xai_credentials(
+        mut self,
+        provider: Arc<dyn crate::x_search::XaiCredentialProvider>,
+    ) -> Self {
+        self.xai_credentials = Some(provider);
         self
     }
 
@@ -734,6 +752,7 @@ impl ToolRegistry {
                 crate::skill_manager::default_skills_dir().display()
             )),
             crate::clarify::get_definition(),
+            crate::x_search::get_definition(),
         ]
     }
 
@@ -761,6 +780,7 @@ impl ToolRegistry {
             "memory" => self.execute_memory(call).await,
             "skill_manage" => self.execute_skill_manage(call).await,
             "clarify" => self.execute_clarify(call).await,
+            "x_search" => self.execute_x_search(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown core tool: {}", other),
@@ -795,6 +815,7 @@ impl ToolRegistry {
             "memory" => self.execute_memory(call).await,
             "skill_manage" => self.execute_skill_manage(call).await,
             "clarify" => self.execute_clarify(call).await,
+            "x_search" => self.execute_x_search(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown tool: {}", other),
@@ -1814,6 +1835,8 @@ impl ToolRegistry {
             memory_store: self.memory_store.clone(),
             skill_manager: self.skill_manager.clone(),
             clarify_ui: self.clarify_ui.clone(),
+            xai_credentials: self.xai_credentials.clone(),
+            http_client: self.http_client.clone(),
         });
 
         match self.code_engine.execute(session_id, code, reset, None, Some(tool_reg)).await {
@@ -2539,6 +2562,8 @@ impl ToolRegistry {
                     memory_store: self.memory_store.clone(),
                     skill_manager: self.skill_manager.clone(),
                     clarify_ui: self.clarify_ui.clone(),
+                    xai_credentials: self.xai_credentials.clone(),
+                    http_client: self.http_client.clone(),
                 });
 
                 let res = manager.spawn_tasks(tasks, parent_session_id, llm_client, self_registry).await;
@@ -2651,6 +2676,90 @@ impl ToolRegistry {
             operations.as_ref(),
             self.skill_manager.pinned(),
         );
+
+        let success = serde_json::from_str::<Value>(&output)
+            .ok()
+            .and_then(|v| v.get("success").and_then(|s| s.as_bool()))
+            .unwrap_or(false);
+
+        ToolResult {
+            tool_call_id: call.id.clone(),
+            output,
+            success,
+        }
+    }
+
+    pub async fn execute_x_search(&self, call: &ToolCall) -> ToolResult {
+        use serde_json::Value;
+        let args = &call.arguments;
+        let get_str = |k: &str| -> String {
+            args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+        };
+        let handles = |k: &str| -> Option<Vec<String>> {
+            args.get(k).and_then(|v| v.as_array()).map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+        };
+        let query = get_str("query");
+
+        // Shape guard first, exactly like the Python entry point.
+        if let Err(err) = crate::x_search::validate_args(&query) {
+            return ToolResult {
+                tool_call_id: call.id.clone(),
+                output: crate::x_search::tool_error(&err),
+                success: false,
+            };
+        }
+        let Some(provider) = &self.xai_credentials else {
+            return ToolResult {
+                tool_call_id: call.id.clone(),
+                output: crate::x_search::tool_error(
+                    "No xAI credentials available. Run `hermes auth add xai-oauth` to sign in with \
+                     your SuperGrok subscription, or set XAI_API_KEY.",
+                ),
+                success: false,
+            };
+        };
+        let creds = provider
+            .resolve(true)
+            .ok_or_else(|| "no credentials".to_string());
+
+        let allowed = handles("allowed_x_handles");
+        let excluded = handles("excluded_x_handles");
+        let config = crate::x_search::XSearchConfig::default();
+        let prepared = crate::x_search::prepare(
+            &query,
+            allowed.as_deref(),
+            excluded.as_deref(),
+            &get_str("from_date"),
+            &get_str("to_date"),
+            args.get("enable_image_understanding")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            args.get("enable_video_understanding")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            &config,
+            creds,
+        );
+        let output = match prepared {
+            Err(err) => crate::x_search::tool_error(&err),
+            Ok(pc) => {
+                let api_key = provider
+                    .resolve(true)
+                    .map(|c| c.api_key)
+                    .unwrap_or_default();
+                crate::x_search::run_prepared(
+                    &self.http_client,
+                    &pc,
+                    &api_key,
+                    &provider.user_agent(),
+                )
+                .await
+            }
+        };
 
         let success = serde_json::from_str::<Value>(&output)
             .ok()

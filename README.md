@@ -41,7 +41,7 @@ The original [Nous Research Hermes Agent](https://github.com/NousResearch/hermes
 
 ---
 
-## 🛠️ Built-in Tools Inventory (21 Core Tools)
+## 🛠️ Built-in Tools Inventory (24 Core Tools)
 
 Hermes Air exposes a comprehensive OpenAI function-calling toolset:
 
@@ -66,7 +66,9 @@ Hermes Air exposes a comprehensive OpenAI function-calling toolset:
 19. `delegate_task`: Autonomous multi-agent task spawning, steering, and coordination.
 20. `session_search`: 1-to-1 long-term conversation recall across 4 operational shapes (discovery, browse, read, scroll).
 21. `memory`: Persistent curated memory store (`MEMORY.md` agent notes + `USER.md` user profile) with add/replace/remove and atomic batch operations against a final char budget.
-
+22. `skill_manage`: Agent-managed skill creation and editing (create/edit/patch/delete/write_file/remove_file) with atomic batch rollback and delete guards.
+23. `clarify`: Structured multiple-choice / open-ended questions to the user, single or batched (up to 5), with a platform-injected UI seam.
+24. `x_search`: Read-only X (Twitter) post search via xAI's built-in x_search Responses tool, with handle/date filters and degraded-answer detection.
 ---
 
 ## 🚀 Quick Start (One-Line Installer)
@@ -112,7 +114,7 @@ Hermes Air includes a comprehensive automated test suite verifying its subsystem
 ```bash
 cargo test --workspace
 ```
-*212 passing unit and integration tests with zero failures.*
+*340 passing unit and integration tests with zero failures.*
 
 ---
 

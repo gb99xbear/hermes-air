@@ -19,6 +19,7 @@ pub mod memory;
 pub mod threat_patterns;
 pub mod skill_manager;
 pub mod clarify;
+pub mod x_search;
 
 pub use commands::{
     build_model_keyboard, build_provider_keyboard, default_providers_list, handle_clear,

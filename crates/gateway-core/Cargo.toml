@@ -22,7 +22,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
-time = { workspace = true }
+time = { workspace = true, features = ["macros"] }
 url = "2.5"
 urlencoding = "2.1"
 dashmap = { workspace = true }
