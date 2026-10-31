@@ -87,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 21);
+    assert_eq!(defs.len(), 22);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1014,7 +1014,7 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 21);
+    assert_eq!(defs.len(), 22);
 
     let names: Vec<&str> = defs
         .iter()
