@@ -69,6 +69,10 @@ pub struct ToolRegistry {
     pub session_search: Option<Arc<crate::session_search::SessionSearchEngine>>,
     pub memory_store: Arc<crate::memory::MemoryStore>,
     pub skill_manager: Arc<crate::skill_manager::SkillManager>,
+    /// Platform UI for the `clarify` tool. `None` = no interactive surface in
+    /// this execution context, which makes clarify report itself unavailable
+    /// (mirrors the Python callback being unset).
+    pub clarify_ui: Option<Arc<dyn crate::clarify::ClarifyUi>>,
 }
 
 impl Default for ToolRegistry {
@@ -90,6 +94,7 @@ impl ToolRegistry {
             skill_manager: Arc::new(crate::skill_manager::SkillManager::new(
                 crate::skill_manager::default_skills_dir(),
             )),
+            clarify_ui: None,
         }
     }
 
@@ -105,6 +110,7 @@ impl ToolRegistry {
             skill_manager: Arc::new(crate::skill_manager::SkillManager::new(
                 crate::skill_manager::default_skills_dir(),
             )),
+            clarify_ui: None,
         }
     }
 
@@ -120,6 +126,12 @@ impl ToolRegistry {
 
     pub fn with_skill_manager(mut self, skill_manager: Arc<crate::skill_manager::SkillManager>) -> Self {
         self.skill_manager = skill_manager;
+        self
+    }
+
+    /// Attach the platform UI the `clarify` tool asks through.
+    pub fn with_clarify_ui(mut self, clarify_ui: Arc<dyn crate::clarify::ClarifyUi>) -> Self {
+        self.clarify_ui = Some(clarify_ui);
         self
     }
 
@@ -721,6 +733,7 @@ impl ToolRegistry {
                 "{}/skills/",
                 crate::skill_manager::default_skills_dir().display()
             )),
+            crate::clarify::get_definition(),
         ]
     }
 
@@ -747,6 +760,7 @@ impl ToolRegistry {
             "session_search" => self.execute_session_search(call).await,
             "memory" => self.execute_memory(call).await,
             "skill_manage" => self.execute_skill_manage(call).await,
+            "clarify" => self.execute_clarify(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown core tool: {}", other),
@@ -780,6 +794,7 @@ impl ToolRegistry {
             "session_search" => self.execute_session_search(call).await,
             "memory" => self.execute_memory(call).await,
             "skill_manage" => self.execute_skill_manage(call).await,
+            "clarify" => self.execute_clarify(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown tool: {}", other),
@@ -1798,6 +1813,7 @@ impl ToolRegistry {
             session_search: self.session_search.clone(),
             memory_store: self.memory_store.clone(),
             skill_manager: self.skill_manager.clone(),
+            clarify_ui: self.clarify_ui.clone(),
         });
 
         match self.code_engine.execute(session_id, code, reset, None, Some(tool_reg)).await {
@@ -2522,6 +2538,7 @@ impl ToolRegistry {
                     session_search: self.session_search.clone(),
                     memory_store: self.memory_store.clone(),
                     skill_manager: self.skill_manager.clone(),
+                    clarify_ui: self.clarify_ui.clone(),
                 });
 
                 let res = manager.spawn_tasks(tasks, parent_session_id, llm_client, self_registry).await;
@@ -2638,6 +2655,78 @@ impl ToolRegistry {
         let success = serde_json::from_str::<Value>(&output)
             .ok()
             .and_then(|v| v.get("success").and_then(|s| s.as_bool()))
+            .unwrap_or(false);
+
+        ToolResult {
+            tool_call_id: call.id.clone(),
+            output,
+            success,
+        }
+    }
+
+    pub async fn execute_clarify(&self, call: &ToolCall) -> ToolResult {
+        use serde_json::Value;
+        let args = &call.arguments;
+        let question = args.get("question").and_then(|v| v.as_str()).unwrap_or("");
+        let questions: Option<&[Value]> = args
+            .get("questions")
+            .and_then(|v| v.as_array())
+            .map(|v| v.as_slice());
+        let choices: Option<&[Value]> = args
+            .get("choices")
+            .and_then(|v| v.as_array())
+            .map(|v| v.as_slice());
+        let multi_select = args
+            .get("multi_select")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Reject a malformed call before any UI is touched.
+        if let Some(err) = crate::clarify::validate_args(args.get("questions"), Some(question)) {
+            let output = serde_json::json!({ "error": err }).to_string();
+            return ToolResult {
+                tool_call_id: call.id.clone(),
+                output,
+                success: false,
+            };
+        }
+
+        let output = match &self.clarify_ui {
+            None => {
+                let ui = crate::clarify::ClarifyCallback {
+                    single: None,
+                    batch: None,
+                };
+                crate::clarify::clarify_tool(question, choices, multi_select, questions, &ui)
+            }
+            Some(ui) => {
+                let single = |q: &str, c: Option<&[String]>, m: bool| ui.ask(q, c, m);
+                let single_ref: &crate::clarify::QuestionCallback<'_> = &single;
+                if ui.supports_batch() {
+                    let batch = |qs: &[crate::clarify::Question]| ui.ask_batch(qs);
+                    let batch_ref: &crate::clarify::QuestionsCallback<'_> = &batch;
+                    crate::clarify::clarify_tool(
+                        question,
+                        choices,
+                        multi_select,
+                        questions,
+                        &crate::clarify::ClarifyCallback::both(single_ref, batch_ref),
+                    )
+                } else {
+                    crate::clarify::clarify_tool(
+                        question,
+                        choices,
+                        multi_select,
+                        questions,
+                        &crate::clarify::ClarifyCallback::single(single_ref),
+                    )
+                }
+            }
+        };
+
+        let success = serde_json::from_str::<Value>(&output)
+            .ok()
+            .and_then(|v| v.get("error").is_none().then_some(true))
             .unwrap_or(false);
 
         ToolResult {
