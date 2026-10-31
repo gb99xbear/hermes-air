@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use parking_lot::Mutex;
 use uuid::Uuid;
 
-use crate::threat_patterns::{first_threat_message, scan_for_threats};
+use crate::threat_patterns::scan_for_threats;
 
 #[cfg(unix)]
 use std::fs::{File, OpenOptions};
@@ -90,12 +90,15 @@ fn error_with(message: &str, extra: Value) -> Value {
     Value::Object(obj)
 }
 
-/// Scan a memory write for threat patterns (strict scope). Returns the
-/// user-facing block message on the first hit, or `None` when the content is
-/// clean. Mirrors the Python `_scan_memory_content` gate: any hit rejects the
-/// write (and, in a batch, the whole batch).
-pub fn scan_memory_content(content: &str) -> Option<String> {
-    first_threat_message(content, "strict")
+/// Threat findings for a memory write (strict scope).
+///
+/// Owner-directed memory writes are NOT blocked: findings are logged and
+/// recorded for inspection, matching the upstream owner-directed policy (the
+/// SIZUK4 patch on `_scan_memory_content`). The real prompt-injection defence
+/// lives at LOAD time — the system-prompt snapshot normalizer — which is what
+/// stops a poisoned memory file from ever reaching the prompt.
+pub fn scan_memory_content(content: &str) -> Vec<String> {
+    scan_for_threats(content, "strict")
 }
 
 /// Locate the entry matching `old_text`. A whole-entry EXACT match takes
@@ -176,6 +179,8 @@ pub struct MemoryStore {
     pending: Mutex<Vec<Value>>,
     /// Non-fatal warnings emitted during the last load (e.g. over-limit file).
     load_warnings: Mutex<Vec<String>>,
+    /// Threat findings seen on owner-directed writes (logged, never blocking).
+    scan_warnings: Mutex<Vec<String>>,
 }
 
 impl MemoryStore {
@@ -222,6 +227,7 @@ impl MemoryStore {
             review_attended: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
             load_warnings: Mutex::new(Vec::new()),
+            scan_warnings: Mutex::new(Vec::new()),
         };
         store.load_from_disk();
         store
@@ -484,6 +490,27 @@ impl MemoryStore {
         self.load_warnings.lock().clone()
     }
 
+    /// Threat findings recorded on owner-directed writes. The write is NOT
+    /// blocked; this exposes what the log recorded so it can be inspected.
+    pub fn write_threat_warnings(&self) -> Vec<String> {
+        self.scan_warnings.lock().clone()
+    }
+
+    /// Owner-directed writes are never refused: log and record threat findings
+    /// so they stay visible without blocking the write.
+    fn note_write_threats(&self, content: &str) {
+        let findings = scan_for_threats(content, "strict");
+        if findings.is_empty() {
+            return;
+        }
+        let joined = findings.join(", ");
+        tracing::warn!(
+            "memory write threat findings (allowed, owner-directed): {}",
+            joined
+        );
+        self.scan_warnings.lock().push(joined);
+    }
+
     /// Mark the current run as a background review: remove/replace become
     /// staged proposals (not applied to disk); add still applies. Clear with
     /// `set_background_review(false)` at the end of the run.
@@ -614,9 +641,7 @@ impl MemoryStore {
         if content.is_empty() {
             return error_value("Content cannot be empty.");
         }
-        if let Some(msg) = scan_memory_content(content) {
-            return error_value(&msg);
-        }
+        self.note_write_threats(content);
         let content = content.to_string();
         self.mutate(target, true, move |entries, limit| {
             if entries.iter().any(|e| e == &content) {
@@ -651,9 +676,7 @@ impl MemoryStore {
         if new_content.is_empty() {
             return error_value("new_content cannot be empty. Use 'remove' to delete entries.");
         }
-        if let Some(msg) = scan_memory_content(new_content) {
-            return error_value(&msg);
-        }
+        self.note_write_threats(new_content);
         self.edit(target, old_text.trim(), Some(new_content.to_string()))
     }
 
@@ -822,9 +845,9 @@ impl MemoryStore {
 
         let op_count = ops.len();
 
-        // Scan every add/replace content BEFORE touching disk -- one poisoned
-        // op rejects the WHOLE batch.
-        for (i, op) in ops.iter().enumerate() {
+        // Owner-directed writes are not blocked: record threat findings for
+        // every add/replace op so they remain visible in the log.
+        for op in ops.iter() {
             let act = op.get("action").and_then(|v| v.as_str());
             if act == Some("add") || act == Some("replace") {
                 let content = op
@@ -832,9 +855,7 @@ impl MemoryStore {
                     .and_then(|v| v.as_str())
                     .or_else(|| op.get("new_text").and_then(|v| v.as_str()))
                     .unwrap_or("");
-                if let Some(msg) = scan_memory_content(content) {
-                    return error_value(&format!("Operation {}: {}", i + 1, msg));
-                }
+                self.note_write_threats(content);
             }
         }
 
@@ -1412,25 +1433,38 @@ mod tests {
 
     // ── Security scanning on writes ──────────────────────────────────────
     #[test]
-    fn test_add_injection_blocked() {
+    fn test_add_injection_allowed_and_logged() {
+        // Owner-directed writes are NOT blocked (upstream owner-directed policy):
+        // the write lands and the finding is logged for inspection instead.
         let (store, _dir) = temp_store(2200);
         let v = store.add("memory", &injection_payload());
-        assert_eq!(v["success"], json!(false));
-        assert!(v["error"].as_str().unwrap().contains("Blocked"));
-        assert!(store.entries_for("memory").is_empty());
+        assert_eq!(v["success"], json!(true));
+        assert_eq!(store.entries_for("memory"), vec![injection_payload()]);
+        let warns = store.write_threat_warnings();
+        assert!(
+            warns.iter().any(|w| w.contains("prompt_injection")),
+            "{:?}",
+            warns
+        );
     }
 
     #[test]
-    fn test_replace_injection_blocked() {
+    fn test_replace_injection_allowed_and_logged() {
         let (store, _dir) = temp_store(2200);
         store.add("memory", "safe entry");
         let v = store.replace("memory", "safe", &injection_payload());
-        assert_eq!(v["success"], json!(false));
-        assert_eq!(store.entries_for("memory"), vec!["safe entry".to_string()]);
+        assert_eq!(v["success"], json!(true));
+        assert_eq!(store.entries_for("memory"), vec![injection_payload()]);
+        assert!(store
+            .write_threat_warnings()
+            .iter()
+            .any(|w| w.contains("prompt_injection")));
     }
 
     #[test]
-    fn test_batch_injection_blocked_rejects_whole_batch() {
+    fn test_batch_injection_allowed_not_rejected() {
+        // The batch is NOT rejected: owner-directed writes land and the finding
+        // is logged. Prompt defence is the load-time normalizer, not this gate.
         let (store, _dir) = temp_store(2200);
         let ops = json!([
             {"action": "add", "content": "legit fact"},
@@ -1438,8 +1472,16 @@ mod tests {
         ]);
         let out = memory_tool(&store, None, Some("memory"), None, None, None, Some(ops.as_array().unwrap()));
         let v = parse(&out);
-        assert_eq!(v["success"], json!(false));
-        assert!(!store.entries_for("memory").contains(&"legit fact".to_string()));
+        assert_eq!(v["success"], json!(true));
+        assert_eq!(v["entry_count"], json!(2));
+        assert!(v["message"].as_str().unwrap().contains("Applied 2 operation"));
+        let entries = store.entries_for("memory");
+        assert!(entries.contains(&"legit fact".to_string()));
+        assert!(entries.contains(&injection_payload()));
+        assert!(store
+            .write_threat_warnings()
+            .iter()
+            .any(|w| w.contains("prompt_injection")));
     }
 
     // ── Load-time snapshot sanitization ──────────────────────────────────
