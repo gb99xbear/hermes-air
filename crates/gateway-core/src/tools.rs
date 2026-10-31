@@ -76,6 +76,9 @@ pub struct ToolRegistry {
     /// xAI credential resolution for `x_search`. `None` = the tool reports
     /// itself unavailable (no `XAI_API_KEY`, no OAuth bearer).
     pub xai_credentials: Option<Arc<dyn crate::x_search::XaiCredentialProvider>>,
+    /// Background-process registry backing `process_manage`. `None` = the tool
+    /// reports itself unavailable in this execution context.
+    pub process_registry: Option<Arc<crate::process::ProcessRegistry>>,
     /// Shared HTTP client for outbound tool calls.
     pub http_client: reqwest::Client,
 }
@@ -101,6 +104,7 @@ impl ToolRegistry {
             )),
             clarify_ui: None,
             xai_credentials: None,
+           process_registry: None,
             http_client: reqwest::Client::new(),
         }
     }
@@ -119,6 +123,7 @@ impl ToolRegistry {
             )),
             clarify_ui: None,
             xai_credentials: None,
+           process_registry: None,
             http_client: reqwest::Client::new(),
         }
     }
@@ -150,6 +155,15 @@ impl ToolRegistry {
         provider: Arc<dyn crate::x_search::XaiCredentialProvider>,
     ) -> Self {
         self.xai_credentials = Some(provider);
+        self
+    }
+
+    /// Attach the background-process registry the `process_manage` tool drives.
+    pub fn with_process_registry(
+        mut self,
+        registry: Arc<crate::process::ProcessRegistry>,
+    ) -> Self {
+        self.process_registry = Some(registry);
         self
     }
 
@@ -753,6 +767,7 @@ impl ToolRegistry {
             )),
             crate::clarify::get_definition(),
             crate::x_search::get_definition(),
+            crate::process::definition(),
         ]
     }
 
@@ -781,6 +796,7 @@ impl ToolRegistry {
             "skill_manage" => self.execute_skill_manage(call).await,
             "clarify" => self.execute_clarify(call).await,
             "x_search" => self.execute_x_search(call).await,
+            "process_manage" => self.execute_process_manage(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown core tool: {}", other),
@@ -816,6 +832,7 @@ impl ToolRegistry {
             "skill_manage" => self.execute_skill_manage(call).await,
             "clarify" => self.execute_clarify(call).await,
             "x_search" => self.execute_x_search(call).await,
+            "process_manage" => self.execute_process_manage(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown tool: {}", other),
@@ -1836,6 +1853,7 @@ impl ToolRegistry {
             skill_manager: self.skill_manager.clone(),
             clarify_ui: self.clarify_ui.clone(),
             xai_credentials: self.xai_credentials.clone(),
+           process_registry: self.process_registry.clone(),
             http_client: self.http_client.clone(),
         });
 
@@ -1856,6 +1874,31 @@ impl ToolRegistry {
                 }).to_string(),
                 success: false,
             },
+        }
+    }
+
+    /// `process_manage` — poll/wait/log/kill/write/submit/close/list/handoff over the
+    /// background-process registry.
+    pub async fn execute_process_manage(&self, call: &ToolCall) -> ToolResult {
+        let Some(registry) = self.process_registry.clone() else {
+            return ToolResult {
+                tool_call_id: call.id.clone(),
+                output: crate::process::tool_error(
+                    "process_manage is unavailable: no process registry is attached to this registry.",
+                ),
+                success: false,
+            };
+        };
+        let ctx = crate::process::ProcessCtx::new(registry);
+        let output = crate::process::handle_process(&call.arguments, &ctx).await;
+        let failed = serde_json::from_str::<serde_json::Value>(&output)
+            .ok()
+            .map(|v| v.get("error").is_some() && v.get("status").is_none())
+            .unwrap_or(false);
+        ToolResult {
+            tool_call_id: call.id.clone(),
+            output,
+            success: !failed,
         }
     }
 
@@ -2563,6 +2606,7 @@ impl ToolRegistry {
                     skill_manager: self.skill_manager.clone(),
                     clarify_ui: self.clarify_ui.clone(),
                     xai_credentials: self.xai_credentials.clone(),
+                    process_registry: self.process_registry.clone(),
                     http_client: self.http_client.clone(),
                 });
 

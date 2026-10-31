@@ -41,7 +41,7 @@ The original [Nous Research Hermes Agent](https://github.com/NousResearch/hermes
 
 ---
 
-## 🛠️ Built-in Tools Inventory (24 Core Tools)
+## 🛠️ Built-in Tools Inventory (25 Core Tools)
 
 Hermes Air exposes a comprehensive OpenAI function-calling toolset:
 
@@ -114,7 +114,7 @@ Hermes Air includes a comprehensive automated test suite verifying its subsystem
 ```bash
 cargo test --workspace
 ```
-*340 passing unit and integration tests with zero failures.*
+*433 passing unit and integration tests with zero failures.*
 
 ---
 
