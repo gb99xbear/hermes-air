@@ -145,19 +145,21 @@ pub fn is_shell_noise(text: &str) -> bool {
     SHELL_NOISE_SUBSTRINGS.iter().any(|n| text.contains(n))
 }
 
-/// Remove shell banner noise substrings from a chunk.
+/// Strip shell startup warnings from the beginning of a chunk.
+///
+/// Mirrors `ProcessRegistry._clean_shell_noise`: it pops LEADING lines that contain a
+/// noise substring and leaves the body untouched. It is applied to the FIRST chunk of a
+/// reader only — later chunks cannot be startup banners.
 pub fn clean_shell_noise(text: &str) -> String {
-    let mut out = text.to_string();
-    for noise in SHELL_NOISE_SUBSTRINGS {
-        if out.contains(noise) {
-            out = out.replace(noise, "");
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    while let Some(first) = lines.first() {
+        if is_shell_noise(first) {
+            lines.remove(0);
+        } else {
+            break;
         }
     }
-    if out.trim().is_empty() && !text.trim().is_empty() {
-        // The chunk was pure noise: drop the surrounding blank line too.
-        return String::new();
-    }
-    out
+    lines.join("\n")
 }
 
 /// Line ending appended by `submit`. On a Windows PTY, Enter is CRLF: ConPTY treats
@@ -334,6 +336,11 @@ pub struct ProcessSession {
     pub watch_patterns: Vec<String>,
     /// 0 = off; else a `heartbeat` event every N seconds while running.
     pub heartbeat_seconds: u64,
+    /// Time of the last heartbeat (or spawn); layer 2 drives this.
+    pub heartbeat_last: f64,
+    /// `total_output_chars` at the last heartbeat, so a beat carries only new output.
+    pub heartbeat_total_at_last: u64,
+    pub heartbeat_seq: u64,
     /// Chars ever ingested (the buffer is only a rolling tail).
     pub total_output_chars: u64,
     // ── watch bookkeeping (layer 2 drives these) ──
@@ -377,6 +384,9 @@ impl ProcessSession {
             completion_output_chars: 0,
             watch_patterns: Vec::new(),
             heartbeat_seconds: 0,
+            heartbeat_last: 0.0,
+            heartbeat_total_at_last: 0,
+            heartbeat_seq: 0,
             total_output_chars: 0,
             watch_hits: 0,
             watch_suppressed: 0,
@@ -600,11 +610,23 @@ impl ScopeHost for NoScope {
     }
 }
 
+/// Live-output hook: installed by the registry so reader threads route chunks through
+/// the watch pipeline (buffer + pattern scan + live stream) instead of appending blind.
+pub type OutputHook = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Session state plus the exit signal `wait` blocks on.
-#[derive(Debug)]
 pub struct SessionHandle {
     pub session: Mutex<ProcessSession>,
     pub exited: tokio::sync::Notify,
+    output_hook: Mutex<Option<OutputHook>>,
+}
+
+impl std::fmt::Debug for SessionHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionHandle")
+            .field("id", &self.id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl SessionHandle {
@@ -612,6 +634,7 @@ impl SessionHandle {
         Arc::new(Self {
             session: Mutex::new(session),
             exited: tokio::sync::Notify::new(),
+            output_hook: Mutex::new(None),
         })
     }
 
@@ -622,6 +645,21 @@ impl SessionHandle {
     /// Append output and wake nobody (output is polled, not awaited).
     pub fn append_output(&self, text: &str) {
         self.session.lock().append_output(text);
+    }
+
+    /// Install the live-output hook (the registry's watch pipeline).
+    pub fn set_output_hook(&self, hook: Option<OutputHook>) {
+        *self.output_hook.lock() = hook;
+    }
+
+    /// Route a freshly-read chunk: through the hook when installed (buffer + watch scan
+    /// + live stream), else straight into the buffer.
+    pub fn ingest_chunk(&self, text: &str) {
+        let hook = self.output_hook.lock().clone();
+        match hook {
+            Some(hook) => hook(text),
+            None => self.session.lock().append_output(text),
+        }
     }
 
     /// Mark exited and wake any waiter.
@@ -785,14 +823,20 @@ where
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
         let mut reader = reader;
+        // Startup banners only ever appear in the first chunk; cleaning later chunks
+        // would eat legitimate output that happens to contain the same words.
+        let mut first_chunk = true;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buf[..n]);
-                    let cleaned = clean_shell_noise(&chunk);
-                    if !cleaned.is_empty() {
-                        session.append_output(&cleaned);
+                    let mut chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    if first_chunk {
+                        chunk = clean_shell_noise(&chunk);
+                        first_chunk = false;
+                    }
+                    if !chunk.is_empty() {
+                        session.ingest_chunk(&chunk);
                     }
                 }
                 Err(_) => break,
@@ -914,6 +958,9 @@ pub struct ProcessRegistry {
     interrupt: Arc<dyn InterruptSource>,
     clock: Arc<dyn Clock>,
     transformer: Arc<dyn ResultTransformer>,
+    /// Layer 2: watch patterns, the fleet-wide breaker, heartbeats, live streaming, and
+    /// the unified event queue the CLI/gateway drains after each turn.
+    pub watch: Arc<crate::process_watch::WatchPipeline>,
 }
 
 impl Default for ProcessRegistry {
@@ -932,6 +979,9 @@ impl ProcessRegistry {
             interrupt: Arc::new(NoInterrupt),
             clock: Arc::new(SystemClock),
             transformer: Arc::new(NoTransform),
+            watch: Arc::new(crate::process_watch::WatchPipeline::new(Arc::new(
+                SystemClock,
+            ))),
         }
     }
 
@@ -950,6 +1000,7 @@ impl ProcessRegistry {
             pty,
             scope,
             interrupt,
+            watch: Arc::new(crate::process_watch::WatchPipeline::new(Arc::clone(&clock))),
             clock,
             transformer,
         }
@@ -967,9 +1018,21 @@ impl ProcessRegistry {
     pub fn register(&self, session: ProcessSession) -> Arc<SessionHandle> {
         let handle = SessionHandle::new(session);
         let id = handle.id();
+        self.wire_ingest(&handle);
         self.inner.lock().running.insert(id, Arc::clone(&handle));
         self.prune_if_needed();
         handle
+    }
+
+    /// Route a session's reader output through the watch pipeline.
+    fn wire_ingest(&self, handle: &Arc<SessionHandle>) {
+        let pipe = Arc::clone(&self.watch);
+        let weak = Arc::downgrade(handle);
+        handle.set_output_hook(Some(Arc::new(move |text: &str| {
+            if let Some(h) = weak.upgrade() {
+                pipe.ingest_text(&h, text);
+            }
+        })));
     }
 
     /// Spawn and register a background process.
@@ -988,6 +1051,7 @@ impl ProcessRegistry {
             session.owner_task_id = t;
         }
         let handle = SessionHandle::new(session);
+        self.wire_ingest(&handle);
         let child = self.host.spawn(SpawnRequest {
             session: Arc::clone(&handle),
             command: command.to_string(),
@@ -1559,6 +1623,46 @@ impl ProcessRegistry {
         self.transformer.transform(&mut result);
         result
     }
+    // ── layer 2: watch / heartbeat / events ──────────────────────────────────────
+
+    /// Buffer a chunk and run the watch scan (used by tests and non-reader backends).
+    pub fn ingest_output(&self, handle: &Arc<SessionHandle>, text: &str) {
+        self.watch.ingest_text(handle, text);
+    }
+
+    /// Every running session handle, for the heartbeat tick.
+    pub fn running_handles(&self) -> Vec<Arc<SessionHandle>> {
+        self.inner.lock().running.values().cloned().collect()
+    }
+
+    /// Enable periodic heartbeats for a session; returns the effective interval, or
+    /// `None` when the session does not exist.
+    pub fn arm_heartbeat(&self, session_id: &str, seconds: u64) -> Option<u64> {
+        let handle = self.resolve_prefix(session_id)?;
+        Some(self.watch.arm_heartbeat(&handle, seconds))
+    }
+
+    /// One pass of the heartbeat loop over every running session.
+    pub fn heartbeat_tick(&self) -> Vec<Value> {
+        let handles = self.running_handles();
+        self.watch.heartbeat_tick(handles.iter())
+    }
+
+    /// Take every queued background event (watch matches, heartbeats, breaker notices).
+    pub fn drain_events(&self) -> Vec<Value> {
+        self.watch.drain()
+    }
+
+    /// Inspect the queued events without consuming them.
+    pub fn peek_events(&self) -> Vec<Value> {
+        self.watch.events.snapshot()
+    }
+
+    /// Install the live-output sink (desktop gateway's streaming terminal).
+    pub fn set_output_sink(&self, sink: Option<crate::process_watch::OutputSink>) {
+        self.watch.set_output_sink(sink);
+    }
+
 }
 
 /// Generate a new session id: `proc_` + 12 hex chars.
@@ -1961,11 +2065,22 @@ mod tests {
     }
 
     #[test]
-    fn cleans_shell_noise_and_drops_pure_noise_chunk() {
-        assert_eq!(clean_shell_noise("no job control in this shell\n"), "");
-        let kept = clean_shell_noise("no job control in this shellreal output");
-        assert!(!kept.contains("no job control"));
-        assert!(kept.contains("real output"));
+    fn clean_shell_noise_pops_leading_noise_lines_only() {
+        // Leading banner lines go; the body is untouched.
+        assert_eq!(
+            clean_shell_noise("no job control in this shell\nreal output\n"),
+            "real output\n"
+        );
+        // A noise line in the BODY is preserved — only the head is cleaned.
+        let kept = clean_shell_noise("real output\nno job control in this shell");
+        assert!(kept.starts_with("real output"));
+        assert!(kept.contains("no job control"));
+    }
+
+    #[test]
+    fn clean_shell_noise_multiple_leading_lines() {
+        let text = "no job control in this shell\ncannot set terminal process group\nBODY";
+        assert_eq!(clean_shell_noise(text), "BODY");
     }
 
     // ── submit line ending (the one real trap) ──
@@ -2422,6 +2537,91 @@ mod tests {
         assert_eq!(reg.close_stdin("proc_c2")["status"], "already_exited");
     }
 
+
+
+    // ── layer 2 wiring (registry <-> watch pipeline) ──
+    #[test]
+    fn registry_ingest_routes_a_chunk_through_the_watch_pipeline() {
+        let clock = FakeClock::new(1_000.0);
+        let reg = registry_with(clock);
+        let mut sess = session("proc_w2a");
+        sess.watch_patterns = vec!["ERROR".to_string()];
+        let h = reg.register(sess);
+        reg.ingest_output(&h, "ERROR boom");
+        // Buffered by the pipeline...
+        assert_eq!(h.snapshot().output_buffer, "ERROR boom");
+        // ...and the watch match is queued on the registry.
+        let evs = reg.drain_events();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0]["type"], "watch_match");
+        assert!(reg.peek_events().is_empty());
+    }
+
+    #[test]
+    fn registry_resolves_a_session_prefix_for_arm_heartbeat() {
+        let reg = registry_with(FakeClock::new(1_000.0));
+        let h = reg.register(session("proc_hb1"));
+        assert_eq!(h.id(), "proc_hb1");
+        // Any unique prefix works, like the other actions.
+        assert_eq!(reg.arm_heartbeat("proc_hb", 5), Some(HEARTBEAT_MIN_SECONDS));
+        assert_eq!(reg.arm_heartbeat("proc_missing", 60), None);
+    }
+
+    #[test]
+    fn registry_heartbeat_tick_emits_for_running_sessions_only() {
+        let clock = FakeClock::new(1_000.0);
+        let reg = registry_with(clock.clone());
+        let h = reg.register(session("proc_hb2"));
+        reg.arm_heartbeat("proc_hb2", 60);
+        assert!(reg.heartbeat_tick().is_empty(), "not due yet");
+        clock.advance(61.0);
+        reg.ingest_output(&h, "progress");
+        let evs = reg.heartbeat_tick();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0]["type"], "heartbeat");
+        assert_eq!(evs[0]["output"], "progress");
+        // A finished session stops beating.
+        h.finish(Some(0), "exited", "");
+        reg.move_to_finished(&h);
+        clock.advance(120.0);
+        assert!(reg.heartbeat_tick().is_empty());
+    }
+
+    #[test]
+    fn registry_output_sink_receives_live_chunks() {
+        let reg = registry_with(FakeClock::new(1_000.0));
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = Arc::clone(&seen);
+        reg.set_output_sink(Some(Arc::new(move |_s, chunk| {
+            seen2.lock().push(chunk.to_string());
+        })));
+        let h = reg.register(session("proc_os1"));
+        reg.ingest_output(&h, "live line");
+        assert_eq!(&*seen.lock(), &vec!["live line".to_string()]);
+    }
+
+    #[test]
+    fn registered_session_hook_feeds_output_back_into_the_pipeline() {
+        let reg = registry_with(FakeClock::new(1_000.0));
+        let mut sess = session("proc_hook1");
+        sess.watch_patterns = vec!["READY".to_string()];
+        let h = reg.register(sess);
+        // The reader calls ingest_chunk(); with the hook installed it must reach the
+        // registry's watch pipeline, not just the raw buffer.
+        h.ingest_chunk("READY to serve");
+        let evs = reg.drain_events();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0]["type"], "watch_match");
+        assert_eq!(h.snapshot().output_buffer, "READY to serve");
+    }
+
+    #[test]
+    fn unregistered_handle_falls_back_to_plain_buffering() {
+        // No hook installed: ingest_chunk must still buffer.
+        let h = SessionHandle::new(session("proc_nohook"));
+        h.ingest_chunk("just text");
+        assert_eq!(h.snapshot().output_buffer, "just text");
+    }
 
     // ── PTY routing (the is_pty seam) ──
     #[test]
