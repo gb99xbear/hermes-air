@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use serde_json::{json, Value};
+use tracing::warn;
 
 // ── constants ──────────────────────────────────────────────────────────────────
 
@@ -961,6 +962,12 @@ pub struct ProcessRegistry {
     /// Layer 2: watch patterns, the fleet-wide breaker, heartbeats, live streaming, and
     /// the unified event queue the CLI/gateway drains after each turn.
     pub watch: Arc<crate::process_watch::WatchPipeline>,
+    /// Layer 3: crash-recovery persistence + PID probe + command redaction.
+    pub checkpoint: Arc<dyn crate::process_checkpoint::CheckpointStore>,
+    pub pid_probe: Arc<dyn crate::process_checkpoint::PidProbe>,
+    pub redactor: Arc<dyn crate::process_checkpoint::CommandRedactor>,
+    /// Side-channel for check_interval watchers re-enqueued by crash recovery.
+    pub pending_watchers: Mutex<Vec<Value>>,
 }
 
 impl Default for ProcessRegistry {
@@ -982,6 +989,12 @@ impl ProcessRegistry {
             watch: Arc::new(crate::process_watch::WatchPipeline::new(Arc::new(
                 SystemClock,
             ))),
+            checkpoint: Arc::new(crate::process_checkpoint::FileCheckpointStore::new(
+                default_checkpoint_path(),
+            )),
+            pid_probe: Arc::new(crate::process_checkpoint::SystemPidProbe),
+            redactor: Arc::new(crate::process_checkpoint::NoRedact),
+            pending_watchers: Mutex::new(Vec::new()),
         }
     }
 
@@ -1001,6 +1014,10 @@ impl ProcessRegistry {
             scope,
             interrupt,
             watch: Arc::new(crate::process_watch::WatchPipeline::new(Arc::clone(&clock))),
+            checkpoint: Arc::new(crate::process_checkpoint::MemoryCheckpointStore::new()),
+            pid_probe: Arc::new(crate::process_checkpoint::SystemPidProbe),
+            redactor: Arc::new(crate::process_checkpoint::NoRedact),
+            pending_watchers: Mutex::new(Vec::new()),
             clock,
             transformer,
         }
@@ -1623,6 +1640,113 @@ impl ProcessRegistry {
         self.transformer.transform(&mut result);
         result
     }
+    // ── layer 3: checkpoint / crash recovery ─────────────────────────────────────
+
+    /// Attach a different checkpoint store (file path or in-memory) and redactor.
+    pub fn with_checkpoint(
+        mut self,
+        store: Arc<dyn crate::process_checkpoint::CheckpointStore>,
+        redactor: Arc<dyn crate::process_checkpoint::CommandRedactor>,
+        probe: Arc<dyn crate::process_checkpoint::PidProbe>,
+    ) -> Self {
+        self.checkpoint = store;
+        self.redactor = redactor;
+        self.pid_probe = probe;
+        self
+    }
+
+    /// Write running-process metadata to the checkpoint file atomically. Never raises;
+    /// a failed write must not take the registry down mid-operation.
+    pub fn write_checkpoint(&self, extra_entries: Vec<Value>) {
+        use crate::process_checkpoint::{build_checkpoint_payload, serialize_checkpoint};
+        let sessions = self.running_handles();
+        let probe = Arc::clone(&self.pid_probe);
+        let payload = build_checkpoint_payload(
+            &sessions,
+            &extra_entries,
+            |pid| probe.start_time(pid),
+            &*self.redactor,
+        );
+        let text = serialize_checkpoint(&payload);
+        if let Err(e) = self.checkpoint.write(&text) {
+            warn!("Failed to write checkpoint file {}: {}", self.checkpoint.path(), e);
+        }
+    }
+
+    /// On gateway startup, probe PIDs from the checkpoint and adopt the survivors as
+    /// detached sessions. Returns how many were recovered.
+    pub fn recover_from_checkpoint(&self) -> usize {
+        use crate::process_checkpoint::{
+            entry_to_session, parse_checkpoint, pending_watcher_for, plan_recovery,
+            RecoverOutcome,
+        };
+        let Some(contents) = self.checkpoint.read() else {
+            return 0;
+        };
+        let entries = parse_checkpoint(&contents);
+        if entries.is_empty() {
+            return 0;
+        }
+        let now = self.clock.now_secs();
+        let mut recovered = 0usize;
+        let mut unresolved: Vec<Value> = Vec::new();
+
+        for entry in entries {
+            let sid = entry
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let already = self
+                .inner
+                .lock()
+                .running
+                .contains_key(&sid);
+            let pid = entry.get("pid").and_then(|v| v.as_i64()).map(|v| v as i32);
+            let expected_start = entry.get("host_start_time").and_then(|v| v.as_i64());
+            // Alive AND still the process we spawned: the kernel recycles PIDs, so a
+            // stored number can later name a stranger.
+            let alive = pid.map(|p| self.pid_probe.is_alive(p)).unwrap_or(false);
+            let ours = alive
+                && (expected_start.is_none()
+                    || self.pid_probe.start_time(pid.unwrap_or(0)) == expected_start);
+            let probe = Arc::clone(&self.pid_probe);
+
+            let outcome = plan_recovery(&entry, already, ours, alive, |_unit| {
+                // Layer 3 has no systemd-scope host wired; an unresolvable scope is
+                // retained so a later layer can reap it.
+                let _ = &probe;
+                false
+            });
+
+            match outcome {
+                RecoverOutcome::Recovered => {
+                    let session = entry_to_session(&entry, now);
+                    if let Some(watcher) = pending_watcher_for(&session) {
+                        // Re-enqueue so the gateway can resume notifications after the
+                        // session is adopted.
+                        self.pending_watchers.lock().push(watcher.to_value());
+                    }
+                    let handle = self.register(session);
+                    // A recovered process has no pipe: it is detached by construction.
+                    debug_assert!(handle.snapshot().detached);
+                    recovered += 1;
+                }
+                RecoverOutcome::ScopeUnresolved => {
+                    unresolved.push(entry);
+                }
+                _ => {}
+            }
+        }
+        self.write_checkpoint(unresolved);
+        recovered
+    }
+
+    /// Take the watcher re-enqueue requests produced by crash recovery.
+    pub fn take_pending_watchers(&self) -> Vec<Value> {
+        std::mem::take(&mut *self.pending_watchers.lock())
+    }
+
     // ── layer 2: watch / heartbeat / events ──────────────────────────────────────
 
     /// Buffer a chunk and run the watch scan (used by tests and non-reader backends).
@@ -1663,6 +1787,15 @@ impl ProcessRegistry {
         self.watch.set_output_sink(sink);
     }
 
+}
+
+/// Profile-scoped checkpoint path: `<HERMES_HOME>/processes.json`.
+pub fn default_checkpoint_path() -> std::path::PathBuf {
+    let home = std::env::var("HERMES_HOME").unwrap_or_else(|_| {
+        let base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/.hermes", base)
+    });
+    std::path::PathBuf::from(home).join("processes.json")
 }
 
 /// Generate a new session id: `proc_` + 12 hex chars.
@@ -2538,6 +2671,187 @@ mod tests {
     }
 
 
+
+
+    // ── layer 3 wiring (registry <-> checkpoint) ──
+    #[derive(Debug, Default)]
+    struct FakeProbe {
+        alive: Mutex<HashSet<i32>>,
+        starts: Mutex<std::collections::HashMap<i32, i64>>,
+    }
+    impl FakeProbe {
+        fn with(pid: i32, start: i64) -> Arc<Self> {
+            let p = Self::default();
+            p.alive.lock().insert(pid);
+            p.starts.lock().insert(pid, start);
+            Arc::new(p)
+        }
+    }
+    impl crate::process_checkpoint::PidProbe for FakeProbe {
+        fn is_alive(&self, pid: i32) -> bool {
+            self.alive.lock().contains(&pid)
+        }
+        fn start_time(&self, pid: i32) -> Option<i64> {
+            self.starts.lock().get(&pid).copied()
+        }
+    }
+
+    fn registry_with_checkpoint(
+        probe: Arc<FakeProbe>,
+        store: Arc<crate::process_checkpoint::MemoryCheckpointStore>,
+    ) -> Arc<ProcessRegistry> {
+        Arc::new(
+            ProcessRegistry::with_parts(
+                Arc::new(FakeHost::default()),
+                Arc::new(PosixPtyHost::new()),
+                Arc::new(NoScope),
+                Arc::new(NoInterrupt),
+                FakeClock::new(1_000.0),
+                Arc::new(NoTransform),
+            )
+            .with_checkpoint(
+                store,
+                Arc::new(crate::process_checkpoint::NoRedact),
+                probe,
+            ),
+        )
+    }
+
+    #[test]
+    fn registry_write_checkpoint_persists_live_sessions() {
+        let probe = Arc::new(FakeProbe::default());
+        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::new());
+        let reg = registry_with_checkpoint(Arc::clone(&probe), store.clone());
+        let mut sess = session("proc_ck1");
+        sess.pid = Some(4242);
+        sess.host_start_time = Some(777);
+        reg.register(sess);
+
+        reg.write_checkpoint(vec![]);
+        let text = store.contents().expect("checkpoint written");
+        assert!(text.contains("proc_ck1"));
+        assert!(text.contains("4242"));
+        assert!(text.contains("777"));
+    }
+
+    #[test]
+    fn registry_checkpoint_omits_exited_sessions() {
+        let probe = Arc::new(FakeProbe::default());
+        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::new());
+        let reg = registry_with_checkpoint(probe, store.clone());
+        let h = reg.register(session("proc_ck2"));
+        h.finish(Some(0), "exited", "");
+        reg.move_to_finished(&h);
+        reg.write_checkpoint(vec![]);
+        assert_eq!(store.contents().unwrap(), "[]");
+    }
+
+    #[test]
+    fn registry_recover_adopts_a_matching_live_pid() {
+        let probe = FakeProbe::with(4242, 777);
+        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+            r#"[{"session_id":"proc_rec1","pid":4242,"pid_scope":"host","host_start_time":777,"command":"sleep 9","started_at":900.0}]"#,
+        ));
+        let reg = registry_with_checkpoint(probe, store);
+        assert_eq!(reg.recover_from_checkpoint(), 1);
+        let h = reg.get("proc_rec1").expect("adopted");
+        let snap = h.snapshot();
+        assert!(snap.detached, "a recovered session has no pipe");
+        assert_eq!(snap.pid, Some(4242));
+        // It is a live running entry, and poll reports the detached note.
+        let v = reg.poll("proc_rec1");
+        assert_eq!(v["status"], "running");
+        assert_eq!(v["detached"], true);
+    }
+
+    #[test]
+    fn registry_recover_skips_a_recycled_pid() {
+        // Alive, but the kernel start time no longer matches.
+        let probe = FakeProbe::with(4242, 999_999);
+        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+            r#"[{"session_id":"proc_rec2","pid":4242,"pid_scope":"host","host_start_time":777}]"#,
+        ));
+        let reg = registry_with_checkpoint(probe, store);
+        assert_eq!(reg.recover_from_checkpoint(), 0);
+        assert!(reg.get("proc_rec2").is_none());
+    }
+
+    #[test]
+    fn registry_recover_skips_a_dead_pid() {
+        let probe = Arc::new(FakeProbe::default());
+        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+            r#"[{"session_id":"proc_rec3","pid":4242,"pid_scope":"host","host_start_time":777}]"#,
+        ));
+        let reg = registry_with_checkpoint(probe, store);
+        assert_eq!(reg.recover_from_checkpoint(), 0);
+    }
+
+    #[test]
+    fn registry_recover_skips_sandbox_scope() {
+        let probe = FakeProbe::with(4242, 777);
+        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+            r#"[{"session_id":"proc_rec4","pid":4242,"pid_scope":"sandbox","host_start_time":777}]"#,
+        ));
+        let reg = registry_with_checkpoint(probe, store);
+        assert_eq!(reg.recover_from_checkpoint(), 0);
+    }
+
+    #[test]
+    fn registry_recover_is_idempotent_for_already_tracked_sessions() {
+        let probe = FakeProbe::with(4242, 777);
+        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+            r#"[{"session_id":"proc_rec5","pid":4242,"pid_scope":"host","host_start_time":777}]"#,
+        ));
+        let reg = registry_with_checkpoint(probe, store);
+        assert_eq!(reg.recover_from_checkpoint(), 1);
+        // A second pass must not adopt the same session twice.
+        assert_eq!(reg.recover_from_checkpoint(), 0);
+        assert_eq!(reg.count_running(), 1);
+    }
+
+    #[test]
+    fn registry_recover_reenqueues_pending_watchers() {
+        let probe = FakeProbe::with(4242, 777);
+        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+            r#"[{"session_id":"proc_rec6","pid":4242,"pid_scope":"host","host_start_time":777,
+                 "watcher_interval":30,"session_key":"sk","watcher_platform":"telegram"}]"#,
+        ));
+        let reg = registry_with_checkpoint(probe, store);
+        assert_eq!(reg.recover_from_checkpoint(), 1);
+        let watchers = reg.take_pending_watchers();
+        assert_eq!(watchers.len(), 1);
+        assert_eq!(watchers[0]["session_id"], "proc_rec6");
+        assert_eq!(watchers[0]["check_interval"], 30);
+        assert_eq!(watchers[0]["platform"], "telegram");
+        // Taking them drains the side-channel.
+        assert!(reg.take_pending_watchers().is_empty());
+    }
+
+    #[test]
+    fn registry_recover_without_a_checkpoint_is_a_noop() {
+        let probe = Arc::new(FakeProbe::default());
+        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::new());
+        let reg = registry_with_checkpoint(probe, store);
+        assert_eq!(reg.recover_from_checkpoint(), 0);
+    }
+
+    #[test]
+    fn registry_recover_tolerates_a_malformed_checkpoint() {
+        let probe = Arc::new(FakeProbe::default());
+        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+            "not json at all",
+        ));
+        let reg = registry_with_checkpoint(probe, store);
+        assert_eq!(reg.recover_from_checkpoint(), 0);
+    }
+
+    #[test]
+    fn default_checkpoint_path_is_profile_scoped() {
+        let p = default_checkpoint_path();
+        assert!(p.ends_with("processes.json"), "got {:?}", p);
+        // Never a hardcoded ~/.hermes outside the home resolution.
+        assert!(p.to_string_lossy().contains(".hermes") || std::env::var("HERMES_HOME").is_ok());
+    }
 
     // ── layer 2 wiring (registry <-> watch pipeline) ──
     #[test]
