@@ -87,7 +87,7 @@ async fn test_tool_registry_get_definitions() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 20);
+    assert_eq!(defs.len(), 21);
 
     let names: Vec<&str> = defs
         .iter()
@@ -105,6 +105,7 @@ async fn test_tool_registry_get_definitions() {
     assert!(names.contains(&"skill_view"));
     assert!(names.contains(&"todo_list"));
     assert!(names.contains(&"session_search"));
+    assert!(names.contains(&"memory"));
 
     for def in &defs {
         assert_eq!(def.get("type").and_then(|t| t.as_str()), Some("function"));
@@ -1013,7 +1014,7 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let registry = ToolRegistry::new();
     let defs = registry.get_definitions();
 
-    assert_eq!(defs.len(), 20);
+    assert_eq!(defs.len(), 21);
 
     let names: Vec<&str> = defs
         .iter()
@@ -1923,4 +1924,89 @@ async fn test_session_search_tool_integration() {
     let messages = scroll_val["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 3);
     assert_eq!(messages[1]["anchor"], true);
+}
+
+
+#[tokio::test]
+async fn test_memory_tool_integration() {
+    use hermes_gateway_core::memory::MemoryStore;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    let dir = std::env::temp_dir().join(format!("hermes_mem_int_{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Arc::new(MemoryStore::with_base_dir(dir.clone()));
+    let registry = ToolRegistry::new().with_memory_store(store.clone());
+
+    // 1. The memory definition is registered.
+    let defs = registry.get_definitions();
+    let mem_def = defs.iter().find(|d| d["function"]["name"] == "memory");
+    assert!(mem_def.is_some(), "memory definition must be registered in ToolRegistry");
+
+    // 2. Add a user-profile fact through ToolRegistry dispatch.
+    let add_user = ToolCall {
+        id: "call_mem_user".to_string(),
+        name: "memory".to_string(),
+        arguments: serde_json::json!({
+            "action": "add",
+            "target": "user",
+            "content": "Prefers terse, result-first replies."
+        }),
+    };
+    let res_user = registry.execute(&add_user).await;
+    assert!(res_user.success, "user add must succeed: {}", res_user.output);
+    let v_user: serde_json::Value = serde_json::from_str(&res_user.output).unwrap();
+    assert_eq!(v_user["success"], serde_json::json!(true));
+    assert_eq!(v_user["target"], serde_json::json!("user"));
+
+    // 3. Add an agent note on the other target through the same dispatch.
+    let add_mem = ToolCall {
+        id: "call_mem_agent".to_string(),
+        name: "memory".to_string(),
+        arguments: serde_json::json!({
+            "action": "add",
+            "target": "memory",
+            "content": "Gateway runs a single-node scheduler."
+        }),
+    };
+    let res_mem = registry.execute(&add_mem).await;
+    assert!(res_mem.success, "memory add must succeed: {}", res_mem.output);
+    let v_mem: serde_json::Value = serde_json::from_str(&res_mem.output).unwrap();
+    assert_eq!(v_mem["target"], serde_json::json!("memory"));
+    assert_eq!(v_mem["entry_count"], serde_json::json!(1));
+
+    // 4. The two targets are isolated and both persisted to disk in the delimiter format.
+    assert_eq!(store.entries_for("user"), vec!["Prefers terse, result-first replies.".to_string()]);
+    assert_eq!(store.entries_for("memory"), vec!["Gateway runs a single-node scheduler.".to_string()]);
+
+    // 5. A batch call frees room and adds atomically in one dispatch.
+    let batch = ToolCall {
+        id: "call_mem_batch".to_string(),
+        name: "memory".to_string(),
+        arguments: serde_json::json!({
+            "target": "memory",
+            "operations": [
+                {"action": "remove", "old_text": "single-node scheduler"},
+                {"action": "add", "content": "Gateway uses a single-node scheduler with disk persistence."}
+            ]
+        }),
+    };
+    let res_batch = registry.execute(&batch).await;
+    assert!(res_batch.success, "batch must succeed: {}", res_batch.output);
+    let v_batch: serde_json::Value = serde_json::from_str(&res_batch.output).unwrap();
+    assert_eq!(v_batch["success"], serde_json::json!(true));
+    assert_eq!(v_batch["entry_count"], serde_json::json!(1));
+    assert_eq!(
+        store.entries_for("memory"),
+        vec!["Gateway uses a single-node scheduler with disk persistence.".to_string()]
+    );
+
+    // 6. Old file format round-trips: reload from disk into a fresh store.
+    let reloaded = MemoryStore::with_base_dir(dir.clone());
+    assert_eq!(
+        reloaded.entries_for("memory"),
+        vec!["Gateway uses a single-node scheduler with disk persistence.".to_string()]
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

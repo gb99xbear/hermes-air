@@ -15,6 +15,7 @@ pub mod code_exec;
 pub mod reflection;
 pub mod turn_processor;
 pub mod delegation;
+pub mod memory;
 
 pub use commands::{
     build_model_keyboard, build_provider_keyboard, default_providers_list, handle_clear,
@@ -33,6 +34,7 @@ pub use tools::{ToolCall, ToolRegistry, ToolResult};
 pub use code_exec::{CodeExecutionEngine, TruncationMetadata, truncate_stdout_text, spill_full_stdout, head_tail_split};
 pub use web::{web_extract, web_search, WebExtractItem, WebExtractResponse, WebSearchResponse, WebSearchResultItem};
 pub use reflection::{BackgroundReviewConfig, BackgroundReviewEngine, LearningSignal, SKILL_REVIEW_PROMPT, MEMORY_REVIEW_PROMPT, COMBINED_REVIEW_PROMPT};
+pub use memory::{memory_tool, MemoryStore, get_definition as memory_definition};
 pub use turn_processor::{TurnProcessor, TurnEvent};
 pub use delegation::{DelegationAction, DelegationManager, SubagentRunOutcome, SubagentState, TaskSpec};
 
@@ -71,6 +73,7 @@ pub struct Gateway {
     llm_client: Arc<LlmClient>,
     provider_registry: Arc<ProviderRegistry>,
     tool_registry: Arc<ToolRegistry>,
+    memory_store: Arc<crate::memory::MemoryStore>,
     delegation_manager: Arc<DelegationManager>,
     cron_scheduler: Arc<hermes_cron::CronScheduler>,
     prompt_assembler: Arc<PromptAssembler>,
@@ -170,11 +173,15 @@ impl Gateway {
 
         let session_store_arc: Arc<Box<dyn SessionStore>> = Arc::new(session_store);
 
+        let memory_store = Arc::new(crate::memory::MemoryStore::with_base_dir(
+            crate::memory::default_base_dir(),
+        ));
         let tool_registry = Arc::new(
             ToolRegistry::new()
                 .with_cron_scheduler(cron_scheduler.clone())
                 .with_delegation_manager(delegation_manager.clone())
                 .with_session_store(session_store_arc.clone())
+                .with_memory_store(memory_store.clone())
         );
         let prompt_assembler = Arc::new(PromptAssembler::new());
 
@@ -188,6 +195,7 @@ impl Gateway {
             llm_client,
             provider_registry,
             tool_registry,
+            memory_store,
             delegation_manager: delegation_manager.clone(),
             cron_scheduler,
             prompt_assembler,

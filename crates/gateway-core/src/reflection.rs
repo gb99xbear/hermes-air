@@ -55,6 +55,7 @@ pub struct BackgroundReviewEngine {
     config: BackgroundReviewConfig,
     llm_client: Arc<LlmClient>,
     skill_registry: Arc<SkillRegistry>,
+    memory_store: Option<Arc<crate::memory::MemoryStore>>,
     turn_counter: AtomicUsize,
     review_lock: Arc<Mutex<()>>,
 }
@@ -69,6 +70,7 @@ impl BackgroundReviewEngine {
             config,
             llm_client,
             skill_registry,
+            memory_store: None,
             turn_counter: AtomicUsize::new(0),
             review_lock: Arc::new(Mutex::new(())),
         }
@@ -80,6 +82,31 @@ impl BackgroundReviewEngine {
 
     pub fn skill_registry(&self) -> Arc<SkillRegistry> {
         self.skill_registry.clone()
+    }
+
+    /// Attach a memory store so reflection can persist extracted learnings.
+    pub fn with_memory_store(mut self, memory_store: Arc<crate::memory::MemoryStore>) -> Self {
+        self.memory_store = Some(memory_store);
+        self
+    }
+
+    /// Persist a reflection output as a durable memory entry through the store.
+    /// Returns the store's JSON result, or None when there is nothing to save.
+    pub fn persist_memory_learning(
+        memory_store: &crate::memory::MemoryStore,
+        output: &str,
+    ) -> Option<serde_json::Value> {
+        let trimmed = output.trim();
+        if trimmed.is_empty() || trimmed.contains("Nothing to save.") {
+            return None;
+        }
+        let result = memory_store.add("memory", trimmed);
+        if result.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+            info!("Background reflection persisted learning to memory ({} chars)", trimmed.chars().count());
+        } else {
+            warn!("Background reflection could not persist learning to memory: {:?}", result.get("error"));
+        }
+        Some(result)
     }
 
     /// Detect learning signals from message history heuristics
@@ -265,6 +292,9 @@ impl BackgroundReviewEngine {
                 } else {
                     info!("Background review extracted reflection for session {}: {}", session_id, trimmed);
                     Self::persist_extracted_learnings(&self.skill_registry, trimmed).await;
+                    if let Some(store) = &self.memory_store {
+                        Self::persist_memory_learning(store, trimmed);
+                    }
                 }
 
                 Some(text)
@@ -422,6 +452,33 @@ mod tests {
             ChatMessage::user("Thanks!".to_string()),
         ];
         assert!(!engine.should_review(&messages_no_signal));
+    }
+
+    #[tokio::test]
+    async fn test_reflection_persists_learning_through_memory_store() {
+        use crate::memory::MemoryStore;
+        let dir = std::env::temp_dir().join(format!("hermes_refl_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = MemoryStore::with_base_dir(dir.clone());
+
+        // A real learning signal must exist before reflection persists anything.
+        let messages = vec![
+            ChatMessage::user("Stop doing that, this is too verbose!".to_string()),
+        ];
+        let signals = BackgroundReviewEngine::detect_learning_signals(&messages);
+        assert!(!signals.is_empty());
+
+        // Reflection output (as a review would produce) is persisted as a memory entry.
+        let output = "Preference: keep replies terse; lead with the result, drop preamble.";
+        let result = BackgroundReviewEngine::persist_memory_learning(&store, output).unwrap();
+        assert_eq!(result["success"], serde_json::json!(true));
+        assert_eq!(store.entries_for("memory"), vec![output.to_string()]);
+
+        // \"Nothing to save.\" is a no-op.
+        assert!(BackgroundReviewEngine::persist_memory_learning(&store, "Nothing to save.").is_none());
+        assert_eq!(store.entries_for("memory").len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

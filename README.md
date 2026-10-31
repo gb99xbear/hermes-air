@@ -41,7 +41,7 @@ The original [Nous Research Hermes Agent](https://github.com/NousResearch/hermes
 
 ---
 
-## 🛠️ Built-in Tools Inventory (20 Core Tools)
+## 🛠️ Built-in Tools Inventory (21 Core Tools)
 
 Hermes Air exposes a comprehensive OpenAI function-calling toolset:
 
@@ -65,6 +65,7 @@ Hermes Air exposes a comprehensive OpenAI function-calling toolset:
 18. `cronjob_manage`: Scheduled autonomous job management with cron expression parser.
 19. `delegate_task`: Autonomous multi-agent task spawning, steering, and coordination.
 20. `session_search`: 1-to-1 long-term conversation recall across 4 operational shapes (discovery, browse, read, scroll).
+21. `memory`: Persistent curated memory store (`MEMORY.md` agent notes + `USER.md` user profile) with add/replace/remove and atomic batch operations against a final char budget.
 
 ---
 
@@ -111,7 +112,7 @@ Hermes Air includes a comprehensive automated test suite verifying its subsystem
 ```bash
 cargo test --workspace
 ```
-*154 passing unit and integration tests with zero failures.*
+*166 passing unit and integration tests with zero failures.*
 
 ---
 

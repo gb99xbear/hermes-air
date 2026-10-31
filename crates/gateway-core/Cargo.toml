@@ -26,6 +26,7 @@ time = { workspace = true }
 url = "2.5"
 urlencoding = "2.1"
 dashmap = { workspace = true }
+parking_lot = { workspace = true }
 tokio-util = "0.7"
 
 tokio-tungstenite = { workspace = true }

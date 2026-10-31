@@ -67,6 +67,7 @@ pub struct ToolRegistry {
     pub cron_scheduler: Option<Arc<hermes_cron::CronScheduler>>,
     pub delegation_manager: Option<Arc<crate::delegation::DelegationManager>>,
     pub session_search: Option<Arc<crate::session_search::SessionSearchEngine>>,
+    pub memory_store: Arc<crate::memory::MemoryStore>,
 }
 
 impl Default for ToolRegistry {
@@ -84,6 +85,7 @@ impl ToolRegistry {
             cron_scheduler: None,
             delegation_manager: None,
             session_search: None,
+            memory_store: Arc::new(crate::memory::MemoryStore::new()),
         }
     }
 
@@ -95,11 +97,17 @@ impl ToolRegistry {
             cron_scheduler: None,
             delegation_manager: None,
             session_search: None,
+            memory_store: Arc::new(crate::memory::MemoryStore::new()),
         }
     }
 
     pub fn with_session_search(mut self, session_search: Arc<crate::session_search::SessionSearchEngine>) -> Self {
         self.session_search = Some(session_search);
+        self
+    }
+
+    pub fn with_memory_store(mut self, memory_store: Arc<crate::memory::MemoryStore>) -> Self {
+        self.memory_store = memory_store;
         self
     }
 
@@ -695,6 +703,7 @@ impl ToolRegistry {
                     }
                 }
             }),
+            crate::memory::get_definition(),
             crate::session_search::SessionSearchEngine::get_definition(),
         ]
     }
@@ -720,6 +729,7 @@ impl ToolRegistry {
             "cronjob_manage" => self.execute_cronjob_manage(call).await,
             "execute_code" => self.execute_code(call).await,
             "session_search" => self.execute_session_search(call).await,
+            "memory" => self.execute_memory(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown core tool: {}", other),
@@ -751,6 +761,7 @@ impl ToolRegistry {
             "execute_code" => self.execute_code(call).await,
             "delegate_task" => self.execute_delegate_task(call).await,
             "session_search" => self.execute_session_search(call).await,
+            "memory" => self.execute_memory(call).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown tool: {}", other),
@@ -1767,6 +1778,7 @@ impl ToolRegistry {
             cron_scheduler: self.cron_scheduler.clone(),
             delegation_manager: self.delegation_manager.clone(),
             session_search: self.session_search.clone(),
+            memory_store: self.memory_store.clone(),
         });
 
         match self.code_engine.execute(session_id, code, reset, None, Some(tool_reg)).await {
@@ -2489,6 +2501,7 @@ impl ToolRegistry {
                     cron_scheduler: self.cron_scheduler.clone(),
                     delegation_manager: self.delegation_manager.clone(),
                     session_search: self.session_search.clone(),
+                    memory_store: self.memory_store.clone(),
                 });
 
                 let res = manager.spawn_tasks(tasks, parent_session_id, llm_client, self_registry).await;
@@ -2536,6 +2549,39 @@ impl ToolRegistry {
                 }).to_string(),
                 success: false,
             }
+        }
+    }
+
+    pub async fn execute_memory(&self, call: &ToolCall) -> ToolResult {
+        use serde_json::Value;
+        let args = &call.arguments;
+        let get_str = |k: &str| -> Option<String> {
+            args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string())
+        };
+        let operations: Option<Vec<Value>> = args
+            .get("operations")
+            .and_then(|v| v.as_array())
+            .cloned();
+
+        let output = crate::memory::memory_tool(
+            &self.memory_store,
+            get_str("action").as_deref(),
+            get_str("target").as_deref(),
+            get_str("content").as_deref(),
+            get_str("old_text").as_deref(),
+            get_str("new_text").as_deref(),
+            operations.as_ref(),
+        );
+
+        let success = serde_json::from_str::<Value>(&output)
+            .ok()
+            .and_then(|v| v.get("success").and_then(|s| s.as_bool()))
+            .unwrap_or(false);
+
+        ToolResult {
+            tool_call_id: call.id.clone(),
+            output,
+            success,
         }
     }
 
