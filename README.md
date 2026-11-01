@@ -1,5 +1,7 @@
 # Hermes Air 🍃
 
+[![CI](https://github.com/gb99xbear/hermes-air/actions/workflows/ci.yml/badge.svg)](https://github.com/gb99xbear/hermes-air/actions/workflows/ci.yml)
+
 > **The Featherlight, Blazing-Fast Rust Gateway Core for Autonomous AI Agents**
 
 Hermes Air is a high-performance, native Rust re-implementation of the **Hermes Agent Gateway Core**. Designed with an architecture philosophy inspired by the Apple "Air" ethos—ultra-lightweight, near-zero memory footprint (~27.4MB RSS measured vs ~150-500MB+ in Python), blazing fast asynchronous concurrency, and 1-to-1 parity on the core gateway, tool execution, and messaging pipelines.
@@ -69,6 +71,7 @@ Hermes Air exposes a comprehensive OpenAI function-calling toolset:
 22. `skill_manage`: Agent-managed skill creation and editing (create/edit/patch/delete/write_file/remove_file) with atomic batch rollback and delete guards.
 23. `clarify`: Structured multiple-choice / open-ended questions to the user, single or batched (up to 5), with a platform-injected UI seam.
 24. `x_search`: Read-only X (Twitter) post search via xAI's built-in x_search Responses tool, with handle/date filters and degraded-answer detection.
+25. `process_manage`: Background process supervisor for poll/wait/kill/handoff across terminal sessions, with watch patterns and PID-safe crash recovery.
 ---
 
 ## 🚀 Quick Start (One-Line Installer)
@@ -114,7 +117,10 @@ Hermes Air includes a comprehensive automated test suite verifying its subsystem
 ```bash
 cargo test --workspace
 ```
-*526 passing unit and integration tests with zero failures.*
+*531 passing unit and integration tests with zero failures.*
+
+CI runs the same suite on every push and PR to `main`, together with a
+`cargo fmt --all --check` formatting gate and an advisory clippy job.
 
 ---
 
