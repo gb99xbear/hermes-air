@@ -1,11 +1,11 @@
-use hermes_skills::SkillRegistry;
-use std::sync::Arc;
 use crate::fuzzy_match::{
     format_no_match_hint, fuzzy_find_and_replace, is_already_applied, unified_diff,
 };
+use hermes_skills::SkillRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 use tracing::{error, info, warn};
@@ -104,7 +104,7 @@ impl ToolRegistry {
             )),
             clarify_ui: None,
             xai_credentials: None,
-           process_registry: None,
+            process_registry: None,
             http_client: reqwest::Client::new(),
         }
     }
@@ -123,12 +123,15 @@ impl ToolRegistry {
             )),
             clarify_ui: None,
             xai_credentials: None,
-           process_registry: None,
+            process_registry: None,
             http_client: reqwest::Client::new(),
         }
     }
 
-    pub fn with_session_search(mut self, session_search: Arc<crate::session_search::SessionSearchEngine>) -> Self {
+    pub fn with_session_search(
+        mut self,
+        session_search: Arc<crate::session_search::SessionSearchEngine>,
+    ) -> Self {
         self.session_search = Some(session_search);
         self
     }
@@ -138,7 +141,10 @@ impl ToolRegistry {
         self
     }
 
-    pub fn with_skill_manager(mut self, skill_manager: Arc<crate::skill_manager::SkillManager>) -> Self {
+    pub fn with_skill_manager(
+        mut self,
+        skill_manager: Arc<crate::skill_manager::SkillManager>,
+    ) -> Self {
         self.skill_manager = skill_manager;
         self
     }
@@ -159,16 +165,18 @@ impl ToolRegistry {
     }
 
     /// Attach the background-process registry the `process_manage` tool drives.
-    pub fn with_process_registry(
-        mut self,
-        registry: Arc<crate::process::ProcessRegistry>,
-    ) -> Self {
+    pub fn with_process_registry(mut self, registry: Arc<crate::process::ProcessRegistry>) -> Self {
         self.process_registry = Some(registry);
         self
     }
 
-    pub fn with_session_store(mut self, session_store: Arc<Box<dyn hermes_session_store::SessionStore>>) -> Self {
-        self.session_search = Some(Arc::new(crate::session_search::SessionSearchEngine::new(session_store)));
+    pub fn with_session_store(
+        mut self,
+        session_store: Arc<Box<dyn hermes_session_store::SessionStore>>,
+    ) -> Self {
+        self.session_search = Some(Arc::new(crate::session_search::SessionSearchEngine::new(
+            session_store,
+        )));
         self
     }
 
@@ -177,7 +185,10 @@ impl ToolRegistry {
         self
     }
 
-    pub fn with_delegation_manager(mut self, delegation_manager: Arc<crate::delegation::DelegationManager>) -> Self {
+    pub fn with_delegation_manager(
+        mut self,
+        delegation_manager: Arc<crate::delegation::DelegationManager>,
+    ) -> Self {
         self.delegation_manager = Some(delegation_manager);
         self
     }
@@ -1025,7 +1036,10 @@ impl ToolRegistry {
         let truncated = total_lines > end_idx || truncated_by_bytes;
 
         let mut res_map = serde_json::Map::new();
-        res_map.insert("content".to_string(), serde_json::Value::String(output_content));
+        res_map.insert(
+            "content".to_string(),
+            serde_json::Value::String(output_content),
+        );
         res_map.insert(
             "total_lines".to_string(),
             serde_json::Value::Number(serde_json::Number::from(total_lines)),
@@ -1205,7 +1219,11 @@ impl ToolRegistry {
         };
 
         let has_bom = raw_content.starts_with('\u{feff}');
-        let content = if has_bom { &raw_content[3..] } else { &raw_content };
+        let content = if has_bom {
+            &raw_content[3..]
+        } else {
+            &raw_content
+        };
 
         // Check is_already_applied first
         if is_already_applied(content, old_string, new_string) {
@@ -1360,11 +1378,8 @@ impl ToolRegistry {
                         .map(|s| s.to_string())
                         .collect();
                     let total = all_files.len();
-                    let paged_files: Vec<String> = all_files
-                        .into_iter()
-                        .skip(offset)
-                        .take(limit)
-                        .collect();
+                    let paged_files: Vec<String> =
+                        all_files.into_iter().skip(offset).take(limit).collect();
 
                     let res = serde_json::json!({
                         "total_count": total,
@@ -1408,7 +1423,8 @@ impl ToolRegistry {
             match cmd.output().await {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+                    let lines: Vec<&str> =
+                        stdout.lines().filter(|l| !l.trim().is_empty()).collect();
 
                     if output_mode == "files_only" {
                         let total = lines.len();
@@ -1474,11 +1490,8 @@ impl ToolRegistry {
                     }
 
                     let total = matches.len();
-                    let paged_matches: Vec<SearchMatch> = matches
-                        .into_iter()
-                        .skip(offset)
-                        .take(limit)
-                        .collect();
+                    let paged_matches: Vec<SearchMatch> =
+                        matches.into_iter().skip(offset).take(limit).collect();
 
                     let res = serde_json::json!({
                         "total_count": total,
@@ -1514,13 +1527,18 @@ impl ToolRegistry {
                     output: serde_json::json!({
                         "success": false,
                         "error": "Missing query parameter for web_search"
-                    }).to_string(),
+                    })
+                    .to_string(),
                     success: false,
                 };
             }
         };
 
-        let limit = call.arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+        let limit = call
+            .arguments
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5) as usize;
 
         match crate::web::web_search(query, limit).await {
             Ok(resp) => ToolResult {
@@ -1533,7 +1551,8 @@ impl ToolRegistry {
                 output: serde_json::json!({
                     "success": false,
                     "error": e.to_string()
-                }).to_string(),
+                })
+                .to_string(),
                 success: false,
             },
         }
@@ -1566,7 +1585,11 @@ impl ToolRegistry {
             }
         };
 
-        let char_limit = call.arguments.get("char_limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let char_limit = call
+            .arguments
+            .get("char_limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
 
         match crate::web::web_extract(&urls, char_limit).await {
             Ok(resp) => ToolResult {
@@ -1579,12 +1602,12 @@ impl ToolRegistry {
                 output: serde_json::json!({
                     "success": false,
                     "error": e.to_string()
-                }).to_string(),
+                })
+                .to_string(),
                 success: false,
             },
         }
     }
-
 
     pub async fn execute_skills_list(&self, call: &ToolCall) -> ToolResult {
         let category = call.arguments.get("category").and_then(|v| v.as_str());
@@ -1607,7 +1630,8 @@ impl ToolRegistry {
                     output: serde_json::json!({
                         "success": false,
                         "error": "Missing 'name' argument for skill_view"
-                    }).to_string(),
+                    })
+                    .to_string(),
                     success: false,
                 };
             }
@@ -1633,7 +1657,8 @@ impl ToolRegistry {
                     output: serde_json::json!({
                         "success": false,
                         "error": "Missing required 'url' parameter for browser_navigate"
-                    }).to_string(),
+                    })
+                    .to_string(),
                     success: false,
                 };
             }
@@ -1650,7 +1675,8 @@ impl ToolRegistry {
                 output: serde_json::json!({
                     "success": false,
                     "error": e.to_string()
-                }).to_string(),
+                })
+                .to_string(),
                 success: false,
             },
         }
@@ -1668,7 +1694,8 @@ impl ToolRegistry {
                 output: serde_json::json!({
                     "success": false,
                     "error": e.to_string()
-                }).to_string(),
+                })
+                .to_string(),
                 success: false,
             },
         }
@@ -1690,7 +1717,8 @@ impl ToolRegistry {
                 output: serde_json::json!({
                     "success": false,
                     "error": e.to_string()
-                }).to_string(),
+                })
+                .to_string(),
                 success: false,
             },
         }
@@ -1705,7 +1733,8 @@ impl ToolRegistry {
                     output: serde_json::json!({
                         "success": false,
                         "error": "Missing required 'selector' parameter for browser_type"
-                    }).to_string(),
+                    })
+                    .to_string(),
                     success: false,
                 };
             }
@@ -1719,7 +1748,8 @@ impl ToolRegistry {
                     output: serde_json::json!({
                         "success": false,
                         "error": "Missing required 'text' parameter for browser_type"
-                    }).to_string(),
+                    })
+                    .to_string(),
                     success: false,
                 };
             }
@@ -1736,7 +1766,8 @@ impl ToolRegistry {
                 output: serde_json::json!({
                     "success": false,
                     "error": e.to_string()
-                }).to_string(),
+                })
+                .to_string(),
                 success: false,
             },
         }
@@ -1744,7 +1775,11 @@ impl ToolRegistry {
 
     async fn execute_browser_take_screenshot(&self, call: &ToolCall) -> ToolResult {
         let format = call.arguments.get("format").and_then(|v| v.as_str());
-        let quality = call.arguments.get("quality").and_then(|v| v.as_u64()).map(|q| q as u32);
+        let quality = call
+            .arguments
+            .get("quality")
+            .and_then(|v| v.as_u64())
+            .map(|q| q as u32);
 
         match crate::browser::browser_take_screenshot(format, quality).await {
             Ok(res) => ToolResult {
@@ -1757,7 +1792,8 @@ impl ToolRegistry {
                 output: serde_json::json!({
                     "success": false,
                     "error": e.to_string()
-                }).to_string(),
+                })
+                .to_string(),
                 success: false,
             },
         }
@@ -1772,7 +1808,8 @@ impl ToolRegistry {
                     output: serde_json::json!({
                         "success": false,
                         "error": "Missing required 'code' parameter for browser_exec"
-                    }).to_string(),
+                    })
+                    .to_string(),
                     success: false,
                 };
             }
@@ -1789,7 +1826,8 @@ impl ToolRegistry {
                 output: serde_json::json!({
                     "success": false,
                     "error": e.to_string()
-                }).to_string(),
+                })
+                .to_string(),
                 success: false,
             },
         }
@@ -1835,8 +1873,14 @@ impl ToolRegistry {
             }
         };
 
-        let reset = call.arguments.get("reset").and_then(|v| v.as_bool()).unwrap_or(false);
-        let session_id = call.arguments.get("session_id")
+        let reset = call
+            .arguments
+            .get("reset")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let session_id = call
+            .arguments
+            .get("session_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
 
@@ -1853,16 +1897,21 @@ impl ToolRegistry {
             skill_manager: self.skill_manager.clone(),
             clarify_ui: self.clarify_ui.clone(),
             xai_credentials: self.xai_credentials.clone(),
-           process_registry: self.process_registry.clone(),
+            process_registry: self.process_registry.clone(),
             http_client: self.http_client.clone(),
         });
 
-        match self.code_engine.execute(session_id, code, reset, None, Some(tool_reg)).await {
+        match self
+            .code_engine
+            .execute(session_id, code, reset, None, Some(tool_reg))
+            .await
+        {
             Ok(res_val) => {
                 let success = res_val.get("status").and_then(|v| v.as_str()) == Some("success");
                 ToolResult {
                     tool_call_id: call.id.clone(),
-                    output: serde_json::to_string_pretty(&res_val).unwrap_or_else(|_| "{}".to_string()),
+                    output: serde_json::to_string_pretty(&res_val)
+                        .unwrap_or_else(|_| "{}".to_string()),
                     success,
                 }
             }
@@ -1871,7 +1920,8 @@ impl ToolRegistry {
                 output: serde_json::json!({
                     "status": "error",
                     "error": e
-                }).to_string(),
+                })
+                .to_string(),
                 success: false,
             },
         }
@@ -1950,15 +2000,29 @@ impl ToolRegistry {
                     }
                 };
 
-                let prompt = call.arguments.get("prompt").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let prompt = call
+                    .arguments
+                    .get("prompt")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let skills = call.arguments.get("skills").and_then(|v| {
                     v.as_array().map(|arr| {
-                        arr.iter().filter_map(|s| s.as_str().map(|str_val| str_val.to_string())).collect()
+                        arr.iter()
+                            .filter_map(|s| s.as_str().map(|str_val| str_val.to_string()))
+                            .collect()
                     })
                 });
 
-                let no_agent = call.arguments.get("no_agent").and_then(|v| v.as_bool()).unwrap_or(false);
-                let script = call.arguments.get("script").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let no_agent = call
+                    .arguments
+                    .get("no_agent")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let script = call
+                    .arguments
+                    .get("script")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
                 if no_agent {
                     if script.is_none() {
@@ -1972,7 +2036,12 @@ impl ToolRegistry {
                             success: false,
                         };
                     }
-                } else if prompt.is_none() && skills.as_ref().map(|s: &Vec<String>| s.is_empty()).unwrap_or(true) {
+                } else if prompt.is_none()
+                    && skills
+                        .as_ref()
+                        .map(|s: &Vec<String>| s.is_empty())
+                        .unwrap_or(true)
+                {
                     return ToolResult {
                         tool_call_id: call.id.clone(),
                         output: serde_json::json!({
@@ -1987,19 +2056,55 @@ impl ToolRegistry {
                 let params = hermes_cron::CreateJobParams {
                     schedule,
                     prompt,
-                    name: call.arguments.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    session_id: call.arguments.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    deliver: call.arguments.get("deliver").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    failure_deliver: call.arguments.get("failure_deliver").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    name: call
+                        .arguments
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    session_id: call
+                        .arguments
+                        .get("session_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    deliver: call
+                        .arguments
+                        .get("deliver")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    failure_deliver: call
+                        .arguments
+                        .get("failure_deliver")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                     skills,
                     paused: call.arguments.get("paused").and_then(|v| v.as_bool()),
-                    paused_reason: call.arguments.get("paused_reason").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    paused_reason: call
+                        .arguments
+                        .get("paused_reason")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                     pinned: call.arguments.get("pinned").and_then(|v| v.as_bool()),
-                    model: call.arguments.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    provider: call.arguments.get("provider").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    base_url: call.arguments.get("base_url").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    model: call
+                        .arguments
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    provider: call
+                        .arguments
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    base_url: call
+                        .arguments
+                        .get("base_url")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                     script,
-                    monitor: call.arguments.get("monitor").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    monitor: call
+                        .arguments
+                        .get("monitor")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                     no_agent: Some(no_agent),
                     repeat: call.arguments.get("repeat").and_then(|v| {
                         if let Some(i) = v.as_i64() {
@@ -2060,7 +2165,8 @@ impl ToolRegistry {
                         });
                         ToolResult {
                             tool_call_id: call.id.clone(),
-                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            output: serde_json::to_string_pretty(&res)
+                                .unwrap_or_else(|_| res.to_string()),
                             success: true,
                         }
                     }
@@ -2077,38 +2183,41 @@ impl ToolRegistry {
             }
             "list" => {
                 let jobs = scheduler.list_jobs().await;
-                let formatted_jobs: Vec<serde_json::Value> = jobs.iter().map(|job| {
-                    let prompt_preview = if job.prompt.len() > 100 {
-                        format!("{}...", &job.prompt[..100])
-                    } else {
-                        job.prompt.clone()
-                    };
-                    serde_json::json!({
-                        "job_id": job.id,
-                        "name": job.name,
-                        "skill": job.skill,
-                        "skills": job.skills,
-                        "prompt_preview": prompt_preview,
-                        "model": job.model,
-                        "provider": job.provider,
-                        "pinned": job.pinned,
-                        "base_url": job.base_url,
-                        "schedule": job.schedule_display,
-                        "repeat": job.repeat,
-                        "deliver": job.deliver,
-                        "next_run_at": job.next_run_at,
-                        "last_run_at": job.last_run_at,
-                        "last_status": job.last_status,
-                        "last_delivery_error": null,
-                        "last_delivery_unverified": null,
-                        "last_fire_error": null,
-                        "last_error": job.last_error,
-                        "enabled": job.enabled,
-                        "state": job.state,
-                        "paused_at": job.paused_at,
-                        "paused_reason": job.paused_reason,
+                let formatted_jobs: Vec<serde_json::Value> = jobs
+                    .iter()
+                    .map(|job| {
+                        let prompt_preview = if job.prompt.len() > 100 {
+                            format!("{}...", &job.prompt[..100])
+                        } else {
+                            job.prompt.clone()
+                        };
+                        serde_json::json!({
+                            "job_id": job.id,
+                            "name": job.name,
+                            "skill": job.skill,
+                            "skills": job.skills,
+                            "prompt_preview": prompt_preview,
+                            "model": job.model,
+                            "provider": job.provider,
+                            "pinned": job.pinned,
+                            "base_url": job.base_url,
+                            "schedule": job.schedule_display,
+                            "repeat": job.repeat,
+                            "deliver": job.deliver,
+                            "next_run_at": job.next_run_at,
+                            "last_run_at": job.last_run_at,
+                            "last_status": job.last_status,
+                            "last_delivery_error": null,
+                            "last_delivery_unverified": null,
+                            "last_fire_error": null,
+                            "last_error": job.last_error,
+                            "enabled": job.enabled,
+                            "state": job.state,
+                            "paused_at": job.paused_at,
+                            "paused_reason": job.paused_reason,
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 let res = serde_json::json!({
                     "success": true,
@@ -2141,23 +2250,65 @@ impl ToolRegistry {
 
                 let params = hermes_cron::UpdateJobParams {
                     job_id: job_id.clone(),
-                    prompt: call.arguments.get("prompt").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    name: call.arguments.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    schedule: call.arguments.get("schedule").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    deliver: call.arguments.get("deliver").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    failure_deliver: call.arguments.get("failure_deliver").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    prompt: call
+                        .arguments
+                        .get("prompt")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    name: call
+                        .arguments
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    schedule: call
+                        .arguments
+                        .get("schedule")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    deliver: call
+                        .arguments
+                        .get("deliver")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    failure_deliver: call
+                        .arguments
+                        .get("failure_deliver")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                     skills: call.arguments.get("skills").and_then(|v| {
                         v.as_array().map(|arr| {
-                            arr.iter().filter_map(|s| s.as_str().map(|str_val| str_val.to_string())).collect()
+                            arr.iter()
+                                .filter_map(|s| s.as_str().map(|str_val| str_val.to_string()))
+                                .collect()
                         })
                     }),
                     paused: call.arguments.get("paused").and_then(|v| v.as_bool()),
                     pinned: call.arguments.get("pinned").and_then(|v| v.as_bool()),
-                    model: call.arguments.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    provider: call.arguments.get("provider").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    base_url: call.arguments.get("base_url").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    script: call.arguments.get("script").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    monitor: call.arguments.get("monitor").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    model: call
+                        .arguments
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    provider: call
+                        .arguments
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    base_url: call
+                        .arguments
+                        .get("base_url")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    script: call
+                        .arguments
+                        .get("script")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    monitor: call
+                        .arguments
+                        .get("monitor")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                     no_agent: call.arguments.get("no_agent").and_then(|v| v.as_bool()),
                     repeat: call.arguments.get("repeat").and_then(|v| {
                         if let Some(i) = v.as_i64() {
@@ -2206,7 +2357,8 @@ impl ToolRegistry {
                         });
                         ToolResult {
                             tool_call_id: call.id.clone(),
-                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            output: serde_json::to_string_pretty(&res)
+                                .unwrap_or_else(|_| res.to_string()),
                             success: true,
                         }
                     }
@@ -2237,7 +2389,12 @@ impl ToolRegistry {
                     }
                 };
 
-                let reason = call.arguments.get("reason").or_else(|| call.arguments.get("paused_reason")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let reason = call
+                    .arguments
+                    .get("reason")
+                    .or_else(|| call.arguments.get("paused_reason"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
                 match scheduler.pause_job(job_id, reason).await {
                     Ok(job) => {
@@ -2277,7 +2434,8 @@ impl ToolRegistry {
                         });
                         ToolResult {
                             tool_call_id: call.id.clone(),
-                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            output: serde_json::to_string_pretty(&res)
+                                .unwrap_or_else(|_| res.to_string()),
                             success: true,
                         }
                     }
@@ -2346,7 +2504,8 @@ impl ToolRegistry {
                         });
                         ToolResult {
                             tool_call_id: call.id.clone(),
-                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            output: serde_json::to_string_pretty(&res)
+                                .unwrap_or_else(|_| res.to_string()),
                             success: true,
                         }
                     }
@@ -2390,7 +2549,8 @@ impl ToolRegistry {
                         });
                         ToolResult {
                             tool_call_id: call.id.clone(),
-                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            output: serde_json::to_string_pretty(&res)
+                                .unwrap_or_else(|_| res.to_string()),
                             success: true,
                         }
                     }
@@ -2421,7 +2581,11 @@ impl ToolRegistry {
                     }
                 };
 
-                let extra_prompt = call.arguments.get("prompt").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let extra_prompt = call
+                    .arguments
+                    .get("prompt")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
                 match scheduler.run_job_now(job_id, extra_prompt).await {
                     Ok(job) => {
@@ -2467,7 +2631,8 @@ impl ToolRegistry {
 
                         ToolResult {
                             tool_call_id: call.id.clone(),
-                            output: serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string()),
+                            output: serde_json::to_string_pretty(&res)
+                                .unwrap_or_else(|_| res.to_string()),
                             success: true,
                         }
                     }
@@ -2509,7 +2674,9 @@ impl ToolRegistry {
             }
         };
 
-        let action_str = call.arguments.get("action")
+        let action_str = call
+            .arguments
+            .get("action")
             .and_then(|v| v.as_str())
             .unwrap_or("spawn")
             .trim()
@@ -2628,7 +2795,6 @@ impl ToolRegistry {
         }
     }
 
-
     pub async fn execute_session_search(&self, call: &ToolCall) -> ToolResult {
         if let Some(engine) = &self.session_search {
             match engine.execute(&call.arguments).await {
@@ -2642,7 +2808,8 @@ impl ToolRegistry {
                     output: serde_json::json!({
                         "success": false,
                         "error": e
-                    }).to_string(),
+                    })
+                    .to_string(),
                     success: false,
                 },
             }
@@ -2652,7 +2819,8 @@ impl ToolRegistry {
                 output: serde_json::json!({
                     "success": false,
                     "error": "SessionSearchEngine is not configured on this ToolRegistry"
-                }).to_string(),
+                })
+                .to_string(),
                 success: false,
             }
         }
@@ -2664,10 +2832,8 @@ impl ToolRegistry {
         let get_str = |k: &str| -> Option<String> {
             args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string())
         };
-        let operations: Option<Vec<Value>> = args
-            .get("operations")
-            .and_then(|v| v.as_array())
-            .cloned();
+        let operations: Option<Vec<Value>> =
+            args.get("operations").and_then(|v| v.as_array()).cloned();
 
         let output = crate::memory::memory_tool(
             &self.memory_store,
@@ -2697,10 +2863,8 @@ impl ToolRegistry {
         let get_str = |k: &str| -> Option<String> {
             args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string())
         };
-        let operations: Option<Vec<Value>> = args
-            .get("operations")
-            .and_then(|v| v.as_array())
-            .cloned();
+        let operations: Option<Vec<Value>> =
+            args.get("operations").and_then(|v| v.as_array()).cloned();
         let replace_all = args
             .get("replace_all")
             .and_then(|v| v.as_bool())
@@ -2737,7 +2901,10 @@ impl ToolRegistry {
         use serde_json::Value;
         let args = &call.arguments;
         let get_str = |k: &str| -> String {
-            args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+            args.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
         };
         let handles = |k: &str| -> Option<Vec<String>> {
             args.get(k).and_then(|v| v.as_array()).map(|a| {
@@ -2888,5 +3055,4 @@ impl ToolRegistry {
             success,
         }
     }
-
 }

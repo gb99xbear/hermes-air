@@ -1,22 +1,25 @@
 // hermes-platform-slack - Slack Socket Mode + Web API adapter
-use hermes_platform_adapter::{PlatformAdapter, BaseAdapter, BasePlatformConfig};
-use hermes_protocol::{
-    Platform, PlatformEvent, PlatformError, DeliveryReceipt, DeliveryStatus,
-    IncomingMessage, OutgoingMessage, MessageId, MessageContent,
-};
 use async_trait::async_trait;
+use futures::{SinkExt, StreamExt};
+use hermes_platform_adapter::{BaseAdapter, BasePlatformConfig, PlatformAdapter};
+use hermes_protocol::{
+    DeliveryReceipt, DeliveryStatus, IncomingMessage, MessageContent, MessageId, OutgoingMessage,
+    Platform, PlatformError, PlatformEvent,
+};
+use hex;
+use hmac::{Hmac, Mac};
+use reqwest::{
+    header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
+    Client,
+};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock, Mutex};
-use reqwest::{Client, header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE}};
-use tracing::{info, error};
-use uuid::Uuid;
 use time::OffsetDateTime;
-use futures::{StreamExt, SinkExt};
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use hex;
+use tokio::sync::{mpsc, Mutex, RwLock};
+use tracing::{error, info};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlackConfig {
@@ -144,7 +147,8 @@ pub struct SlackAdapter {
     base: BaseAdapter<SlackConfig>,
     client: Client,
     bot_info: Arc<RwLock<Option<SlackAuthTestResponse>>>,
-    pending_messages: Arc<RwLock<HashMap<MessageId, (OutgoingMessage, mpsc::UnboundedSender<DeliveryReceipt>)>>>,
+    pending_messages:
+        Arc<RwLock<HashMap<MessageId, (OutgoingMessage, mpsc::UnboundedSender<DeliveryReceipt>)>>>,
     socket_mode_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
@@ -166,36 +170,57 @@ impl SlackAdapter {
     fn auth_header(&self) -> HeaderMap {
         let config = self.base.config.as_ref().expect("Not initialized");
         let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", config.bot_token)).unwrap());
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", config.bot_token)).unwrap(),
+        );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers
     }
 
-    async fn make_request<T: for<'de> Deserialize<'de>>(&self, method: &str, body: &impl Serialize) -> Result<T, PlatformError> {
+    async fn make_request<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        body: &impl Serialize,
+    ) -> Result<T, PlatformError> {
         let url = self.api_url(method);
         let config = self.base.config.as_ref().expect("Not initialized");
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .headers(self.auth_header())
             .json(body)
-            .timeout(std::time::Duration::from_secs(config.base.custom.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(30)))
+            .timeout(std::time::Duration::from_secs(
+                config
+                    .base
+                    .custom
+                    .get("timeout_secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(30),
+            ))
             .send()
             .await
             .map_err(|e| PlatformError::Network(e.to_string()))?;
 
         let status = response.status();
-        let slack_response: SlackApiResponse<T> = response.json().await
+        let slack_response: SlackApiResponse<T> = response
+            .json()
+            .await
             .map_err(|e| PlatformError::Internal(e.to_string()))?;
 
         if !slack_response.ok {
             return Err(PlatformError::Api {
                 code: status.to_string(),
-                message: slack_response.error.unwrap_or_else(|| "Unknown Slack API error".to_string()),
+                message: slack_response
+                    .error
+                    .unwrap_or_else(|| "Unknown Slack API error".to_string()),
             });
         }
 
-        slack_response.data.ok_or_else(|| PlatformError::Internal("Empty result from Slack API".into()))
+        slack_response
+            .data
+            .ok_or_else(|| PlatformError::Internal("Empty result from Slack API".into()))
     }
 
     fn session_id_from_channel(&self, channel_id: &str) -> Uuid {
@@ -223,14 +248,21 @@ impl SlackAdapter {
         Uuid::from_bytes(uuid_bytes)
     }
 
-    fn convert_incoming_message(&self, msg: &SlackMessage) -> Result<IncomingMessage, PlatformError> {
+    fn convert_incoming_message(
+        &self,
+        msg: &SlackMessage,
+    ) -> Result<IncomingMessage, PlatformError> {
         let session_id = self.session_id_from_channel(&msg.channel);
         let content = self.convert_message_content(msg)?;
 
         let ts_parts: Vec<&str> = msg.ts.split('.').collect();
-        let timestamp = ts_parts.first()
+        let timestamp = ts_parts
+            .first()
             .and_then(|s| s.parse::<i64>().ok())
-            .map(|ts| OffsetDateTime::from_unix_timestamp(ts).unwrap_or_else(|_| OffsetDateTime::now_utc()))
+            .map(|ts| {
+                OffsetDateTime::from_unix_timestamp(ts)
+                    .unwrap_or_else(|_| OffsetDateTime::now_utc())
+            })
             .unwrap_or_else(|| OffsetDateTime::now_utc());
 
         Ok(IncomingMessage {
@@ -252,7 +284,8 @@ impl SlackAdapter {
                         for element in elements {
                             if element.element_type == "rich_text_section" {
                                 if let Some(text_elements) = &element.elements {
-                                    let text: String = text_elements.iter()
+                                    let text: String = text_elements
+                                        .iter()
                                         .filter_map(|e| e.text.as_ref().map(|t| t.text.clone()))
                                         .collect();
                                     if !text.is_empty() {
@@ -263,7 +296,9 @@ impl SlackAdapter {
                         }
                     }
                     if let Some(text_obj) = &block.text {
-                        return Ok(MessageContent::Text { text: text_obj.text.clone() });
+                        return Ok(MessageContent::Text {
+                            text: text_obj.text.clone(),
+                        });
                     }
                 }
             }
@@ -291,41 +326,51 @@ impl SlackAdapter {
             }
         }
 
-        Ok(MessageContent::Unknown { data: serde_json::to_value(msg).unwrap_or_default() })
+        Ok(MessageContent::Unknown {
+            data: serde_json::to_value(msg).unwrap_or_default(),
+        })
     }
 
-    fn convert_outgoing(&self, msg: &OutgoingMessage) -> Result<SlackPostMessageRequest, PlatformError> {
+    fn convert_outgoing(
+        &self,
+        msg: &OutgoingMessage,
+    ) -> Result<SlackPostMessageRequest, PlatformError> {
         let channel_id = self.channel_id_from_session(msg.session_id)?;
 
         let (text, blocks) = match &msg.content {
             MessageContent::Text { text } => (text.clone(), None),
             MessageContent::Image { url: _, caption } => {
-                let blocks = Some(vec![
-                    SlackBlock {
-                        block_type: "image".to_string(),
-                        text: caption.as_ref().map(|c| SlackTextObject {
-                            text_type: "mrkdwn".to_string(),
-                            text: c.clone(),
-                        }),
-                        elements: None,
-                    }
-                ]);
+                let blocks = Some(vec![SlackBlock {
+                    block_type: "image".to_string(),
+                    text: caption.as_ref().map(|c| SlackTextObject {
+                        text_type: "mrkdwn".to_string(),
+                        text: c.clone(),
+                    }),
+                    elements: None,
+                }]);
                 (caption.as_ref().cloned().unwrap_or_default(), blocks)
             }
-            MessageContent::File { url, filename, mime_type: _ } => {
-                let blocks = Some(vec![
-                    SlackBlock {
-                        block_type: "section".to_string(),
-                        text: Some(SlackTextObject {
-                            text_type: "mrkdwn".to_string(),
-                            text: format!("File: <{}|{}>", url, filename),
-                        }),
-                        elements: None,
-                    }
-                ]);
+            MessageContent::File {
+                url,
+                filename,
+                mime_type: _,
+            } => {
+                let blocks = Some(vec![SlackBlock {
+                    block_type: "section".to_string(),
+                    text: Some(SlackTextObject {
+                        text_type: "mrkdwn".to_string(),
+                        text: format!("File: <{}|{}>", url, filename),
+                    }),
+                    elements: None,
+                }]);
                 (format!("File: {}", filename), blocks)
             }
-            _ => return Err(PlatformError::UnsupportedContent(format!("Content type not supported for Slack: {:?}", msg.content))),
+            _ => {
+                return Err(PlatformError::UnsupportedContent(format!(
+                    "Content type not supported for Slack: {:?}",
+                    msg.content
+                )))
+            }
         };
 
         Ok(SlackPostMessageRequest {
@@ -339,7 +384,10 @@ impl SlackAdapter {
 
     fn channel_id_from_session(&self, _session_id: Uuid) -> Result<String, PlatformError> {
         let config = self.base.config.as_ref().expect("Not initialized");
-        config.base.custom.get("channel_id")
+        config
+            .base
+            .custom
+            .get("channel_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| PlatformError::Internal("No channel ID mapping for session".into()))
@@ -353,13 +401,19 @@ impl SlackAdapter {
     }
 
     #[allow(dead_code)]
-    async fn verify_signature(&self, headers: &HeaderMap, body: &[u8]) -> Result<bool, PlatformError> {
+    async fn verify_signature(
+        &self,
+        headers: &HeaderMap,
+        body: &[u8],
+    ) -> Result<bool, PlatformError> {
         let config = self.base.config.as_ref().expect("Not initialized");
-        let timestamp = headers.get("X-Slack-Request-Timestamp")
+        let timestamp = headers
+            .get("X-Slack-Request-Timestamp")
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| PlatformError::Auth("Missing X-Slack-Request-Timestamp".into()))?;
-        
-        let signature = headers.get("X-Slack-Signature")
+
+        let signature = headers
+            .get("X-Slack-Signature")
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| PlatformError::Auth("Missing X-Slack-Signature".into()))?;
 
@@ -368,7 +422,9 @@ impl SlackAdapter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let req_time: u64 = timestamp.parse().map_err(|_| PlatformError::Auth("Invalid timestamp".into()))?;
+        let req_time: u64 = timestamp
+            .parse()
+            .map_err(|_| PlatformError::Auth("Invalid timestamp".into()))?;
         if now.saturating_sub(req_time) > 300 {
             return Err(PlatformError::Auth("Request timestamp too old".into()));
         }
@@ -383,32 +439,38 @@ impl SlackAdapter {
         // Constant-time comparison
         let expected_bytes = expected_signature.as_bytes();
         let signature_bytes = signature.as_bytes();
-        
+
         if expected_bytes.len() != signature_bytes.len() {
             return Ok(false);
         }
-        
+
         let mut result = 0u8;
         for (a, b) in expected_bytes.iter().zip(signature_bytes.iter()) {
             result |= a ^ b;
         }
-        
+
         Ok(result == 0)
     }
 
-    async fn handle_socket_mode(&self, sender: mpsc::UnboundedSender<PlatformEvent>) -> Result<(), PlatformError> {
+    async fn handle_socket_mode(
+        &self,
+        sender: mpsc::UnboundedSender<PlatformEvent>,
+    ) -> Result<(), PlatformError> {
         let config = self.base.config.as_ref().expect("Not initialized");
-        
+
         // Open Socket Mode connection
-        let conn_response: SlackAppsConnectionsOpenResponse = self.make_request(
-            "apps.connections.open",
-            &serde_json::json!({ "token": config.app_token })
-        ).await?;
+        let conn_response: SlackAppsConnectionsOpenResponse = self
+            .make_request(
+                "apps.connections.open",
+                &serde_json::json!({ "token": config.app_token }),
+            )
+            .await?;
 
         info!("Slack Socket Mode connection URL: {}", conn_response.url);
 
         // Connect via WebSocket
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&conn_response.url).await
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&conn_response.url)
+            .await
             .map_err(|e| PlatformError::Network(format!("WebSocket connection failed: {}", e)))?;
 
         let (mut write, mut read) = ws_stream.split();
@@ -418,7 +480,11 @@ impl SlackAdapter {
             "type": "hello",
             "num_connections": 1
         });
-        write.send(tokio_tungstenite::tungstenite::Message::Text(hello.to_string().into())).await
+        write
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                hello.to_string().into(),
+            ))
+            .await
             .map_err(|e| PlatformError::Network(e.to_string()))?;
 
         // Process incoming messages
@@ -431,7 +497,11 @@ impl SlackAdapter {
                             "envelope_id": envelope.envelope_id,
                             "type": "ack"
                         });
-                        let _ = write.send(tokio_tungstenite::tungstenite::Message::Text(ack.to_string().into())).await;
+                        let _ = write
+                            .send(tokio_tungstenite::tungstenite::Message::Text(
+                                ack.to_string().into(),
+                            ))
+                            .await;
 
                         // Handle event
                         if let Some(event) = envelope.payload.event {
@@ -477,7 +547,9 @@ impl PlatformAdapter for SlackAdapter {
         }
 
         // Test authentication
-        let auth: SlackAuthTestResponse = self.make_request("auth.test", &serde_json::json!({})).await?;
+        let auth: SlackAuthTestResponse = self
+            .make_request("auth.test", &serde_json::json!({}))
+            .await?;
         *self.bot_info.write().await = Some(auth.clone());
         info!("Slack bot initialized: {} (team: {})", auth.user, auth.team);
 
@@ -490,7 +562,10 @@ impl PlatformAdapter for SlackAdapter {
         Ok(())
     }
 
-    async fn start(&mut self, sender: mpsc::UnboundedSender<PlatformEvent>) -> Result<(), PlatformError> {
+    async fn start(
+        &mut self,
+        sender: mpsc::UnboundedSender<PlatformEvent>,
+    ) -> Result<(), PlatformError> {
         self.base.set_sender(sender.clone());
         self.base.started = true;
 
@@ -531,7 +606,8 @@ impl PlatformAdapter for SlackAdapter {
         }
 
         let payload = self.convert_outgoing(&msg)?;
-        let response: SlackPostMessageResponse = self.make_request("chat.postMessage", &payload).await?;
+        let response: SlackPostMessageResponse =
+            self.make_request("chat.postMessage", &payload).await?;
 
         Ok(DeliveryReceipt {
             message_id: msg.id,
@@ -542,7 +618,10 @@ impl PlatformAdapter for SlackAdapter {
         })
     }
 
-    async fn handle_webhook(&self, payload: serde_json::Value) -> Result<Vec<IncomingMessage>, PlatformError> {
+    async fn handle_webhook(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<Vec<IncomingMessage>, PlatformError> {
         // Handle Slack Events API webhook
         if let Some(_challenge) = payload.get("challenge") {
             // URL verification challenge
@@ -559,7 +638,9 @@ impl PlatformAdapter for SlackAdapter {
     }
 
     async fn health_check(&self) -> Result<(), PlatformError> {
-        let _: SlackAuthTestResponse = self.make_request("auth.test", &serde_json::json!({})).await?;
+        let _: SlackAuthTestResponse = self
+            .make_request("auth.test", &serde_json::json!({}))
+            .await?;
         Ok(())
     }
 }
@@ -593,7 +674,7 @@ mod tests {
         let id1 = adapter.session_id_from_channel("C123456");
         let id2 = adapter.session_id_from_channel("C123456");
         let id3 = adapter.session_id_from_channel("C789012");
-        
+
         assert_eq!(id1, id2);
         assert_ne!(id1, id3);
     }
@@ -604,7 +685,7 @@ mod tests {
         let id1 = adapter.session_id_from_user("U123456");
         let id2 = adapter.session_id_from_user("U123456");
         let id3 = adapter.session_id_from_user("U789012");
-        
+
         assert_eq!(id1, id2);
         assert_ne!(id1, id3);
     }
@@ -650,7 +731,7 @@ mod tests {
         };
 
         let content = adapter.convert_message_content(&msg).unwrap();
-        assert!(matches!(content, MessageContent::Image { url, caption } 
+        assert!(matches!(content, MessageContent::Image { url, caption }
             if url == "https://files.slack.com/image.png" && caption == Some("image.png".to_string())));
     }
 
@@ -676,10 +757,12 @@ mod tests {
         };
 
         let content = adapter.convert_message_content(&msg).unwrap();
-        assert!(matches!(content, MessageContent::File { url, filename, mime_type } 
-            if url == "https://files.slack.com/document.pdf" 
-            && filename == "document.pdf" 
-            && mime_type == Some("application/pdf".to_string())));
+        assert!(
+            matches!(content, MessageContent::File { url, filename, mime_type }
+            if url == "https://files.slack.com/document.pdf"
+            && filename == "document.pdf"
+            && mime_type == Some("application/pdf".to_string()))
+        );
     }
 
     #[test]
@@ -703,7 +786,9 @@ mod tests {
             id: MessageId::new(),
             session_id: Uuid::nil(),
             platform: Platform::Slack,
-            content: MessageContent::Text { text: "Test message".to_string() },
+            content: MessageContent::Text {
+                text: "Test message".to_string(),
+            },
             reply_to: None,
             metadata: HashMap::new(),
         };
@@ -728,16 +813,16 @@ mod tests {
         let timestamp = "1234567890";
         let body = "test_body";
         let basestring = format!("v0:{}:{}", timestamp, body);
-        
+
         let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
         mac.update(basestring.as_bytes());
         let expected = format!("v0={}", hex::encode(mac.finalize().into_bytes()));
-        
+
         // Verify with correct signature
         let mut mac2 = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
         mac2.update(basestring.as_bytes());
         let computed = hex::encode(mac2.finalize().into_bytes());
-        
+
         assert_eq!(expected, format!("v0={}", computed));
     }
 }

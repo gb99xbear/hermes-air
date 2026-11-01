@@ -184,7 +184,9 @@ fn parse_duration_seconds(s: &str) -> Option<u64> {
 pub fn parse_schedule(schedule: &str) -> Result<ParsedSchedule, CronError> {
     let raw = schedule.trim();
     if raw.is_empty() {
-        return Err(CronError::ScheduleParse("Empty schedule string".to_string()));
+        return Err(CronError::ScheduleParse(
+            "Empty schedule string".to_string(),
+        ));
     }
     let lower = raw.to_lowercase();
 
@@ -264,9 +266,7 @@ pub fn parse_schedule(schedule: &str) -> Result<ParsedSchedule, CronError> {
 
 fn compute_next_run(parsed: &ParsedSchedule) -> Option<String> {
     match &parsed.kind {
-        ParsedScheduleKind::Once { run_at } => {
-            run_at.format(&Rfc3339).ok()
-        }
+        ParsedScheduleKind::Once { run_at } => run_at.format(&Rfc3339).ok(),
         ParsedScheduleKind::Interval { seconds } => {
             let next = OffsetDateTime::now_utc() + Duration::from_secs(*seconds);
             next.format(&Rfc3339).ok()
@@ -319,7 +319,9 @@ impl CronScheduler {
                 if !prompt.is_empty() {
                     prompt.chars().take(50).collect()
                 } else if let Some(ref sks) = params.skills {
-                    sks.first().cloned().unwrap_or_else(|| format!("job-{}", &id[..6]))
+                    sks.first()
+                        .cloned()
+                        .unwrap_or_else(|| format!("job-{}", &id[..6]))
                 } else {
                     format!("job-{}", &id[..6])
                 }
@@ -347,7 +349,11 @@ impl CronScheduler {
             job_type: CronJobType::AgentPrompt,
             payload: serde_json::Value::Null,
             enabled: !is_paused,
-            state: if is_paused { "paused".to_string() } else { "scheduled".to_string() },
+            state: if is_paused {
+                "paused".to_string()
+            } else {
+                "scheduled".to_string()
+            },
             pinned: params.pinned.unwrap_or(false),
             session_id: params.session_id,
             deliver: params.deliver.unwrap_or_else(|| "origin".to_string()),
@@ -363,7 +369,11 @@ impl CronScheduler {
             repeat: params.repeat.unwrap_or_else(|| "forever".to_string()),
             created_at: now,
             updated_at: now,
-            paused_at: if is_paused { Some(now.format(&Rfc3339).unwrap_or_default()) } else { None },
+            paused_at: if is_paused {
+                Some(now.format(&Rfc3339).unwrap_or_default())
+            } else {
+                None
+            },
             paused_reason: params.paused_reason,
             last_run_at: None,
             next_run_at,
@@ -386,7 +396,11 @@ impl CronScheduler {
         Ok(job)
     }
 
-    async fn schedule_job_in_engine(&self, job: &CronJob, parsed: &ParsedSchedule) -> Result<(), CronError> {
+    async fn schedule_job_in_engine(
+        &self,
+        job: &CronJob,
+        parsed: &ParsedSchedule,
+    ) -> Result<(), CronError> {
         let job_clone = job.clone();
         let jobs = self.jobs.clone();
         let handlers = self.handlers.clone();
@@ -401,18 +415,18 @@ impl CronScheduler {
                     Box::pin(async move {
                         Self::execute_job_tick(job, handlers, jobs).await;
                     })
-                }).map_err(|e| CronError::Scheduler(e.to_string()))?
+                })
+                .map_err(|e| CronError::Scheduler(e.to_string()))?
             }
-            ParsedScheduleKind::Cron { expr } => {
-                Job::new_async(expr.as_str(), move |_uuid, _l| {
-                    let job = job_clone.clone();
-                    let handlers = handlers.clone();
-                    let jobs = jobs.clone();
-                    Box::pin(async move {
-                        Self::execute_job_tick(job, handlers, jobs).await;
-                    })
-                }).map_err(|e| CronError::Scheduler(e.to_string()))?
-            }
+            ParsedScheduleKind::Cron { expr } => Job::new_async(expr.as_str(), move |_uuid, _l| {
+                let job = job_clone.clone();
+                let handlers = handlers.clone();
+                let jobs = jobs.clone();
+                Box::pin(async move {
+                    Self::execute_job_tick(job, handlers, jobs).await;
+                })
+            })
+            .map_err(|e| CronError::Scheduler(e.to_string()))?,
             ParsedScheduleKind::Once { run_at } => {
                 let now = OffsetDateTime::now_utc();
                 let diff = if *run_at > now {
@@ -427,13 +441,20 @@ impl CronScheduler {
                     Box::pin(async move {
                         Self::execute_job_tick(job, handlers, jobs).await;
                     })
-                }).map_err(|e| CronError::Scheduler(e.to_string()))?
+                })
+                .map_err(|e| CronError::Scheduler(e.to_string()))?
             }
         };
 
         let sched_guard = self.scheduler.write().await;
-        let job_uuid = sched_guard.add(tick_job).await.map_err(|e| CronError::Scheduler(e.to_string()))?;
-        self.scheduler_job_ids.write().await.insert(job.id.clone(), job_uuid);
+        let job_uuid = sched_guard
+            .add(tick_job)
+            .await
+            .map_err(|e| CronError::Scheduler(e.to_string()))?;
+        self.scheduler_job_ids
+            .write()
+            .await
+            .insert(job.id.clone(), job_uuid);
         Ok(())
     }
 
@@ -563,7 +584,11 @@ impl CronScheduler {
         Ok(updated)
     }
 
-    pub async fn pause_job(&self, job_ref: &str, reason: Option<String>) -> Result<CronJob, CronError> {
+    pub async fn pause_job(
+        &self,
+        job_ref: &str,
+        reason: Option<String>,
+    ) -> Result<CronJob, CronError> {
         let mut jobs = self.jobs.write().await;
         let job = jobs
             .values_mut()
@@ -572,7 +597,11 @@ impl CronScheduler {
 
         job.enabled = false;
         job.state = "paused".to_string();
-        job.paused_at = Some(OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_default());
+        job.paused_at = Some(
+            OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default(),
+        );
         job.paused_reason = reason;
         job.updated_at = OffsetDateTime::now_utc();
 
@@ -646,12 +675,20 @@ impl CronScheduler {
         Ok(removed)
     }
 
-    pub async fn run_job_now(&self, job_ref: &str, extra_prompt: Option<String>) -> Result<CronJob, CronError> {
-        let job = self.get_job(job_ref).await
+    pub async fn run_job_now(
+        &self,
+        job_ref: &str,
+        extra_prompt: Option<String>,
+    ) -> Result<CronJob, CronError> {
+        let job = self
+            .get_job(job_ref)
+            .await
             .ok_or_else(|| CronError::JobNotFound(job_ref.to_string()))?;
 
         if !job.enabled {
-            return Err(CronError::InvalidArgument("Job is paused/disabled; resume it before running.".to_string()));
+            return Err(CronError::InvalidArgument(
+                "Job is paused/disabled; resume it before running.".to_string(),
+            ));
         }
 
         let mut fire_job = job.clone();
@@ -677,25 +714,37 @@ impl CronScheduler {
         Ok(jobs_guard.get(&job.id).cloned().unwrap_or(job))
     }
 
-    pub async fn register_handler(&self, job_type: CronJobType, handler: Box<dyn CronJobHandler + Send + Sync>) {
+    pub async fn register_handler(
+        &self,
+        job_type: CronJobType,
+        handler: Box<dyn CronJobHandler + Send + Sync>,
+    ) {
         self.handlers.write().await.insert(job_type, handler);
     }
 
     pub async fn start(&self) -> Result<(), CronError> {
         let sched = self.scheduler.read().await;
-        sched.start().await.map_err(|e| CronError::Scheduler(e.to_string()))?;
+        sched
+            .start()
+            .await
+            .map_err(|e| CronError::Scheduler(e.to_string()))?;
         Ok(())
     }
 
     pub async fn shutdown(&self) -> Result<(), CronError> {
         let mut sched = self.scheduler.write().await;
-        sched.shutdown().await.map_err(|e| CronError::Scheduler(e.to_string()))?;
+        sched
+            .shutdown()
+            .await
+            .map_err(|e| CronError::Scheduler(e.to_string()))?;
         Ok(())
     }
 
     pub async fn load_from_disk(&self, path: &std::path::Path) -> Result<(), CronError> {
         if path.exists() {
-            let content = tokio::fs::read_to_string(path).await.map_err(CronError::Io)?;
+            let content = tokio::fs::read_to_string(path)
+                .await
+                .map_err(CronError::Io)?;
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                 let jobs_val = if val.is_object() && val.get("jobs").is_some() {
                     val.get("jobs").unwrap().clone()
@@ -703,7 +752,9 @@ impl CronScheduler {
                     val
                 };
 
-                if let Ok(jobs_map) = serde_json::from_value::<HashMap<String, CronJob>>(jobs_val.clone()) {
+                if let Ok(jobs_map) =
+                    serde_json::from_value::<HashMap<String, CronJob>>(jobs_val.clone())
+                {
                     *self.jobs.write().await = jobs_map;
                 } else if let Ok(jobs_list) = serde_json::from_value::<Vec<CronJob>>(jobs_val) {
                     let mut map = HashMap::new();
@@ -730,7 +781,9 @@ impl CronScheduler {
             "updated_at": OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_default()
         });
         let content = serde_json::to_string_pretty(&payload)?;
-        tokio::fs::write(path, content).await.map_err(CronError::Io)?;
+        tokio::fs::write(path, content)
+            .await
+            .map_err(CronError::Io)?;
         Ok(())
     }
 }
@@ -783,7 +836,10 @@ mod tests {
         assert_eq!(jobs[0].id, job.id);
 
         // 3. Pause
-        let paused = scheduler.pause_job(&job.id, Some("maintenance".to_string())).await.expect("pause");
+        let paused = scheduler
+            .pause_job(&job.id, Some("maintenance".to_string()))
+            .await
+            .expect("pause");
         assert_eq!(paused.state, "paused");
         assert!(!paused.enabled);
 
@@ -804,7 +860,10 @@ mod tests {
         assert_eq!(updated.prompt, "Updated prompt");
 
         // 6. Run now
-        let ran = scheduler.run_job_now(&job.id, Some("extra info".to_string())).await.expect("run now");
+        let ran = scheduler
+            .run_job_now(&job.id, Some("extra info".to_string()))
+            .await
+            .expect("run now");
         assert_eq!(ran.id, job.id);
 
         // 7. Remove

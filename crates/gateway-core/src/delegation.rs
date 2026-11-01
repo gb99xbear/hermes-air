@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -413,12 +413,22 @@ impl DelegationManager {
 
             let model = "default";
             let (resp_msg, chat_resp) = match llm_client
-                .chat_completion_with_tools(model, &messages, Some(available_tools), None, 0.7, 4096)
+                .chat_completion_with_tools(
+                    model,
+                    &messages,
+                    Some(available_tools),
+                    None,
+                    0.7,
+                    4096,
+                )
                 .await
             {
                 Ok(res) => res,
                 Err(e) => {
-                    warn!("Subagent {} LLM call failed or mock mode: {}", subagent_id, e);
+                    warn!(
+                        "Subagent {} LLM call failed or mock mode: {}",
+                        subagent_id, e
+                    );
                     // For mock or unconfigured model calls, generate a deterministic completion
                     final_summary = format!("Task executed successfully for goal: {}", goal);
                     {
@@ -541,7 +551,9 @@ mod tests {
         assert_eq!(sub["accepting_steer"], true);
 
         // 4. Steer subagent
-        let steer_res = manager.steer(subagent_id, "Focus on async test harness").await;
+        let steer_res = manager
+            .steer(subagent_id, "Focus on async test harness")
+            .await;
         assert_eq!(steer_res["status"], "queued");
         {
             let queue = steer_queue.lock().await;
@@ -565,10 +577,16 @@ mod tests {
 
         let steer_res = manager.steer("unknown_id", "Hello").await;
         assert_eq!(steer_res["success"], false);
-        assert!(steer_res["error"].as_str().unwrap().contains("No live subagent"));
+        assert!(steer_res["error"]
+            .as_str()
+            .unwrap()
+            .contains("No live subagent"));
 
         let stop_res = manager.stop("unknown_id").await;
         assert_eq!(stop_res["success"], false);
-        assert!(stop_res["error"].as_str().unwrap().contains("No live subagent"));
+        assert!(stop_res["error"]
+            .as_str()
+            .unwrap()
+            .contains("No live subagent"));
     }
 }

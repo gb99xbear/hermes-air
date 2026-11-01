@@ -92,12 +92,14 @@ impl XSearchConfig {
             return Err(format!(
                 "x_search.reasoning_effort must be one of: {} (got {:?})",
                 X_SEARCH_REASONING_EFFORTS.join(", "),
-                self.reasoning_effort
-                    .as_deref()
-                    .unwrap_or("")
+                self.reasoning_effort.as_deref().unwrap_or("")
             ));
         }
-        Ok(if effort.is_empty() { None } else { Some(effort) })
+        Ok(if effort.is_empty() {
+            None
+        } else {
+            Some(effort)
+        })
     }
 
     /// `max(floor, configured)` with the default on any failure.
@@ -166,7 +168,11 @@ fn finish_credentials(creds: XaiCredentials) -> Result<XaiCredentials, String> {
     }
     let base_url = {
         let raw = creds.base_url.trim();
-        let raw = if raw.is_empty() { DEFAULT_XAI_BASE_URL } else { raw };
+        let raw = if raw.is_empty() {
+            DEFAULT_XAI_BASE_URL
+        } else {
+            raw
+        };
         raw.trim_end_matches('/').to_string()
     };
     let source = if creds.source.trim().is_empty() {
@@ -184,7 +190,10 @@ fn finish_credentials(creds: XaiCredentials) -> Result<XaiCredentials, String> {
 // ── Filter validation ──────────────────────────────────────────────────────
 
 /// Strip leading `@`, trim, drop empties; refuse more than `MAX_HANDLES`.
-pub fn normalize_handles(handles: Option<&[String]>, field_name: &str) -> Result<Vec<String>, String> {
+pub fn normalize_handles(
+    handles: Option<&[String]>,
+    field_name: &str,
+) -> Result<Vec<String>, String> {
     let cleaned: Vec<String> = handles
         .unwrap_or(&[])
         .iter()
@@ -257,9 +266,7 @@ pub fn build_x_search_tool_def(
     let allowed = normalize_handles(allowed_x_handles, "allowed_x_handles")?;
     let excluded = normalize_handles(excluded_x_handles, "excluded_x_handles")?;
     if !allowed.is_empty() && !excluded.is_empty() {
-        return Err(
-            "allowed_x_handles and excluded_x_handles cannot be used together".to_string(),
-        );
+        return Err("allowed_x_handles and excluded_x_handles cannot be used together".to_string());
     }
     validate_date_range(from_date, to_date)?;
 
@@ -457,7 +464,8 @@ pub fn build_result(
     // xAI returns 200 with a synthesized answer even when no posts match the
     // narrowing filters; with both citation channels empty the answer came
     // from training data.
-    let degraded = !active_filters.is_empty() && citations.is_empty() && inline_citations.is_empty();
+    let degraded =
+        !active_filters.is_empty() && citations.is_empty() && inline_citations.is_empty();
     json!({
         "success": true,
         "provider": "xai",
@@ -539,11 +547,7 @@ pub fn prepare(
         payload: Value::Object(payload),
         active_filters,
         source: creds.source,
-        timeout_seconds: config.int(
-            "timeout_seconds",
-            DEFAULT_X_SEARCH_TIMEOUT_SECONDS,
-            30,
-        ),
+        timeout_seconds: config.int("timeout_seconds", DEFAULT_X_SEARCH_TIMEOUT_SECONDS, 30),
         max_retries: config.int("retries", DEFAULT_X_SEARCH_RETRIES as u64, 0) as u32,
     })
 }
@@ -586,13 +590,9 @@ pub async fn run_prepared(
                 let text = resp.text().await.unwrap_or_default();
                 if status.is_success() {
                     return match serde_json::from_str::<Value>(&text) {
-                        Ok(data) => build_result(
-                            &data,
-                            &call.model,
-                            "",
-                            &call.source,
-                            &call.active_filters,
-                        ),
+                        Ok(data) => {
+                            build_result(&data, &call.model, "", &call.source, &call.active_filters)
+                        }
                         Err(e) => build_error(
                             &XSearchErrorKind::Other,
                             &format!("invalid JSON from xAI: {}", e),
@@ -631,7 +631,10 @@ pub async fn run_prepared(
                 );
             }
         }
-        tokio::time::sleep(std::time::Duration::from_secs_f64(retry_delay_seconds(attempt))).await;
+        tokio::time::sleep(std::time::Duration::from_secs_f64(retry_delay_seconds(
+            attempt,
+        )))
+        .await;
         attempt += 1;
     }
 }
@@ -785,8 +788,8 @@ mod tests {
 
     #[test]
     fn validate_date_range_rejects_reversed_window() {
-        let err = validate_date_range_at("2026-05-02", "2026-05-01", date!(2026 - 06 - 01))
-            .unwrap_err();
+        let err =
+            validate_date_range_at("2026-05-02", "2026-05-01", date!(2026 - 06 - 01)).unwrap_err();
         assert!(err.contains("must be on or before"));
     }
 
@@ -811,15 +814,9 @@ mod tests {
     // ── tool def ─────────────────────────────────────────────────────────
     #[test]
     fn tool_def_includes_only_active_filters() {
-        let (def, filters) = build_x_search_tool_def(
-            Some(&s(&["alice"])),
-            None,
-            "2026-01-01",
-            "",
-            false,
-            false,
-        )
-        .unwrap();
+        let (def, filters) =
+            build_x_search_tool_def(Some(&s(&["alice"])), None, "2026-01-01", "", false, false)
+                .unwrap();
         assert_eq!(def["type"], json!("x_search"));
         assert_eq!(def["allowed_x_handles"], json!(["alice"]));
         assert_eq!(def["from_date"], json!("2026-01-01"));
@@ -836,8 +833,7 @@ mod tests {
 
     #[test]
     fn tool_def_sets_understanding_flags() {
-        let (def, filters) =
-            build_x_search_tool_def(None, None, "", "", true, true).unwrap();
+        let (def, filters) = build_x_search_tool_def(None, None, "", "", true, true).unwrap();
         assert_eq!(def["enable_image_understanding"], json!(true));
         assert_eq!(def["enable_video_understanding"], json!(true));
         // Understanding flags are not "narrowing filters".
@@ -964,7 +960,10 @@ mod tests {
                 reasoning_effort: Some(v.to_string()),
                 ..Default::default()
             };
-            assert_eq!(cfg.resolved_reasoning_effort().unwrap(), Some(v.to_string()));
+            assert_eq!(
+                cfg.resolved_reasoning_effort().unwrap(),
+                Some(v.to_string())
+            );
         }
     }
 
@@ -974,7 +973,10 @@ mod tests {
             reasoning_effort: Some("  HIGH ".to_string()),
             ..Default::default()
         };
-        assert_eq!(cfg.resolved_reasoning_effort().unwrap(), Some("high".to_string()));
+        assert_eq!(
+            cfg.resolved_reasoning_effort().unwrap(),
+            Some("high".to_string())
+        );
         let blank = XSearchConfig {
             reasoning_effort: Some("   ".to_string()),
             ..Default::default()
@@ -1000,7 +1002,10 @@ mod tests {
             ..Default::default()
         };
         // floor 30 lifts a too-small timeout.
-        assert_eq!(cfg.int("timeout_seconds", DEFAULT_X_SEARCH_TIMEOUT_SECONDS, 30), 30);
+        assert_eq!(
+            cfg.int("timeout_seconds", DEFAULT_X_SEARCH_TIMEOUT_SECONDS, 30),
+            30
+        );
         assert_eq!(cfg.int("retries", DEFAULT_X_SEARCH_RETRIES as u64, 0), 9);
         let empty = XSearchConfig::default();
         assert_eq!(
@@ -1011,7 +1016,10 @@ mod tests {
 
     #[test]
     fn config_model_defaults_when_blank() {
-        assert_eq!(XSearchConfig::default().model_or_default(), DEFAULT_X_SEARCH_MODEL);
+        assert_eq!(
+            XSearchConfig::default().model_or_default(),
+            DEFAULT_X_SEARCH_MODEL
+        );
         let blank = XSearchConfig {
             model: Some("   ".to_string()),
             ..Default::default()
@@ -1041,7 +1049,10 @@ mod tests {
         .unwrap();
         assert_eq!(call.url, "https://api.x.ai/v1/responses");
         assert_eq!(call.model, DEFAULT_X_SEARCH_MODEL);
-        assert_eq!(call.payload["input"][0]["content"], json!("what did people say about X?"));
+        assert_eq!(
+            call.payload["input"][0]["content"],
+            json!("what did people say about X?")
+        );
         assert_eq!(call.payload["store"], json!(false));
         assert_eq!(call.payload["tools"][0]["type"], json!("x_search"));
         assert!(call.payload.get("reasoning").is_none());

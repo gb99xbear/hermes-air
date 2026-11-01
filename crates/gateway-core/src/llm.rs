@@ -1,5 +1,5 @@
-use futures::StreamExt;
 use anyhow::{Context, Result};
+use futures::StreamExt;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -107,7 +107,7 @@ impl LlmClient {
         let base_url = base_url
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "http://127.0.0.1:20128/v1".to_string());
-        
+
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -197,11 +197,15 @@ impl LlmClient {
 
         if let Some(ref resp_wrapper) = response.response {
             if let Some(ref pf) = resp_wrapper.prompt_feedback {
-                let reason = pf.block_reason_message
+                let reason = pf
+                    .block_reason_message
                     .as_deref()
                     .or(pf.block_reason.as_deref())
                     .unwrap_or("content policy violation");
-                return Ok(format!("⚠️ This request was blocked by upstream safety filters: {}", reason));
+                return Ok(format!(
+                    "⚠️ This request was blocked by upstream safety filters: {}",
+                    reason
+                ));
             }
         }
 
@@ -250,11 +254,15 @@ impl LlmClient {
         // Handle upstream promptFeedback (Google Gemini / 9Router safety filters)
         if let Some(ref resp_wrapper) = response.response {
             if let Some(ref pf) = resp_wrapper.prompt_feedback {
-                let reason = pf.block_reason_message
+                let reason = pf
+                    .block_reason_message
                     .as_deref()
                     .or(pf.block_reason.as_deref())
                     .unwrap_or("content policy violation");
-                let refusal_text = format!("⚠️ This request was blocked by upstream safety filters: {}", reason);
+                let refusal_text = format!(
+                    "⚠️ This request was blocked by upstream safety filters: {}",
+                    reason
+                );
                 let msg = ChatResponseMessage {
                     role: "assistant".to_string(),
                     content: Some(refusal_text.clone()),
@@ -267,7 +275,10 @@ impl LlmClient {
         // Handle upstream error wrapper
         if let Some(ref err) = response.error {
             if let Some(ref msg) = err.message {
-                let err_text = format!("⚠️ Upstream LLM error: {}. Sila guna arahan /model untuk tukar model.", msg);
+                let err_text = format!(
+                    "⚠️ Upstream LLM error: {}. Sila guna arahan /model untuk tukar model.",
+                    msg
+                );
                 let chat_msg = ChatResponseMessage {
                     role: "assistant".to_string(),
                     content: Some(err_text.clone()),
@@ -301,7 +312,10 @@ impl LlmClient {
         let mut request = self.client.post(&url).json(&req_body);
 
         for (k, v) in &self.default_headers {
-            if let (Ok(h_name), Ok(h_val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+            if let (Ok(h_name), Ok(h_val)) = (
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
+            ) {
                 request = request.header(h_name, h_val);
             }
         }
@@ -312,16 +326,24 @@ impl LlmClient {
             }
         }
 
-        info!("Initiating SSE chat completion stream to {} (model: {})", url, model);
-        let resp = request
-            .send()
-            .await
-            .with_context(|| format!("Failed to send streaming request to LLM endpoint: {}", url))?;
+        info!(
+            "Initiating SSE chat completion stream to {} (model: {})",
+            url, model
+        );
+        let resp = request.send().await.with_context(|| {
+            format!("Failed to send streaming request to LLM endpoint: {}", url)
+        })?;
 
         let status = resp.status();
         if !status.is_success() {
-            let error_text = resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            error!("LLM streaming endpoint returned status {}: {}", status, error_text);
+            let error_text = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                "LLM streaming endpoint returned status {}: {}",
+                status, error_text
+            );
             anyhow::bail!("LLM API stream error ({}): {}", status, error_text);
         }
 
@@ -343,7 +365,9 @@ impl LlmClient {
                     let line = buffer[..pos].trim_end_matches('\r').to_string();
                     buffer.drain(..=pos);
                     let trimmed = line.trim();
-                    if trimmed.is_empty() { continue; }
+                    if trimmed.is_empty() {
+                        continue;
+                    }
                     if let Some(rest) = trimmed.strip_prefix("data: ") {
                         let rest = rest.trim();
                         if rest == "[DONE]" {
@@ -351,17 +375,19 @@ impl LlmClient {
                             return;
                         }
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(rest) {
-                            if let Some(content) = val.get("choices")
+                            if let Some(content) = val
+                                .get("choices")
                                 .and_then(|c| c.get(0))
                                 .and_then(|c| c.get("delta"))
                                 .and_then(|d| d.get("content"))
-                                .and_then(|s| s.as_str()) {
-                                    if !content.is_empty() {
-                                        if tx.send(content.to_string()).await.is_err() {
-                                            // Receiver dropped, terminate stream
-                                            return;
-                                        }
+                                .and_then(|s| s.as_str())
+                            {
+                                if !content.is_empty() {
+                                    if tx.send(content.to_string()).await.is_err() {
+                                        // Receiver dropped, terminate stream
+                                        return;
                                     }
+                                }
                             }
                         }
                     }
@@ -372,13 +398,19 @@ impl LlmClient {
         Ok(rx)
     }
 
-    async fn send_completion(&self, req_body: &ChatCompletionRequest) -> Result<ChatCompletionResponse> {
+    async fn send_completion(
+        &self,
+        req_body: &ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse> {
         let url = format!("{}/chat/completions", self.base_url);
         let mut request = self.client.post(&url).json(req_body);
 
         // Apply profile default headers if present
         for (k, v) in &self.default_headers {
-            if let (Ok(h_name), Ok(h_val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+            if let (Ok(h_name), Ok(h_val)) = (
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
+            ) {
                 request = request.header(h_name, h_val);
             }
         }
@@ -389,7 +421,10 @@ impl LlmClient {
             }
         }
 
-        info!("Sending chat completion to {} (model: {})", url, req_body.model);
+        info!(
+            "Sending chat completion to {} (model: {})",
+            url, req_body.model
+        );
         let resp = request
             .send()
             .await
@@ -403,7 +438,10 @@ impl LlmClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let error_text = resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             error!("LLM endpoint returned status {}: {}", status, error_text);
             anyhow::bail!("LLM API error ({}): {}", status, error_text);
         }
@@ -433,7 +471,10 @@ mod tests {
         }"#;
 
         let res: Result<ChatCompletionResponse, _> = serde_json::from_str(raw_json);
-        assert!(res.is_ok(), "Should successfully deserialize promptFeedback JSON");
+        assert!(
+            res.is_ok(),
+            "Should successfully deserialize promptFeedback JSON"
+        );
         let parsed = res.unwrap();
         assert!(parsed.choices.is_empty());
         assert!(parsed.response.is_some());
@@ -460,7 +501,10 @@ mod tests {
         assert!(parsed.choices.is_empty());
         assert!(parsed.error.is_some());
         let err = parsed.error.unwrap();
-        assert_eq!(err.message.as_deref(), Some("Resource exhausted / quota limit reached"));
+        assert_eq!(
+            err.message.as_deref(),
+            Some("Resource exhausted / quota limit reached")
+        );
         assert_eq!(err.error_type.as_deref(), Some("rate_limit_exceeded"));
     }
 
@@ -471,19 +515,25 @@ mod tests {
         let mut collected = Vec::new();
         for line in lines {
             let trimmed = line.trim();
-            if trimmed.is_empty() { continue; }
+            if trimmed.is_empty() {
+                continue;
+            }
             if let Some(rest) = trimmed.strip_prefix("data: ") {
                 let rest = rest.trim();
-                if rest == "[DONE]" { break; }
+                if rest == "[DONE]" {
+                    break;
+                }
                 let val: serde_json::Value = serde_json::from_str(rest).unwrap();
-                if let Some(content) = val.get("choices")
+                if let Some(content) = val
+                    .get("choices")
                     .and_then(|c| c.get(0))
                     .and_then(|c| c.get("delta"))
                     .and_then(|d| d.get("content"))
-                    .and_then(|s| s.as_str()) {
-                        if !content.is_empty() {
-                            collected.push(content.to_string());
-                        }
+                    .and_then(|s| s.as_str())
+                {
+                    if !content.is_empty() {
+                        collected.push(content.to_string());
+                    }
                 }
             }
         }
@@ -494,6 +544,8 @@ mod tests {
     async fn test_chat_completion_stream_method_signature() {
         let client = LlmClient::new(None, None);
         let msgs = vec![ChatMessage::user("test")];
-        let _rx = client.chat_completion_stream("test-model", &msgs, 0.7, 100).await;
+        let _rx = client
+            .chat_completion_stream("test-model", &msgs, 0.7, 100)
+            .await;
     }
 }

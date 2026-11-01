@@ -128,10 +128,13 @@ pub fn is_private_or_blocked_ip(ip: &IpAddr) -> bool {
 /// Validate URL against SSRF attacks
 pub fn validate_url_safety(url_str: &str) -> Result<Url, ToolError> {
     let parsed = Url::parse(url_str).map_err(|e| ToolError::InvalidUrl(e.to_string()))?;
-    
+
     let scheme = parsed.scheme().to_lowercase();
     if scheme != "http" && scheme != "https" {
-        return Err(ToolError::InvalidUrl(format!("Unsupported scheme: '{}'. Only http/https supported", scheme)));
+        return Err(ToolError::InvalidUrl(format!(
+            "Unsupported scheme: '{}'. Only http/https supported",
+            scheme
+        )));
     }
 
     let host_str = match parsed.host_str() {
@@ -140,14 +143,26 @@ pub fn validate_url_safety(url_str: &str) -> Result<Url, ToolError> {
     };
 
     // Check literal blocked hostnames
-    if host_str == "localhost" || host_str.ends_with(".localhost") || host_str.ends_with(".local") || host_str.ends_with(".internal") || host_str == "metadata.google.internal" || host_str == "metadata.goog" {
-        return Err(ToolError::SsrfViolation(format!("Blocked internal hostname: {}", host_str)));
+    if host_str == "localhost"
+        || host_str.ends_with(".localhost")
+        || host_str.ends_with(".local")
+        || host_str.ends_with(".internal")
+        || host_str == "metadata.google.internal"
+        || host_str == "metadata.goog"
+    {
+        return Err(ToolError::SsrfViolation(format!(
+            "Blocked internal hostname: {}",
+            host_str
+        )));
     }
 
     // Check if host parses directly as IP
     if let Ok(ip) = host_str.parse::<IpAddr>() {
         if is_private_or_blocked_ip(&ip) {
-            return Err(ToolError::SsrfViolation(format!("Blocked private/loopback IP address: {}", ip)));
+            return Err(ToolError::SsrfViolation(format!(
+                "Blocked private/loopback IP address: {}",
+                ip
+            )));
         }
     }
 
@@ -159,7 +174,10 @@ pub async fn validate_dns_safety(host: &str) -> Result<(), ToolError> {
     // If it is already an IP, it was checked by validate_url_safety
     if let Ok(ip) = host.parse::<IpAddr>() {
         if is_private_or_blocked_ip(&ip) {
-            return Err(ToolError::SsrfViolation(format!("Blocked private/loopback IP address: {}", ip)));
+            return Err(ToolError::SsrfViolation(format!(
+                "Blocked private/loopback IP address: {}",
+                ip
+            )));
         }
         return Ok(());
     }
@@ -167,7 +185,9 @@ pub async fn validate_dns_safety(host: &str) -> Result<(), ToolError> {
     let host_with_port = format!("{}:80", host);
     let resolved = tokio::net::lookup_host(&host_with_port)
         .await
-        .map_err(|e| ToolError::RequestError(format!("DNS resolution failed for {}: {}", host, e)))?;
+        .map_err(|e| {
+            ToolError::RequestError(format!("DNS resolution failed for {}: {}", host, e))
+        })?;
 
     for socket_addr in resolved {
         let ip = socket_addr.ip();
@@ -199,13 +219,19 @@ pub fn html_to_markdown(html: &str) -> String {
             in_tag = true;
             current_tag.clear();
             i += 1;
-            while i < bytes.len() && (bytes[i] as char) != '>' && !(bytes[i] as char).is_whitespace() {
+            while i < bytes.len()
+                && (bytes[i] as char) != '>'
+                && !(bytes[i] as char).is_whitespace()
+            {
                 current_tag.push((bytes[i] as char).to_ascii_lowercase());
                 i += 1;
             }
             if current_tag == "script" || current_tag == "style" || current_tag == "noscript" {
                 in_script_or_style = true;
-            } else if current_tag == "/script" || current_tag == "/style" || current_tag == "/noscript" {
+            } else if current_tag == "/script"
+                || current_tag == "/style"
+                || current_tag == "/noscript"
+            {
                 in_script_or_style = false;
             }
             while i < bytes.len() && (bytes[i] as char) != '>' {
@@ -215,7 +241,8 @@ pub fn html_to_markdown(html: &str) -> String {
                 in_tag = false;
                 if !in_script_or_style {
                     match current_tag.as_str() {
-                        "p" | "/p" | "div" | "/div" | "br" | "h1" | "/h1" | "h2" | "/h2" | "h3" | "/h3" | "h4" | "/h4" | "li" | "/li" | "tr" | "/tr" => {
+                        "p" | "/p" | "div" | "/div" | "br" | "h1" | "/h1" | "h2" | "/h2" | "h3"
+                        | "/h3" | "h4" | "/h4" | "li" | "/li" | "tr" | "/tr" => {
                             if !out.ends_with('\n') {
                                 out.push('\n');
                             }
@@ -309,7 +336,10 @@ pub fn truncate_content(content: &str, url: &str, char_limit: Option<usize>) -> 
         url
     );
 
-    let result = format!("{}\n\n[... middle omitted — see footer ...]\n\n{}{}", head, tail, footer);
+    let result = format!(
+        "{}\n\n[... middle omitted — see footer ...]\n\n{}{}",
+        head, tail, footer
+    );
     (result, true)
 }
 
@@ -377,8 +407,14 @@ pub async fn web_search(query: &str, limit: usize) -> Result<WebSearchResponse, 
 
                 if let Some(abstract_text) = val.get("AbstractText").and_then(|t| t.as_str()) {
                     if !abstract_text.trim().is_empty() {
-                        let abstract_url = val.get("AbstractURL").and_then(|u| u.as_str()).unwrap_or("");
-                        let heading = val.get("Heading").and_then(|h| h.as_str()).unwrap_or(query_trim);
+                        let abstract_url = val
+                            .get("AbstractURL")
+                            .and_then(|u| u.as_str())
+                            .unwrap_or("");
+                        let heading = val
+                            .get("Heading")
+                            .and_then(|h| h.as_str())
+                            .unwrap_or(query_trim);
                         results.push(WebSearchResultItem {
                             title: heading.to_string(),
                             url: abstract_url.to_string(),
@@ -458,7 +494,9 @@ fn parse_duckduckgo_html(html: &str, limit: usize) -> Vec<WebSearchResultItem> {
         if let (Some(url_raw), Some(title_text)) = (raw_url, title) {
             let clean_url = unwrap_ddg_redirect(&url_raw);
             if clean_url.starts_with("http://") || clean_url.starts_with("https://") {
-                if clean_url.contains("duckduckgo.com/y.js") || clean_url.contains("bing.com/aclick") {
+                if clean_url.contains("duckduckgo.com/y.js")
+                    || clean_url.contains("bing.com/aclick")
+                {
                     continue;
                 }
                 items.push(WebSearchResultItem {
@@ -512,7 +550,10 @@ fn extract_tag_href_and_text(sub: &str) -> (Option<String>, Option<String>) {
 
 fn extract_tag_text(sub: &str) -> Option<String> {
     let tag_close = sub.find('>')? + 1;
-    let tag_end = sub[tag_close..].find("</a>").or_else(|| sub[tag_close..].find("</div>"))? + tag_close;
+    let tag_end = sub[tag_close..]
+        .find("</a>")
+        .or_else(|| sub[tag_close..].find("</div>"))?
+        + tag_close;
     let text = &sub[tag_close..tag_end];
     Some(strip_all_tags(text))
 }
@@ -697,18 +738,26 @@ mod tests {
         assert!(!is_private_or_blocked_ip(&"1.1.1.1".parse().unwrap()));
 
         // Cloud metadata & Link-local
-        assert!(is_private_or_blocked_ip(&"169.254.169.254".parse().unwrap()));
+        assert!(is_private_or_blocked_ip(
+            &"169.254.169.254".parse().unwrap()
+        ));
         assert!(is_private_or_blocked_ip(&"169.254.170.2".parse().unwrap()));
 
         // CGNAT
         assert!(is_private_or_blocked_ip(&"100.64.0.1".parse().unwrap()));
-        assert!(is_private_or_blocked_ip(&"100.100.100.200".parse().unwrap()));
-        assert!(is_private_or_blocked_ip(&"100.127.255.255".parse().unwrap()));
+        assert!(is_private_or_blocked_ip(
+            &"100.100.100.200".parse().unwrap()
+        ));
+        assert!(is_private_or_blocked_ip(
+            &"100.127.255.255".parse().unwrap()
+        ));
         assert!(!is_private_or_blocked_ip(&"100.128.0.1".parse().unwrap()));
 
         // IPv6 Unique Local
         assert!(is_private_or_blocked_ip(&"fc00::1".parse().unwrap()));
-        assert!(is_private_or_blocked_ip(&"fd12:3456:789a::1".parse().unwrap()));
+        assert!(is_private_or_blocked_ip(
+            &"fd12:3456:789a::1".parse().unwrap()
+        ));
     }
 
     #[test]

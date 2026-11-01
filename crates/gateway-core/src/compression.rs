@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use anyhow::Result;
 use hermes_protocol::{ChatMessage, Uuid};
 use hermes_session_store::SessionStore;
+use std::sync::Arc;
 use tracing::{info, warn};
-use anyhow::Result;
 
 use crate::llm::LlmClient;
 use crate::todo::{TodoStore, TODO_INJECTION_HEADER};
@@ -66,9 +66,15 @@ impl ContextCompressor {
             .iter()
             .map(|m| {
                 let text_len = m.content.as_deref().map(|s| s.len()).unwrap_or(0);
-                let tools_len = m.tool_calls.as_ref().map(|tc| {
-                    tc.iter().map(|c| c.function.name.len() + c.function.arguments.len()).sum::<usize>()
-                }).unwrap_or(0);
+                let tools_len = m
+                    .tool_calls
+                    .as_ref()
+                    .map(|tc| {
+                        tc.iter()
+                            .map(|c| c.function.name.len() + c.function.arguments.len())
+                            .sum::<usize>()
+                    })
+                    .unwrap_or(0);
                 (text_len + tools_len) / 4 + 4
             })
             .sum()
@@ -108,7 +114,7 @@ impl ContextCompressor {
         };
 
         format!(
-r#"You are an expert conversation summarizer and state compressor.
+            r#"You are an expert conversation summarizer and state compressor.
 Summarize the following earlier conversation turns into a dense, structured context snapshot.
 
 {}
@@ -168,18 +174,27 @@ CONVERSATION TRANSCRIPT TO COMPACT:
             }
         }
 
-        let active_task = user_goals.last().cloned().unwrap_or_else(|| "General assistant inquiry".to_string());
-        let focus_note = focus_topic.map(|f| format!(" (Focus: {})", f)).unwrap_or_default();
+        let active_task = user_goals
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "General assistant inquiry".to_string());
+        let focus_note = focus_topic
+            .map(|f| format!(" (Focus: {})", f))
+            .unwrap_or_default();
         let reason_note = reason.map(|r| format!(" ({})", r)).unwrap_or_default();
 
         let actions_block = if completed_actions.is_empty() {
             "None recoverable from compacted turns.".to_string()
         } else {
-            completed_actions.into_iter().take(10).collect::<Vec<_>>().join("\n")
+            completed_actions
+                .into_iter()
+                .take(10)
+                .collect::<Vec<_>>()
+                .join("\n")
         };
 
         format!(
-r#"{}
+            r#"{}
 User requested: {}{}
 
 ## Goal
@@ -194,11 +209,7 @@ Recovered from deterministic fallback because the LLM context summarizer was una
 
 ## Active State
 Compact snapshot active. Continue with the latest user instruction."#,
-            HISTORICAL_TASK_HEADING,
-            active_task,
-            focus_note,
-            reason_note,
-            actions_block
+            HISTORICAL_TASK_HEADING, active_task, focus_note, reason_note, actions_block
         )
     }
 
@@ -220,7 +231,8 @@ Compact snapshot active. Continue with the latest user instruction."#,
             focus_topic,
             _force,
             None,
-        ).await
+        )
+        .await
     }
 
     /// Compresses session transcript with active todo list injection matching Python Hermes
@@ -279,12 +291,19 @@ Compact snapshot active. Continue with the latest user instruction."#,
         {
             Ok(summary) if !summary.trim().is_empty() => summary.trim().to_string(),
             Err(e) => {
-                warn!("LLM summarization failed for session {}: {:?}, using deterministic fallback", session_id, e);
+                warn!(
+                    "LLM summarization failed for session {}: {:?}, using deterministic fallback",
+                    session_id, e
+                );
                 Self::build_deterministic_fallback(head_messages, focus_topic, Some(&e.to_string()))
             }
             Ok(_) => {
                 warn!("LLM summarization returned empty string for session {}, using deterministic fallback", session_id);
-                Self::build_deterministic_fallback(head_messages, focus_topic, Some("Empty response from LLM"))
+                Self::build_deterministic_fallback(
+                    head_messages,
+                    focus_topic,
+                    Some("Empty response from LLM"),
+                )
             }
         };
 
@@ -339,7 +358,9 @@ Compact snapshot active. Continue with the latest user instruction."#,
         // Atomically replace transcript in session_store: clear old and append new
         session_store.clear_messages(session_id).await?;
         for msg in &new_transcript {
-            session_store.append_message(session_id, msg.clone()).await?;
+            session_store
+                .append_message(session_id, msg.clone())
+                .await?;
         }
 
         self.compression_count += 1;
@@ -395,7 +416,8 @@ mod tests {
             ChatMessage::user("Make sure it respects robots.txt"),
         ];
 
-        let prompt = ContextCompressor::build_summarization_prompt(&msgs, Some("robots.txt compliance"));
+        let prompt =
+            ContextCompressor::build_summarization_prompt(&msgs, Some("robots.txt compliance"));
         assert!(prompt.contains(HISTORICAL_TASK_HEADING));
         assert!(prompt.contains("## Goal"));
         assert!(prompt.contains("## Key Decisions & Constraints"));
@@ -417,7 +439,8 @@ mod tests {
             ChatMessage::user("Finalize documentation"),
         ];
 
-        let fallback = ContextCompressor::build_deterministic_fallback(&msgs, None, Some("LLM 503 error"));
+        let fallback =
+            ContextCompressor::build_deterministic_fallback(&msgs, None, Some("LLM 503 error"));
         assert!(fallback.contains(HISTORICAL_TASK_HEADING));
         assert!(fallback.contains("## Goal"));
         assert!(fallback.contains("## Key Decisions & Constraints"));
@@ -435,9 +458,18 @@ mod tests {
         // Populate 8 messages: 4 head messages + 4 tail messages
         for i in 1..=8 {
             if i % 2 == 1 {
-                store.append_message(session_id, ChatMessage::user(format!("User message {}", i))).await.unwrap();
+                store
+                    .append_message(session_id, ChatMessage::user(format!("User message {}", i)))
+                    .await
+                    .unwrap();
             } else {
-                store.append_message(session_id, ChatMessage::assistant(format!("Assistant response {}", i))).await.unwrap();
+                store
+                    .append_message(
+                        session_id,
+                        ChatMessage::assistant(format!("Assistant response {}", i)),
+                    )
+                    .await
+                    .unwrap();
             }
         }
 
@@ -445,7 +477,10 @@ mod tests {
         let client = LlmClient::new(None, None);
 
         // Run compression (will fall back to deterministic if LLM unreachable in unit test)
-        let res = compressor.compress_session(session_id, &store, &client, "test-model", None, true).await.unwrap();
+        let res = compressor
+            .compress_session(session_id, &store, &client, "test-model", None, true)
+            .await
+            .unwrap();
 
         assert!(res.compacted);
         assert_eq!(res.pre_count, 8);
@@ -465,11 +500,17 @@ mod tests {
         assert_eq!(new_history[1].role, "user");
         assert_eq!(new_history[1].content.as_deref(), Some("User message 5"));
         assert_eq!(new_history[2].role, "assistant");
-        assert_eq!(new_history[2].content.as_deref(), Some("Assistant response 6"));
+        assert_eq!(
+            new_history[2].content.as_deref(),
+            Some("Assistant response 6")
+        );
         assert_eq!(new_history[3].role, "user");
         assert_eq!(new_history[3].content.as_deref(), Some("User message 7"));
         assert_eq!(new_history[4].role, "assistant");
-        assert_eq!(new_history[4].content.as_deref(), Some("Assistant response 8"));
+        assert_eq!(
+            new_history[4].content.as_deref(),
+            Some("Assistant response 8")
+        );
 
         assert_eq!(compressor.compression_count, 1);
     }
@@ -481,9 +522,18 @@ mod tests {
 
         for i in 1..=8 {
             if i % 2 == 1 {
-                store.append_message(session_id, ChatMessage::user(format!("User message {}", i))).await.unwrap();
+                store
+                    .append_message(session_id, ChatMessage::user(format!("User message {}", i)))
+                    .await
+                    .unwrap();
             } else {
-                store.append_message(session_id, ChatMessage::assistant(format!("Assistant response {}", i))).await.unwrap();
+                store
+                    .append_message(
+                        session_id,
+                        ChatMessage::assistant(format!("Assistant response {}", i)),
+                    )
+                    .await
+                    .unwrap();
             }
         }
 
@@ -496,15 +546,18 @@ mod tests {
         let mut compressor = ContextCompressor::new(0.85, 4);
         let client = LlmClient::new(None, None);
 
-        let res = compressor.compress_session_with_todo(
-            session_id,
-            &store,
-            &client,
-            "test-model",
-            None,
-            true,
-            Some(&todo_store),
-        ).await.unwrap();
+        let res = compressor
+            .compress_session_with_todo(
+                session_id,
+                &store,
+                &client,
+                "test-model",
+                None,
+                true,
+                Some(&todo_store),
+            )
+            .await
+            .unwrap();
 
         assert!(res.compacted);
         let new_history = store.get_messages(session_id, None).await.unwrap();
@@ -521,14 +574,26 @@ mod tests {
         let session_id = Uuid::new_v4();
 
         // Populate only 3 messages <= protected_tail_turns (4)
-        store.append_message(session_id, ChatMessage::user("Hello")).await.unwrap();
-        store.append_message(session_id, ChatMessage::assistant("Hi")).await.unwrap();
-        store.append_message(session_id, ChatMessage::user("How are you?")).await.unwrap();
+        store
+            .append_message(session_id, ChatMessage::user("Hello"))
+            .await
+            .unwrap();
+        store
+            .append_message(session_id, ChatMessage::assistant("Hi"))
+            .await
+            .unwrap();
+        store
+            .append_message(session_id, ChatMessage::user("How are you?"))
+            .await
+            .unwrap();
 
         let mut compressor = ContextCompressor::new(0.85, 4);
         let client = LlmClient::new(None, None);
 
-        let res = compressor.compress_session(session_id, &store, &client, "test-model", None, false).await.unwrap();
+        let res = compressor
+            .compress_session(session_id, &store, &client, "test-model", None, false)
+            .await
+            .unwrap();
 
         assert!(!res.compacted);
         assert_eq!(res.pre_count, 3);

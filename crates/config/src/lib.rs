@@ -1,11 +1,11 @@
 // hermes-config - Configuration management with hot-reload
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use notify::{RecommendedWatcher, Watcher, RecursiveMode, Event};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
@@ -173,8 +173,10 @@ pub struct ConfigLoader {
 impl ConfigLoader {
     pub fn load<P: AsRef<std::path::Path>>(path: P) -> anyhow::Result<GatewayConfig> {
         let content = std::fs::read_to_string(&path)?;
-        let config: GatewayConfig = if path.as_ref().extension().and_then(|s| s.to_str()) == Some("yaml") || 
-            path.as_ref().extension().and_then(|s| s.to_str()) == Some("yml") {
+        let config: GatewayConfig = if path.as_ref().extension().and_then(|s| s.to_str())
+            == Some("yaml")
+            || path.as_ref().extension().and_then(|s| s.to_str()) == Some("yml")
+        {
             serde_yaml::from_str(&content)?
         } else {
             toml::from_str(&content)?
@@ -185,7 +187,7 @@ impl ConfigLoader {
     pub async fn load_with_watch<P: AsRef<std::path::Path>>(path: P) -> anyhow::Result<Self> {
         let config = Self::load(&path)?;
         let config_path = path.as_ref().to_path_buf();
-        
+
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| {
@@ -195,13 +197,13 @@ impl ConfigLoader {
             },
             notify::Config::default(),
         )?;
-        
+
         watcher.watch(&config_path, RecursiveMode::NonRecursive)?;
-        
+
         let config_arc = Arc::new(RwLock::new(config));
         let config_clone = config_arc.clone();
         let path_clone = config_path.clone();
-        
+
         tokio::spawn(async move {
             while let Some(_event) = rx.recv().await {
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -212,7 +214,7 @@ impl ConfigLoader {
                 }
             }
         });
-        
+
         Ok(Self {
             config: config_arc,
             watcher: Some(watcher),

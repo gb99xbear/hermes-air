@@ -1,10 +1,10 @@
 // hermes-platform-discord - 1-to-1 Discord Messaging Platform Adapter
+use async_trait::async_trait;
 use hermes_platform_adapter::{BaseAdapter, BasePlatformConfig, PlatformAdapter};
 use hermes_protocol::{
     DeliveryReceipt, DeliveryStatus, IncomingMessage, MessageContent, MessageId, OutgoingMessage,
     Platform, PlatformError, PlatformEvent,
 };
-use async_trait::async_trait;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -261,7 +261,11 @@ pub fn discord_channel_and_thread_from_session(session_id: Uuid) -> (String, Opt
 pub fn strip_bot_mention(content: &str, bot_id: &str) -> String {
     let tag1 = format!("<@{}>", bot_id);
     let tag2 = format!("<@!{}>", bot_id);
-    content.replace(&tag1, "").replace(&tag2, "").trim().to_string()
+    content
+        .replace(&tag1, "")
+        .replace(&tag2, "")
+        .trim()
+        .to_string()
 }
 
 /// Evaluates inbound message admission policy and returns `(should_process, cleaned_content)`
@@ -469,7 +473,11 @@ impl DiscordAdapter {
                 message_reference: msg_ref,
                 embeds: vec![],
                 allowed_mentions: Some(AllowedMentions {
-                    parse: vec!["users".to_string(), "roles".to_string(), "everyone".to_string()],
+                    parse: vec![
+                        "users".to_string(),
+                        "roles".to_string(),
+                        "everyone".to_string(),
+                    ],
                     users: vec![],
                     roles: vec![],
                     replied_user: true,
@@ -491,7 +499,12 @@ impl DiscordAdapter {
         content: &str,
     ) -> Result<DiscordMessage, PlatformError> {
         let token = self.bot_token()?;
-        let url = format!("{}/channels/{}/messages/{}", self.api_base(), channel_id, message_id);
+        let url = format!(
+            "{}/channels/{}/messages/{}",
+            self.api_base(),
+            channel_id,
+            message_id
+        );
 
         let capped_content = if content.len() > DISCORD_MAX_MESSAGE_CHARS {
             let mut end = DISCORD_MAX_MESSAGE_CHARS;
@@ -676,8 +689,8 @@ impl PlatformAdapter for DiscordAdapter {
         &self,
         payload: serde_json::Value,
     ) -> Result<Vec<IncomingMessage>, PlatformError> {
-        let discord_msg: DiscordMessage = serde_json::from_value(payload)
-            .map_err(|e| PlatformError::Internal(e.to_string()))?;
+        let discord_msg: DiscordMessage =
+            serde_json::from_value(payload).map_err(|e| PlatformError::Internal(e.to_string()))?;
 
         let bot_user = self.bot_user().await;
         let config = self.base.config.clone().unwrap_or_default();
@@ -689,10 +702,8 @@ impl PlatformAdapter for DiscordAdapter {
             return Ok(vec![]);
         }
 
-        let session_id = session_id_from_discord(
-            &discord_msg.channel_id,
-            discord_msg.thread_id.as_deref(),
-        );
+        let session_id =
+            session_id_from_discord(&discord_msg.channel_id, discord_msg.thread_id.as_deref());
 
         let incoming = IncomingMessage {
             id: MessageId::new(),
@@ -737,7 +748,11 @@ mod tests {
         assert_eq!(chunks_exact[0].len(), 2000);
 
         // 3. Multi-chunk message split cleanly at newlines/spaces
-        let long_msg = format!("{}\n\n{}", "Paragraph 1: ".to_string() + &"x".repeat(1500), "Paragraph 2: ".to_string() + &"y".repeat(1000));
+        let long_msg = format!(
+            "{}\n\n{}",
+            "Paragraph 1: ".to_string() + &"x".repeat(1500),
+            "Paragraph 2: ".to_string() + &"y".repeat(1000)
+        );
         let chunks_multi = chunk_message(&long_msg, DISCORD_MAX_MESSAGE_CHARS);
         assert_eq!(chunks_multi.len(), 2);
         assert!(chunks_multi[0].len() <= DISCORD_MAX_MESSAGE_CHARS);
@@ -750,7 +765,10 @@ mod tests {
         let capped = chunk_message(&huge_msg, DISCORD_MAX_MESSAGE_CHARS);
         assert_eq!(capped.len(), MAX_SPLIT_MESSAGES);
         assert!(capped.last().unwrap().contains("Response truncated"));
-        assert!(capped.last().unwrap().contains("exceeded the delivery limit"));
+        assert!(capped
+            .last()
+            .unwrap()
+            .contains("exceeded the delivery limit"));
     }
 
     #[test]
@@ -769,7 +787,12 @@ mod tests {
             guild_id: Some("999999999999999999".to_string()),
             require_mention: true,
             free_response_channels: ["111222333444555666".to_string()].into_iter().collect(),
-            allowed_channels: ["111222333444555666".to_string(), "777888999000111222".to_string()].into_iter().collect(),
+            allowed_channels: [
+                "111222333444555666".to_string(),
+                "777888999000111222".to_string(),
+            ]
+            .into_iter()
+            .collect(),
             ignored_channels: ["888888888888888888".to_string()].into_iter().collect(),
             base: BasePlatformConfig {
                 enabled: true,
@@ -821,7 +844,8 @@ mod tests {
             message_reference: None,
             thread_id: None,
         };
-        let (admit_guild_no, _) = should_process_message(&guild_msg_no_mention, Some(&bot), &config);
+        let (admit_guild_no, _) =
+            should_process_message(&guild_msg_no_mention, Some(&bot), &config);
         assert!(!admit_guild_no);
 
         // Case 3: Inbound Guild channel with `<@bot_id>` mention -> Admitted and stripped
@@ -843,7 +867,8 @@ mod tests {
             message_reference: None,
             thread_id: None,
         };
-        let (admit_mention, content_mention) = should_process_message(&guild_msg_mention, Some(&bot), &config);
+        let (admit_mention, content_mention) =
+            should_process_message(&guild_msg_mention, Some(&bot), &config);
         assert!(admit_mention);
         assert_eq!(content_mention, "run diagnostic status");
 
@@ -930,11 +955,13 @@ mod tests {
         assert_ne!(session_b, session_no_thread);
 
         // Verify roundtrip recovery of channel and thread IDs
-        let (recovered_chan, recovered_thread) = discord_channel_and_thread_from_session(session_a1);
+        let (recovered_chan, recovered_thread) =
+            discord_channel_and_thread_from_session(session_a1);
         assert_eq!(recovered_chan, channel_id);
         assert_eq!(recovered_thread.as_deref(), Some(thread_1));
 
-        let (rec_chan_none, rec_thread_none) = discord_channel_and_thread_from_session(session_no_thread);
+        let (rec_chan_none, rec_thread_none) =
+            discord_channel_and_thread_from_session(session_no_thread);
         assert_eq!(rec_chan_none, channel_id);
         assert_eq!(rec_thread_none, None);
     }

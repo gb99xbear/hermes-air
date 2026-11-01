@@ -1,7 +1,7 @@
 // hermes-protocol - Shared types and protocol definitions
 use serde::{Deserialize, Serialize};
-pub use uuid::Uuid;
 use std::collections::HashMap;
+pub use uuid::Uuid;
 
 /// Tool Call function payload representation
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,7 +68,6 @@ impl ChatMessage {
         }
     }
 }
-
 
 /// Unique identifier for messages
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -208,17 +207,48 @@ pub struct OutgoingMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MessageContent {
-    Text { text: String },
-    Image { url: String, caption: Option<String> },
-    File { url: String, filename: String, mime_type: Option<String> },
-    Audio { url: String, duration: Option<u64> },
-    Video { url: String, duration: Option<u64> },
-    Location { latitude: f64, longitude: f64 },
-    Contact { name: String, phone: String },
-    Sticker { sticker_id: String },
-    Reaction { emoji: String, target_id: MessageId },
-    System { event: String, data: serde_json::Value },
-    Unknown { data: serde_json::Value },
+    Text {
+        text: String,
+    },
+    Image {
+        url: String,
+        caption: Option<String>,
+    },
+    File {
+        url: String,
+        filename: String,
+        mime_type: Option<String>,
+    },
+    Audio {
+        url: String,
+        duration: Option<u64>,
+    },
+    Video {
+        url: String,
+        duration: Option<u64>,
+    },
+    Location {
+        latitude: f64,
+        longitude: f64,
+    },
+    Contact {
+        name: String,
+        phone: String,
+    },
+    Sticker {
+        sticker_id: String,
+    },
+    Reaction {
+        emoji: String,
+        target_id: MessageId,
+    },
+    System {
+        event: String,
+        data: serde_json::Value,
+    },
+    Unknown {
+        data: serde_json::Value,
+    },
 }
 
 /// Platform event (internal)
@@ -226,8 +256,14 @@ pub enum MessageContent {
 pub enum PlatformEvent {
     Incoming(IncomingMessage),
     Outgoing(OutgoingMessage),
-    Ack { message_id: MessageId, success: bool },
-    Error { session_id: Uuid, error: PlatformError },
+    Ack {
+        message_id: MessageId,
+        success: bool,
+    },
+    Error {
+        session_id: Uuid,
+        error: PlatformError,
+    },
     SessionCreated(Session),
     SessionUpdated(Session),
     SessionDeleted(Uuid),
@@ -286,10 +322,15 @@ pub mod adapter {
 
         fn platform(&self) -> Platform;
         async fn initialize(&mut self, config: Self::Config) -> Result<(), PlatformError>;
-        async fn start(&mut self, sender: tokio::sync::mpsc::UnboundedSender<PlatformEvent>) -> Result<(), PlatformError>;
+        async fn start(
+            &mut self,
+            sender: tokio::sync::mpsc::UnboundedSender<PlatformEvent>,
+        ) -> Result<(), PlatformError>;
         async fn stop(&mut self) -> Result<(), PlatformError>;
         async fn send(&self, msg: Self::OutgoingMessage) -> Result<DeliveryReceipt, PlatformError>;
-        fn name(&self) -> &'static str { self.platform().as_str() }
+        fn name(&self) -> &'static str {
+            self.platform().as_str()
+        }
     }
 }
 

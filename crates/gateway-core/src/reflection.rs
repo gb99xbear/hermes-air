@@ -101,10 +101,20 @@ impl BackgroundReviewEngine {
             return None;
         }
         let result = memory_store.add("memory", trimmed);
-        if result.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-            info!("Background reflection persisted learning to memory ({} chars)", trimmed.chars().count());
+        if result
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            info!(
+                "Background reflection persisted learning to memory ({} chars)",
+                trimmed.chars().count()
+            );
         } else {
-            warn!("Background reflection could not persist learning to memory: {:?}", result.get("error"));
+            warn!(
+                "Background reflection could not persist learning to memory: {:?}",
+                result.get("error")
+            );
         }
         Some(result)
     }
@@ -156,14 +166,18 @@ impl BackgroundReviewEngine {
             if msg.role == "user" {
                 for pattern in &correction_patterns {
                     if content_lower.contains(pattern) {
-                        signals.push(LearningSignal::UserCorrection(msg.content.clone().unwrap_or_default()));
+                        signals.push(LearningSignal::UserCorrection(
+                            msg.content.clone().unwrap_or_default(),
+                        ));
                         break;
                     }
                 }
             } else if msg.role == "assistant" || msg.role == "tool" {
                 for pattern in &tech_solution_patterns {
                     if content_lower.contains(pattern) {
-                        signals.push(LearningSignal::TechnicalSolution(msg.content.clone().unwrap_or_default()));
+                        signals.push(LearningSignal::TechnicalSolution(
+                            msg.content.clone().unwrap_or_default(),
+                        ));
                         break;
                     }
                 }
@@ -232,7 +246,10 @@ impl BackgroundReviewEngine {
         model: &str,
     ) {
         if !self.should_review(messages_snapshot) {
-            debug!("Skipping background review for session {}: no trigger signals or criteria not met", session_id);
+            debug!(
+                "Skipping background review for session {}: no trigger signals or criteria not met",
+                session_id
+            );
             return;
         }
 
@@ -241,7 +258,9 @@ impl BackgroundReviewEngine {
         let model = model.to_string();
 
         tokio::spawn(async move {
-            engine.execute_review_run(session_id, snapshot, &model).await;
+            engine
+                .execute_review_run(session_id, snapshot, &model)
+                .await;
         });
     }
 
@@ -255,29 +274,25 @@ impl BackgroundReviewEngine {
         let _guard = match self.review_lock.try_lock() {
             Ok(g) => g,
             Err(_) => {
-                debug!("Background review already running, skipping overlapping run for session {}", session_id);
+                debug!(
+                    "Background review already running, skipping overlapping run for session {}",
+                    session_id
+                );
                 return None;
             }
         };
 
-        info!("Starting background review and reflection for session {}", session_id);
-
-        let review_messages = Self::build_review_messages(
-            &messages_snapshot,
-            None,
-            self.config.max_history_messages,
+        info!(
+            "Starting background review and reflection for session {}",
+            session_id
         );
+
+        let review_messages =
+            Self::build_review_messages(&messages_snapshot, None, self.config.max_history_messages);
 
         match self
             .llm_client
-            .chat_completion_with_tools(
-                model,
-                &review_messages,
-                None,
-                None,
-                0.3,
-                2048,
-            )
+            .chat_completion_with_tools(model, &review_messages, None, None, 0.3, 2048)
             .await
         {
             Ok((_raw_msg, response)) => {
@@ -288,9 +303,15 @@ impl BackgroundReviewEngine {
 
                 let trimmed = text.trim();
                 if trimmed.is_empty() || trimmed.contains("Nothing to save.") {
-                    info!("Background review completed for session {}: Nothing to save.", session_id);
+                    info!(
+                        "Background review completed for session {}: Nothing to save.",
+                        session_id
+                    );
                 } else {
-                    info!("Background review extracted reflection for session {}: {}", session_id, trimmed);
+                    info!(
+                        "Background review extracted reflection for session {}: {}",
+                        session_id, trimmed
+                    );
                     Self::persist_extracted_learnings(&self.skill_registry, trimmed).await;
                     if let Some(store) = &self.memory_store {
                         Self::persist_memory_learning(store, trimmed);
@@ -300,7 +321,10 @@ impl BackgroundReviewEngine {
                 Some(text)
             }
             Err(e) => {
-                warn!("Background review LLM request failed for session {}: {:?}", session_id, e);
+                warn!(
+                    "Background review LLM request failed for session {}: {:?}",
+                    session_id, e
+                );
                 None
             }
         }
@@ -369,7 +393,9 @@ mod tests {
         let messages = vec![
             ChatMessage::user("Can you write a poem?".to_string()),
             ChatMessage::assistant("Sure! Here is a long poem...".to_string()),
-            ChatMessage::user("Stop doing that, this is too verbose! Just give me the bullet points.".to_string()),
+            ChatMessage::user(
+                "Stop doing that, this is too verbose! Just give me the bullet points.".to_string(),
+            ),
         ];
 
         let signals = BackgroundReviewEngine::detect_learning_signals(&messages);
@@ -411,19 +437,31 @@ mod tests {
         let review_msgs = BackgroundReviewEngine::build_review_messages(&messages, None, 10);
         assert_eq!(review_msgs.len(), 4);
         assert_eq!(review_msgs[0].role, "system");
-        assert!(review_msgs[0].content.as_ref().unwrap().contains("**Memory**"));
+        assert!(review_msgs[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .contains("**Memory**"));
         assert_eq!(review_msgs[1].role, "user");
         assert_eq!(review_msgs[1].content.as_deref(), Some("Hello"));
         assert_eq!(review_msgs[2].role, "assistant");
         assert_eq!(review_msgs[2].content.as_deref(), Some("World"));
         assert_eq!(review_msgs[3].role, "user");
-        assert!(review_msgs[3].content.as_ref().unwrap().contains("Evaluate the conversation"));
+        assert!(review_msgs[3]
+            .content
+            .as_ref()
+            .unwrap()
+            .contains("Evaluate the conversation"));
     }
 
     #[test]
     fn test_should_review_filtering() {
         let provider_profile = crate::providers::ProviderProfile::default();
-        let llm = Arc::new(LlmClient::from_provider_profile(&provider_profile, None, None));
+        let llm = Arc::new(LlmClient::from_provider_profile(
+            &provider_profile,
+            None,
+            None,
+        ));
         let skill_reg = Arc::new(SkillRegistry::default());
 
         let mut config = BackgroundReviewConfig::default();
@@ -432,9 +470,7 @@ mod tests {
         let engine = BackgroundReviewEngine::new(config.clone(), llm.clone(), skill_reg.clone());
 
         // Less than min_messages
-        let messages = vec![
-            ChatMessage::user("Don't do that".to_string()),
-        ];
+        let messages = vec![ChatMessage::user("Don't do that".to_string())];
         assert!(!engine.should_review(&messages));
 
         // Meets min_messages and has signal
@@ -462,9 +498,9 @@ mod tests {
         let store = MemoryStore::with_base_dir(dir.clone());
 
         // A real learning signal must exist before reflection persists anything.
-        let messages = vec![
-            ChatMessage::user("Stop doing that, this is too verbose!".to_string()),
-        ];
+        let messages = vec![ChatMessage::user(
+            "Stop doing that, this is too verbose!".to_string(),
+        )];
         let signals = BackgroundReviewEngine::detect_learning_signals(&messages);
         assert!(!signals.is_empty());
 
@@ -475,7 +511,9 @@ mod tests {
         assert_eq!(store.entries_for("memory"), vec![output.to_string()]);
 
         // \"Nothing to save.\" is a no-op.
-        assert!(BackgroundReviewEngine::persist_memory_learning(&store, "Nothing to save.").is_none());
+        assert!(
+            BackgroundReviewEngine::persist_memory_learning(&store, "Nothing to save.").is_none()
+        );
         assert_eq!(store.entries_for("memory").len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -494,6 +532,9 @@ Always use ripgrep or search_files tool.
         BackgroundReviewEngine::persist_extracted_learnings(&skill_reg, output).await;
         let registered = skill_reg.get("fast-grep-trick").await;
         assert!(registered.is_some());
-        assert_eq!(registered.unwrap().description, "How to grep efficiently in large codebases");
+        assert_eq!(
+            registered.unwrap().description,
+            "How to grep efficiently in large codebases"
+        );
     }
 }

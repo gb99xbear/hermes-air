@@ -144,10 +144,16 @@ impl<R: BufRead, W: Write> SetupIo<R, W> {
 
     pub fn print_banner(&mut self) -> Result<()> {
         writeln!(self.writer)?;
-        writeln!(self.writer, "====================================================")?;
+        writeln!(
+            self.writer,
+            "===================================================="
+        )?;
         writeln!(self.writer, "🌿 Hermes Air 🍃 - Interactive Setup Wizard")?;
         writeln!(self.writer, "Configuration & Credentials Manager")?;
-        writeln!(self.writer, "====================================================")?;
+        writeln!(
+            self.writer,
+            "===================================================="
+        )?;
         writeln!(self.writer)?;
         self.writer.flush()?;
         Ok(())
@@ -189,8 +195,14 @@ pub fn run_model_provider_step<R: BufRead, W: Write>(
     writeln!(io.writer, "  1) OpenAI (api.openai.com)")?;
     writeln!(io.writer, "  2) OpenRouter (openrouter.ai)")?;
     writeln!(io.writer, "  3) Anthropic (api.anthropic.com)")?;
-    writeln!(io.writer, "  4) Google Gemini (generativelanguage.googleapis.com)")?;
-    writeln!(io.writer, "  5) Custom OpenAI-Compatible (e.g. 9Router, Local Ollama, vLLM)")?;
+    writeln!(
+        io.writer,
+        "  4) Google Gemini (generativelanguage.googleapis.com)"
+    )?;
+    writeln!(
+        io.writer,
+        "  5) Custom OpenAI-Compatible (e.g. 9Router, Local Ollama, vLLM)"
+    )?;
 
     let choice = io.prompt_line("Provider choice [1-5]", Some("1"))?;
     let (prov_name, default_model, default_base_url) = match choice.as_str() {
@@ -371,8 +383,7 @@ pub fn generate_config_toml(state: &SetupWizardState) -> String {
     ));
 
     // [platforms.discord]
-    let discord_enabled =
-        state.gateway.enable_discord && state.gateway.discord_bot_token.is_some();
+    let discord_enabled = state.gateway.enable_discord && state.gateway.discord_bot_token.is_some();
     let discord_token = state.gateway.discord_bot_token.as_deref().unwrap_or("");
     toml.push_str("[platforms.discord]\n");
     toml.push_str(&format!("enabled = {}\n", discord_enabled));

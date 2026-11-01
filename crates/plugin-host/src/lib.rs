@@ -1,12 +1,12 @@
 // hermes-plugin-host - Plugin system with WASM, native, and Python support
-use hermes_protocol::Platform;
 use async_trait::async_trait;
+use hermes_protocol::Platform;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use thiserror::Error;
+use tokio::sync::RwLock;
 
 #[derive(Debug, Error)]
 pub enum PluginError {
@@ -77,7 +77,7 @@ impl WasmPlugin {
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[])
             .map_err(|e| PluginError::Wasm(e.to_string()))?;
-        
+
         Ok(Self {
             manifest,
             _instance: Some(instance),
@@ -116,7 +116,7 @@ impl NativePlugin {
     pub async fn load(lib_path: &PathBuf, manifest: PluginManifest) -> Result<Self, PluginError> {
         let library = unsafe { libloading::Library::new(lib_path) }
             .map_err(|e| PluginError::LoadFailed(e.to_string()))?;
-        
+
         Ok(Self {
             manifest,
             _library: Some(library),
@@ -155,8 +155,9 @@ pub struct PythonPlugin {
 impl PythonPlugin {
     pub async fn load(py_path: &PathBuf, manifest: PluginManifest) -> Result<Self, PluginError> {
         Python::with_gil(|py| {
-            let module = pyo3::PyModule::from_code(py, &std::fs::read_to_string(py_path).unwrap(), "", "")
-                .map_err(|e| PluginError::Python(e.to_string()))?;
+            let module =
+                pyo3::PyModule::from_code(py, &std::fs::read_to_string(py_path).unwrap(), "", "")
+                    .map_err(|e| PluginError::Python(e.to_string()))?;
             Ok(Self {
                 manifest,
                 module: Some(module.into()),
@@ -175,7 +176,8 @@ impl Plugin for PythonPlugin {
     async fn initialize(&mut self, _config: serde_json::Value) -> Result<(), PluginError> {
         Python::with_gil(|py| {
             if let Some(module) = &self.module {
-                module.call_method1(py, "initialize", (config,))
+                module
+                    .call_method1(py, "initialize", (config,))
                     .map_err(|e| PluginError::Python(e.to_string()))?;
             }
             Ok(())
@@ -185,7 +187,8 @@ impl Plugin for PythonPlugin {
     async fn execute(&self, _input: serde_json::Value) -> Result<serde_json::Value, PluginError> {
         Python::with_gil(|py| {
             if let Some(module) = &self.module {
-                let result = module.call_method1(py, "execute", (input,))
+                let result = module
+                    .call_method1(py, "execute", (input,))
                     .map_err(|e| PluginError::Python(e.to_string()))?;
                 Ok(result.extract().unwrap_or(serde_json::json!({})))
             } else {
@@ -209,11 +212,7 @@ pub struct PluginHost {
 }
 
 impl PluginHost {
-    pub fn new(
-        plugin_dirs: Vec<PathBuf>,
-        wasm_dir: Option<PathBuf>,
-        python_enabled: bool,
-    ) -> Self {
+    pub fn new(plugin_dirs: Vec<PathBuf>, wasm_dir: Option<PathBuf>, python_enabled: bool) -> Self {
         Self {
             plugins: Arc::new(RwLock::new(HashMap::new())),
             manifests: Arc::new(RwLock::new(HashMap::new())),
@@ -248,20 +247,27 @@ impl PluginHost {
             return Ok(());
         }
 
-        let mut entries = tokio::fs::read_dir(dir).await
+        let mut entries = tokio::fs::read_dir(dir)
+            .await
             .map_err(|e| PluginError::LoadFailed(e.to_string()))?;
 
-        while let Some(entry) = entries.next_entry().await
-            .map_err(|e| PluginError::LoadFailed(e.to_string()))? {
-            
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| PluginError::LoadFailed(e.to_string()))?
+        {
             let path = entry.path();
             if path.extension().map_or(false, |ext| ext == "json") {
-                let content = tokio::fs::read_to_string(&path).await
+                let content = tokio::fs::read_to_string(&path)
+                    .await
                     .map_err(|e| PluginError::LoadFailed(e.to_string()))?;
-                let manifest: PluginManifest = serde_json::from_str(&content)
-                    .map_err(|e| PluginError::Serialization(e))?;
-                
-                self.manifests.write().await.insert(manifest.name.clone(), manifest.clone());
+                let manifest: PluginManifest =
+                    serde_json::from_str(&content).map_err(|e| PluginError::Serialization(e))?;
+
+                self.manifests
+                    .write()
+                    .await
+                    .insert(manifest.name.clone(), manifest.clone());
 
                 // Load based on type
                 match manifest.plugin_type {
@@ -269,21 +275,31 @@ impl PluginHost {
                         let wasm_path = path.with_extension("wasm");
                         if wasm_path.exists() {
                             let plugin = WasmPlugin::load(&wasm_path, manifest).await?;
-                            self.plugins.write().await.insert(plugin.manifest().name.clone(), Box::new(plugin));
+                            self.plugins
+                                .write()
+                                .await
+                                .insert(plugin.manifest().name.clone(), Box::new(plugin));
                         }
                     }
                     PluginType::Native => {
-                        let lib_path = path.with_extension(if cfg!(windows) { "dll" } else { "so" });
+                        let lib_path =
+                            path.with_extension(if cfg!(windows) { "dll" } else { "so" });
                         if lib_path.exists() {
                             let plugin = NativePlugin::load(&lib_path, manifest).await?;
-                            self.plugins.write().await.insert(plugin.manifest().name.clone(), Box::new(plugin));
+                            self.plugins
+                                .write()
+                                .await
+                                .insert(plugin.manifest().name.clone(), Box::new(plugin));
                         }
                     }
                     PluginType::Python => {
                         #[cfg(feature = "python")]
                         {
                             let plugin = PythonPlugin::load(&path, manifest).await?;
-                            self.plugins.write().await.insert(plugin.manifest().name.clone(), Box::new(plugin));
+                            self.plugins
+                                .write()
+                                .await
+                                .insert(plugin.manifest().name.clone(), Box::new(plugin));
                         }
                     }
                 }
@@ -303,7 +319,11 @@ impl PluginHost {
         Ok(())
     }
 
-    pub async fn execute(&self, name: &str, input: serde_json::Value) -> Result<serde_json::Value, PluginError> {
+    pub async fn execute(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, PluginError> {
         let plugins = self.plugins.read().await;
         if let Some(plugin) = plugins.get(name) {
             plugin.execute(input).await

@@ -1,10 +1,10 @@
 // hermes-platform-telegram - Telegram Bot API adapter
+use async_trait::async_trait;
 use hermes_platform_adapter::{BaseAdapter, BasePlatformConfig, PlatformAdapter};
 use hermes_protocol::{
     DeliveryReceipt, DeliveryStatus, IncomingMessage, MessageContent, MessageId, OutgoingMessage,
     Platform, PlatformError, PlatformEvent,
 };
-use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -463,7 +463,8 @@ pub fn looks_like_parse_error(status_code: u16, error_desc: &str) -> bool {
         || lower.contains("entities")
         || lower.contains("parse error")
         || lower.contains("tag")
-        || (status_code == 400 && (lower.contains("parse") || lower.contains("markdown") || lower.contains("html")))
+        || (status_code == 400
+            && (lower.contains("parse") || lower.contains("markdown") || lower.contains("html")))
 }
 
 #[derive(Debug)]
@@ -473,7 +474,8 @@ pub struct TelegramAdapter {
     pub bot_info: Arc<RwLock<Option<TelegramUser>>>,
     pub last_poll_time: Arc<RwLock<Instant>>,
     #[allow(dead_code)]
-    pending_messages: Arc<RwLock<HashMap<MessageId, (OutgoingMessage, mpsc::UnboundedSender<DeliveryReceipt>)>>>,
+    pending_messages:
+        Arc<RwLock<HashMap<MessageId, (OutgoingMessage, mpsc::UnboundedSender<DeliveryReceipt>)>>>,
 }
 
 impl TelegramAdapter {
@@ -489,10 +491,17 @@ impl TelegramAdapter {
 
     fn api_url(&self, method: &str) -> String {
         let config = self.base.config.as_ref().expect("Not initialized");
-        format!("https://api.telegram.org/bot{}/{}", config.bot_token, method)
+        format!(
+            "https://api.telegram.org/bot{}/{}",
+            config.bot_token, method
+        )
     }
 
-    async fn make_request<T: for<'de> Deserialize<'de>>(&self, method: &str, body: &impl Serialize) -> Result<T, PlatformError> {
+    async fn make_request<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        body: &impl Serialize,
+    ) -> Result<T, PlatformError> {
         let url = self.api_url(method);
         let config = self.base.config.as_ref().expect("Not initialized");
 
@@ -513,17 +522,32 @@ impl TelegramAdapter {
 
         if !tg_response.ok {
             return Err(PlatformError::Api {
-                code: tg_response.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string()),
-                message: tg_response.description.unwrap_or_else(|| "Unknown Telegram API error".to_string()),
+                code: tg_response
+                    .error_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| status.to_string()),
+                message: tg_response
+                    .description
+                    .unwrap_or_else(|| "Unknown Telegram API error".to_string()),
             });
         }
 
-        tg_response.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
+        tg_response
+            .result
+            .ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
     }
 
     pub fn download_url(&self, file_path: &str) -> Result<String, PlatformError> {
-        let config = self.base.config.as_ref().ok_or_else(|| PlatformError::Internal("Not initialized".into()))?;
-        Ok(format!("https://api.telegram.org/file/bot{}/{}", config.bot_token, file_path.trim_start_matches('/')))
+        let config = self
+            .base
+            .config
+            .as_ref()
+            .ok_or_else(|| PlatformError::Internal("Not initialized".into()))?;
+        Ok(format!(
+            "https://api.telegram.org/file/bot{}/{}",
+            config.bot_token,
+            file_path.trim_start_matches('/')
+        ))
     }
 
     pub async fn get_file(&self, file_id: &str) -> Result<TelegramFile, PlatformError> {
@@ -531,26 +555,49 @@ impl TelegramAdapter {
         self.make_request::<TelegramFile>("getFile", &body).await
     }
 
-    pub async fn download_file_to_cache(&self, file_path: &str, destination: &Path) -> Result<PathBuf, PlatformError> {
+    pub async fn download_file_to_cache(
+        &self,
+        file_path: &str,
+        destination: &Path,
+    ) -> Result<PathBuf, PlatformError> {
         let url = self.download_url(file_path)?;
         if let Some(parent) = destination.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| PlatformError::Internal(e.to_string()))?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| PlatformError::Internal(e.to_string()))?;
         }
 
-        let resp = self.client.get(&url).send().await.map_err(|e| PlatformError::Network(e.to_string()))?;
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| PlatformError::Network(e.to_string()))?;
         if !resp.status().is_success() {
             return Err(PlatformError::Api {
                 code: resp.status().as_u16().to_string(),
-                message: format!("Failed to download file from Telegram: HTTP {}", resp.status()),
+                message: format!(
+                    "Failed to download file from Telegram: HTTP {}",
+                    resp.status()
+                ),
             });
         }
 
-        let bytes = resp.bytes().await.map_err(|e| PlatformError::Network(e.to_string()))?;
-        tokio::fs::write(destination, &bytes).await.map_err(|e| PlatformError::Internal(e.to_string()))?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| PlatformError::Network(e.to_string()))?;
+        tokio::fs::write(destination, &bytes)
+            .await
+            .map_err(|e| PlatformError::Internal(e.to_string()))?;
         Ok(destination.to_path_buf())
     }
 
-    pub async fn cache_inbound_file(&self, file_id: &str, default_ext: &str) -> Result<String, PlatformError> {
+    pub async fn cache_inbound_file(
+        &self,
+        file_id: &str,
+        default_ext: &str,
+    ) -> Result<String, PlatformError> {
         let file_info = self.get_file(file_id).await?;
         if let Some(file_path) = file_info.file_path {
             let ext = Path::new(&file_path)
@@ -560,12 +607,16 @@ impl TelegramAdapter {
                 .unwrap_or_else(|| default_ext.to_string());
 
             let cache_dir = PathBuf::from("/tmp/hermes_telegram_cache");
-            tokio::fs::create_dir_all(&cache_dir).await.map_err(|e| PlatformError::Internal(e.to_string()))?;
+            tokio::fs::create_dir_all(&cache_dir)
+                .await
+                .map_err(|e| PlatformError::Internal(e.to_string()))?;
             let dest = cache_dir.join(format!("{}_{}{}", file_id, Uuid::new_v4().simple(), ext));
             let path = self.download_file_to_cache(&file_path, &dest).await?;
             Ok(path.to_string_lossy().to_string())
         } else {
-            Err(PlatformError::Internal("Telegram did not return file_path".into()))
+            Err(PlatformError::Internal(
+                "Telegram did not return file_path".into(),
+            ))
         }
     }
 
@@ -584,7 +635,10 @@ impl TelegramAdapter {
             reply_markup: None,
         };
 
-        match self.make_request::<serde_json::Value>("editMessageText", &html_req).await {
+        match self
+            .make_request::<serde_json::Value>("editMessageText", &html_req)
+            .await
+        {
             Ok(_) => Ok(()),
             Err(PlatformError::Api { code, message }) => {
                 if looks_like_message_not_modified(&message) {
@@ -605,9 +659,14 @@ impl TelegramAdapter {
                         disable_web_page_preview: Some(true),
                         reply_markup: None,
                     };
-                    match self.make_request::<serde_json::Value>("editMessageText", &plain_req).await {
+                    match self
+                        .make_request::<serde_json::Value>("editMessageText", &plain_req)
+                        .await
+                    {
                         Ok(_) => Ok(()),
-                        Err(PlatformError::Api { message: p_msg, .. }) if looks_like_message_not_modified(&p_msg) => {
+                        Err(PlatformError::Api { message: p_msg, .. })
+                            if looks_like_message_not_modified(&p_msg) =>
+                        {
                             Ok(())
                         }
                         Err(other) => Err(other),
@@ -629,11 +688,7 @@ impl TelegramAdapter {
         self.edit_message_text(chat_id, message_id, text).await
     }
 
-    pub async fn delete_message(
-        &self,
-        chat_id: i64,
-        message_id: i64,
-    ) -> Result<(), PlatformError> {
+    pub async fn delete_message(&self, chat_id: i64, message_id: i64) -> Result<(), PlatformError> {
         let body = serde_json::json!({
             "chat_id": chat_id,
             "message_id": message_id,
@@ -641,7 +696,10 @@ impl TelegramAdapter {
         match self.make_request::<bool>("deleteMessage", &body).await {
             Ok(_) => Ok(()),
             Err(e) => {
-                warn!("[telegram] Failed to delete message {} in chat {}: {:?}", message_id, chat_id, e);
+                warn!(
+                    "[telegram] Failed to delete message {} in chat {}: {:?}",
+                    message_id, chat_id, e
+                );
                 Ok(()) // Treat deletion errors leniently
             }
         }
@@ -653,7 +711,8 @@ impl TelegramAdapter {
         text: &str,
         keyboard: InlineKeyboardMarkup,
     ) -> Result<SentMessage, PlatformError> {
-        self.send_message_with_keyboard_and_thread(chat_id, None, text, keyboard).await
+        self.send_message_with_keyboard_and_thread(chat_id, None, text, keyboard)
+            .await
     }
 
     pub async fn send_message_with_keyboard_and_thread(
@@ -673,7 +732,10 @@ impl TelegramAdapter {
             reply_markup: Some(keyboard.clone()),
         };
 
-        match self.make_request::<SentMessage>("sendMessage", &html_req).await {
+        match self
+            .make_request::<SentMessage>("sendMessage", &html_req)
+            .await
+        {
             Ok(sent) => Ok(sent),
             Err(PlatformError::Api { code, message }) => {
                 let status_code = code.parse::<u16>().unwrap_or(0);
@@ -691,7 +753,8 @@ impl TelegramAdapter {
                         disable_web_page_preview: Some(true),
                         reply_markup: Some(keyboard),
                     };
-                    self.make_request::<SentMessage>("sendMessage", &plain_req).await
+                    self.make_request::<SentMessage>("sendMessage", &plain_req)
+                        .await
                 } else {
                     Err(PlatformError::Api { code, message })
                 }
@@ -716,7 +779,10 @@ impl TelegramAdapter {
             reply_markup: keyboard.clone(),
         };
 
-        match self.make_request::<serde_json::Value>("editMessageText", &html_req).await {
+        match self
+            .make_request::<serde_json::Value>("editMessageText", &html_req)
+            .await
+        {
             Ok(_) => Ok(()),
             Err(PlatformError::Api { code, message }) => {
                 if looks_like_message_not_modified(&message) {
@@ -736,9 +802,14 @@ impl TelegramAdapter {
                         disable_web_page_preview: Some(true),
                         reply_markup: keyboard,
                     };
-                    match self.make_request::<serde_json::Value>("editMessageText", &plain_req).await {
+                    match self
+                        .make_request::<serde_json::Value>("editMessageText", &plain_req)
+                        .await
+                    {
                         Ok(_) => Ok(()),
-                        Err(PlatformError::Api { message: p_msg, .. }) if looks_like_message_not_modified(&p_msg) => {
+                        Err(PlatformError::Api { message: p_msg, .. })
+                            if looks_like_message_not_modified(&p_msg) =>
+                        {
                             Ok(())
                         }
                         Err(other) => Err(other),
@@ -766,11 +837,21 @@ impl TelegramAdapter {
     }
 
     pub async fn send_chat_action(&self, chat_id: i64, action: &str) -> Result<(), PlatformError> {
-        self.send_chat_action_with_thread(chat_id, None, action).await
+        self.send_chat_action_with_thread(chat_id, None, action)
+            .await
     }
 
-    pub async fn send_chat_action_with_thread(&self, chat_id: i64, message_thread_id: Option<i64>, action: &str) -> Result<(), PlatformError> {
-        let req = SendChatActionRequest { chat_id, action, message_thread_id };
+    pub async fn send_chat_action_with_thread(
+        &self,
+        chat_id: i64,
+        message_thread_id: Option<i64>,
+        action: &str,
+    ) -> Result<(), PlatformError> {
+        let req = SendChatActionRequest {
+            chat_id,
+            action,
+            message_thread_id,
+        };
         let _: serde_json::Value = self.make_request("sendChatAction", &req).await?;
         Ok(())
     }
@@ -781,7 +862,8 @@ impl TelegramAdapter {
         chunk: &str,
         reply_to_message_id: Option<i64>,
     ) -> Result<SentMessage, PlatformError> {
-        self.send_chunk_with_fallback_and_thread(chat_id, None, chunk, reply_to_message_id).await
+        self.send_chunk_with_fallback_and_thread(chat_id, None, chunk, reply_to_message_id)
+            .await
     }
 
     pub async fn send_chunk_with_fallback_and_thread(
@@ -801,7 +883,10 @@ impl TelegramAdapter {
             reply_markup: None,
         };
 
-        match self.make_request::<SentMessage>("sendMessage", &html_req).await {
+        match self
+            .make_request::<SentMessage>("sendMessage", &html_req)
+            .await
+        {
             Ok(sent) => Ok(sent),
             Err(PlatformError::Api { code, message }) => {
                 let status_code = code.parse::<u16>().unwrap_or(0);
@@ -820,7 +905,8 @@ impl TelegramAdapter {
                         disable_web_page_preview: Some(true),
                         reply_markup: None,
                     };
-                    self.make_request::<SentMessage>("sendMessage", &plain_req).await
+                    self.make_request::<SentMessage>("sendMessage", &plain_req)
+                        .await
                 } else {
                     Err(PlatformError::Api { code, message })
                 }
@@ -846,7 +932,13 @@ impl TelegramAdapter {
             .await
             .map_err(|e| PlatformError::Internal(format!("Failed to read photo file: {}", e)))?;
 
-        let mime_type = match photo_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
+        let mime_type = match photo_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase()
+            .as_str()
+        {
             "jpg" | "jpeg" => "image/jpeg",
             "webp" => "image/webp",
             "gif" => "image/gif",
@@ -863,8 +955,7 @@ impl TelegramAdapter {
 
         // Attempt 1: with HTML parse_mode if caption is present
         if has_caption {
-            let mut form = reqwest::multipart::Form::new()
-                .text("chat_id", chat_id.to_string());
+            let mut form = reqwest::multipart::Form::new().text("chat_id", chat_id.to_string());
             if let Some(thread_id) = message_thread_id {
                 form = form.text("message_thread_id", thread_id.to_string());
             }
@@ -878,7 +969,9 @@ impl TelegramAdapter {
             let part = reqwest::multipart::Part::bytes(file_bytes.clone())
                 .file_name(file_name.clone())
                 .mime_str(mime_type)
-                .unwrap_or_else(|_| reqwest::multipart::Part::bytes(file_bytes.clone()).file_name(file_name.clone()));
+                .unwrap_or_else(|_| {
+                    reqwest::multipart::Part::bytes(file_bytes.clone()).file_name(file_name.clone())
+                });
             form = form.part("photo", part);
 
             let resp = self
@@ -901,8 +994,13 @@ impl TelegramAdapter {
                     return Ok(sent);
                 }
             } else {
-                let code = tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string());
-                let message = tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string());
+                let code = tg_resp
+                    .error_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| status.to_string());
+                let message = tg_resp
+                    .description
+                    .unwrap_or_else(|| "Unknown Telegram API error".to_string());
                 let status_code = code.parse::<u16>().unwrap_or(0);
                 if !looks_like_parse_error(status_code, &message) {
                     return Err(PlatformError::Api { code, message });
@@ -912,8 +1010,7 @@ impl TelegramAdapter {
         }
 
         // Send without parse_mode (or caption is None / fallback)
-        let mut form = reqwest::multipart::Form::new()
-            .text("chat_id", chat_id.to_string());
+        let mut form = reqwest::multipart::Form::new().text("chat_id", chat_id.to_string());
         if let Some(thread_id) = message_thread_id {
             form = form.text("message_thread_id", thread_id.to_string());
         }
@@ -946,11 +1043,18 @@ impl TelegramAdapter {
 
         if !tg_resp.ok {
             return Err(PlatformError::Api {
-                code: tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string()),
-                message: tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string()),
+                code: tg_resp
+                    .error_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| status.to_string()),
+                message: tg_resp
+                    .description
+                    .unwrap_or_else(|| "Unknown Telegram API error".to_string()),
             });
         }
-        tg_resp.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
+        tg_resp
+            .result
+            .ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
     }
 
     pub async fn send_voice(
@@ -966,9 +1070,9 @@ impl TelegramAdapter {
             .and_then(|n| n.to_str())
             .unwrap_or("voice.ogg")
             .to_string();
-        let file_bytes = tokio::fs::read(audio_path)
-            .await
-            .map_err(|e| PlatformError::Internal(format!("Failed to read voice audio file: {}", e)))?;
+        let file_bytes = tokio::fs::read(audio_path).await.map_err(|e| {
+            PlatformError::Internal(format!("Failed to read voice audio file: {}", e))
+        })?;
 
         let url = self.api_url("sendVoice");
         let config = self.base.config.as_ref().expect("Not initialized");
@@ -981,8 +1085,7 @@ impl TelegramAdapter {
 
         // Attempt 1: with HTML parse_mode if caption is present
         if has_caption {
-            let mut form = reqwest::multipart::Form::new()
-                .text("chat_id", chat_id.to_string());
+            let mut form = reqwest::multipart::Form::new().text("chat_id", chat_id.to_string());
             if let Some(thread_id) = message_thread_id {
                 form = form.text("message_thread_id", thread_id.to_string());
             }
@@ -996,7 +1099,9 @@ impl TelegramAdapter {
             let part = reqwest::multipart::Part::bytes(file_bytes.clone())
                 .file_name(file_name.clone())
                 .mime_str("audio/ogg")
-                .unwrap_or_else(|_| reqwest::multipart::Part::bytes(file_bytes.clone()).file_name(file_name.clone()));
+                .unwrap_or_else(|_| {
+                    reqwest::multipart::Part::bytes(file_bytes.clone()).file_name(file_name.clone())
+                });
             form = form.part("voice", part);
 
             let resp = self
@@ -1019,7 +1124,10 @@ impl TelegramAdapter {
                     return Ok(res);
                 }
             } else {
-                let code_str = tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string());
+                let code_str = tg_resp
+                    .error_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| status.to_string());
                 let msg_str = tg_resp.description.unwrap_or_default();
                 let status_code = code_str.parse::<u16>().unwrap_or(0);
                 if looks_like_parse_error(status_code, &msg_str) {
@@ -1028,8 +1136,8 @@ impl TelegramAdapter {
                         code_str, msg_str
                     );
                     // Fallback to plain caption without parse_mode
-                    let mut plain_form = reqwest::multipart::Form::new()
-                        .text("chat_id", chat_id.to_string());
+                    let mut plain_form =
+                        reqwest::multipart::Form::new().text("chat_id", chat_id.to_string());
                     if let Some(thread_id) = message_thread_id {
                         plain_form = plain_form.text("message_thread_id", thread_id.to_string());
                     }
@@ -1042,7 +1150,10 @@ impl TelegramAdapter {
                     let part = reqwest::multipart::Part::bytes(file_bytes.clone())
                         .file_name(file_name.clone())
                         .mime_str("audio/ogg")
-                        .unwrap_or_else(|_| reqwest::multipart::Part::bytes(file_bytes.clone()).file_name(file_name.clone()));
+                        .unwrap_or_else(|_| {
+                            reqwest::multipart::Part::bytes(file_bytes.clone())
+                                .file_name(file_name.clone())
+                        });
                     plain_form = plain_form.part("voice", part);
 
                     let plain_resp = self
@@ -1062,20 +1173,29 @@ impl TelegramAdapter {
 
                     if !plain_tg_resp.ok {
                         return Err(PlatformError::Api {
-                            code: plain_tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| plain_status.to_string()),
-                            message: plain_tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string()),
+                            code: plain_tg_resp
+                                .error_code
+                                .map(|c| c.to_string())
+                                .unwrap_or_else(|| plain_status.to_string()),
+                            message: plain_tg_resp
+                                .description
+                                .unwrap_or_else(|| "Unknown Telegram API error".to_string()),
                         });
                     }
-                    return plain_tg_resp.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()));
+                    return plain_tg_resp.result.ok_or_else(|| {
+                        PlatformError::Internal("Empty result from Telegram API".into())
+                    });
                 } else {
-                    return Err(PlatformError::Api { code: code_str, message: msg_str });
+                    return Err(PlatformError::Api {
+                        code: code_str,
+                        message: msg_str,
+                    });
                 }
             }
         }
 
         // Send without parse_mode (or caption is None)
-        let mut form = reqwest::multipart::Form::new()
-            .text("chat_id", chat_id.to_string());
+        let mut form = reqwest::multipart::Form::new().text("chat_id", chat_id.to_string());
         if let Some(thread_id) = message_thread_id {
             form = form.text("message_thread_id", thread_id.to_string());
         }
@@ -1105,11 +1225,18 @@ impl TelegramAdapter {
 
         if !tg_resp.ok {
             return Err(PlatformError::Api {
-                code: tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string()),
-                message: tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string()),
+                code: tg_resp
+                    .error_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| status.to_string()),
+                message: tg_resp
+                    .description
+                    .unwrap_or_else(|| "Unknown Telegram API error".to_string()),
             });
         }
-        tg_resp.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
+        tg_resp
+            .result
+            .ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
     }
 
     pub async fn send_audio(
@@ -1135,8 +1262,7 @@ impl TelegramAdapter {
         let config = self.base.config.as_ref().expect("Not initialized");
 
         let truncated = truncate_caption_1024(caption);
-        let mut form = reqwest::multipart::Form::new()
-            .text("chat_id", chat_id.to_string());
+        let mut form = reqwest::multipart::Form::new().text("chat_id", chat_id.to_string());
         if let Some(thread_id) = message_thread_id {
             form = form.text("message_thread_id", thread_id.to_string());
         }
@@ -1175,11 +1301,18 @@ impl TelegramAdapter {
 
         if !tg_resp.ok {
             return Err(PlatformError::Api {
-                code: tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string()),
-                message: tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string()),
+                code: tg_resp
+                    .error_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| status.to_string()),
+                message: tg_resp
+                    .description
+                    .unwrap_or_else(|| "Unknown Telegram API error".to_string()),
             });
         }
-        tg_resp.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
+        tg_resp
+            .result
+            .ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
     }
 
     pub async fn send_video(
@@ -1205,8 +1338,7 @@ impl TelegramAdapter {
         let config = self.base.config.as_ref().expect("Not initialized");
 
         let truncated = truncate_caption_1024(caption);
-        let mut form = reqwest::multipart::Form::new()
-            .text("chat_id", chat_id.to_string());
+        let mut form = reqwest::multipart::Form::new().text("chat_id", chat_id.to_string());
         if let Some(thread_id) = message_thread_id {
             form = form.text("message_thread_id", thread_id.to_string());
         }
@@ -1245,11 +1377,18 @@ impl TelegramAdapter {
 
         if !tg_resp.ok {
             return Err(PlatformError::Api {
-                code: tg_resp.error_code.map(|c| c.to_string()).unwrap_or_else(|| status.to_string()),
-                message: tg_resp.description.unwrap_or_else(|| "Unknown Telegram API error".to_string()),
+                code: tg_resp
+                    .error_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| status.to_string()),
+                message: tg_resp
+                    .description
+                    .unwrap_or_else(|| "Unknown Telegram API error".to_string()),
             });
         }
-        tg_resp.result.ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
+        tg_resp
+            .result
+            .ok_or_else(|| PlatformError::Internal("Empty result from Telegram API".into()))
     }
 
     pub fn should_process_message(msg: &TelegramMessage, bot_info: Option<&TelegramUser>) -> bool {
@@ -1262,10 +1401,17 @@ impl TelegramAdapter {
             return true;
         }
 
-        let bot_username = bot_info.and_then(|b| b.username.as_deref()).map(|u| u.trim_start_matches('@').to_lowercase());
+        let bot_username = bot_info
+            .and_then(|b| b.username.as_deref())
+            .map(|u| u.trim_start_matches('@').to_lowercase());
         let bot_id = bot_info.map(|b| b.id);
 
-        let text = msg.text.as_deref().or(msg.caption.as_deref()).unwrap_or("").trim();
+        let text = msg
+            .text
+            .as_deref()
+            .or(msg.caption.as_deref())
+            .unwrap_or("")
+            .trim();
 
         if text.starts_with('/') {
             return true;
@@ -1279,7 +1425,8 @@ impl TelegramAdapter {
                             return true;
                         }
                     }
-                    if let (Some(ref b_user), Some(ref s_user)) = (&bot_username, &sender.username) {
+                    if let (Some(ref b_user), Some(ref s_user)) = (&bot_username, &sender.username)
+                    {
                         if s_user.trim_start_matches('@').eq_ignore_ascii_case(b_user) {
                             return true;
                         }
@@ -1294,7 +1441,11 @@ impl TelegramAdapter {
                 return true;
             }
 
-            let all_entities = msg.entities.as_ref().into_iter().flatten()
+            let all_entities = msg
+                .entities
+                .as_ref()
+                .into_iter()
+                .flatten()
                 .chain(msg.caption_entities.as_ref().into_iter().flatten());
 
             for ent in all_entities {
@@ -1307,7 +1458,14 @@ impl TelegramAdapter {
                     }
                 } else if ent.entity_type == "text_mention" {
                     if let Some(ref user) = ent.user {
-                        if Some(user.id) == bot_id || user.username.as_ref().map(|u| u.trim_start_matches('@').to_lowercase()).as_deref() == Some(b_user) {
+                        if Some(user.id) == bot_id
+                            || user
+                                .username
+                                .as_ref()
+                                .map(|u| u.trim_start_matches('@').to_lowercase())
+                                .as_deref()
+                                == Some(b_user)
+                        {
                             return true;
                         }
                     }
@@ -1318,11 +1476,19 @@ impl TelegramAdapter {
         false
     }
 
-    pub async fn convert_incoming_with_cache(&self, update: TelegramUpdate) -> Result<Vec<IncomingMessage>, PlatformError> {
+    pub async fn convert_incoming_with_cache(
+        &self,
+        update: TelegramUpdate,
+    ) -> Result<Vec<IncomingMessage>, PlatformError> {
         let mut messages = Vec::new();
         let bot_user = self.bot_info.read().await.clone();
 
-        if let Some(msg) = update.message.or(update.edited_message).or(update.channel_post).or(update.edited_channel_post) {
+        if let Some(msg) = update
+            .message
+            .or(update.edited_message)
+            .or(update.channel_post)
+            .or(update.edited_channel_post)
+        {
             if !Self::should_process_message(&msg, bot_user.as_ref()) {
                 return Ok(Vec::new());
             }
@@ -1382,10 +1548,18 @@ impl TelegramAdapter {
         Ok(messages)
     }
 
-    pub fn convert_incoming(&self, update: TelegramUpdate) -> Result<Vec<IncomingMessage>, PlatformError> {
+    pub fn convert_incoming(
+        &self,
+        update: TelegramUpdate,
+    ) -> Result<Vec<IncomingMessage>, PlatformError> {
         let mut messages = Vec::new();
 
-        if let Some(msg) = update.message.or(update.edited_message).or(update.channel_post).or(update.edited_channel_post) {
+        if let Some(msg) = update
+            .message
+            .or(update.edited_message)
+            .or(update.channel_post)
+            .or(update.edited_channel_post)
+        {
             let session_id = self.session_id_from_chat(&msg.chat, msg.message_thread_id);
             let content = self.convert_message_content(&msg)?;
 
@@ -1454,7 +1628,10 @@ impl TelegramAdapter {
         Uuid::from_bytes(uuid_bytes)
     }
 
-    pub async fn convert_message_content_and_cache(&self, msg: &TelegramMessage) -> Result<MessageContent, PlatformError> {
+    pub async fn convert_message_content_and_cache(
+        &self,
+        msg: &TelegramMessage,
+    ) -> Result<MessageContent, PlatformError> {
         if let Some(text) = &msg.text {
             return Ok(MessageContent::Text { text: text.clone() });
         }
@@ -1463,7 +1640,10 @@ impl TelegramAdapter {
             if let Some(photo) = &msg.photo {
                 let largest = photo.iter().max_by_key(|p| p.width * p.height);
                 if let Some(p) = largest {
-                    let cached_url = self.cache_inbound_file(&p.file_id, ".jpg").await.unwrap_or_else(|_| p.file_id.clone());
+                    let cached_url = self
+                        .cache_inbound_file(&p.file_id, ".jpg")
+                        .await
+                        .unwrap_or_else(|_| p.file_id.clone());
                     return Ok(MessageContent::Image {
                         url: cached_url,
                         caption: Some(caption.clone()),
@@ -1471,10 +1651,16 @@ impl TelegramAdapter {
                 }
             }
             if let Some(doc) = &msg.document {
-                let cached_url = self.cache_inbound_file(&doc.file_id, ".bin").await.unwrap_or_else(|_| doc.file_id.clone());
+                let cached_url = self
+                    .cache_inbound_file(&doc.file_id, ".bin")
+                    .await
+                    .unwrap_or_else(|_| doc.file_id.clone());
                 return Ok(MessageContent::File {
                     url: cached_url,
-                    filename: doc.file_name.clone().unwrap_or_else(|| "document".to_string()),
+                    filename: doc
+                        .file_name
+                        .clone()
+                        .unwrap_or_else(|| "document".to_string()),
                     mime_type: doc.mime_type.clone(),
                 });
             }
@@ -1483,7 +1669,10 @@ impl TelegramAdapter {
         if let Some(photo) = &msg.photo {
             let largest = photo.iter().max_by_key(|p| p.width * p.height);
             if let Some(p) = largest {
-                let cached_url = self.cache_inbound_file(&p.file_id, ".jpg").await.unwrap_or_else(|_| p.file_id.clone());
+                let cached_url = self
+                    .cache_inbound_file(&p.file_id, ".jpg")
+                    .await
+                    .unwrap_or_else(|_| p.file_id.clone());
                 return Ok(MessageContent::Image {
                     url: cached_url,
                     caption: msg.caption.clone(),
@@ -1492,16 +1681,25 @@ impl TelegramAdapter {
         }
 
         if let Some(doc) = &msg.document {
-            let cached_url = self.cache_inbound_file(&doc.file_id, ".bin").await.unwrap_or_else(|_| doc.file_id.clone());
+            let cached_url = self
+                .cache_inbound_file(&doc.file_id, ".bin")
+                .await
+                .unwrap_or_else(|_| doc.file_id.clone());
             return Ok(MessageContent::File {
                 url: cached_url,
-                filename: doc.file_name.clone().unwrap_or_else(|| "document".to_string()),
+                filename: doc
+                    .file_name
+                    .clone()
+                    .unwrap_or_else(|| "document".to_string()),
                 mime_type: doc.mime_type.clone(),
             });
         }
 
         if let Some(voice) = &msg.voice {
-            let cached_url = self.cache_inbound_file(&voice.file_id, ".ogg").await.unwrap_or_else(|_| voice.file_id.clone());
+            let cached_url = self
+                .cache_inbound_file(&voice.file_id, ".ogg")
+                .await
+                .unwrap_or_else(|_| voice.file_id.clone());
             return Ok(MessageContent::Audio {
                 url: cached_url,
                 duration: Some(voice.duration as u64),
@@ -1509,7 +1707,10 @@ impl TelegramAdapter {
         }
 
         if let Some(audio) = &msg.audio {
-            let cached_url = self.cache_inbound_file(&audio.file_id, ".mp3").await.unwrap_or_else(|_| audio.file_id.clone());
+            let cached_url = self
+                .cache_inbound_file(&audio.file_id, ".mp3")
+                .await
+                .unwrap_or_else(|_| audio.file_id.clone());
             return Ok(MessageContent::Audio {
                 url: cached_url,
                 duration: Some(audio.duration as u64),
@@ -1517,7 +1718,10 @@ impl TelegramAdapter {
         }
 
         if let Some(video) = &msg.video {
-            let cached_url = self.cache_inbound_file(&video.file_id, ".mp4").await.unwrap_or_else(|_| video.file_id.clone());
+            let cached_url = self
+                .cache_inbound_file(&video.file_id, ".mp4")
+                .await
+                .unwrap_or_else(|_| video.file_id.clone());
             return Ok(MessageContent::Video {
                 url: cached_url,
                 duration: Some(video.duration as u64),
@@ -1539,15 +1743,26 @@ impl TelegramAdapter {
 
         if let Some(contact) = &msg.contact {
             return Ok(MessageContent::Contact {
-                name: format!("{} {}", contact.first_name, contact.last_name.as_ref().map(|s| s.as_str()).unwrap_or("")).trim().to_string(),
+                name: format!(
+                    "{} {}",
+                    contact.first_name,
+                    contact.last_name.as_ref().map(|s| s.as_str()).unwrap_or("")
+                )
+                .trim()
+                .to_string(),
                 phone: contact.phone_number.clone(),
             });
         }
 
-        Ok(MessageContent::Unknown { data: serde_json::to_value(msg).unwrap_or_default() })
+        Ok(MessageContent::Unknown {
+            data: serde_json::to_value(msg).unwrap_or_default(),
+        })
     }
 
-    fn convert_message_content(&self, msg: &TelegramMessage) -> Result<MessageContent, PlatformError> {
+    fn convert_message_content(
+        &self,
+        msg: &TelegramMessage,
+    ) -> Result<MessageContent, PlatformError> {
         if let Some(text) = &msg.text {
             return Ok(MessageContent::Text { text: text.clone() });
         }
@@ -1564,7 +1779,10 @@ impl TelegramAdapter {
             if let Some(doc) = &msg.document {
                 return Ok(MessageContent::File {
                     url: doc.file_id.clone(),
-                    filename: doc.file_name.clone().unwrap_or_else(|| "document".to_string()),
+                    filename: doc
+                        .file_name
+                        .clone()
+                        .unwrap_or_else(|| "document".to_string()),
                     mime_type: doc.mime_type.clone(),
                 });
             }
@@ -1581,7 +1799,10 @@ impl TelegramAdapter {
         if let Some(doc) = &msg.document {
             return Ok(MessageContent::File {
                 url: doc.file_id.clone(),
-                filename: doc.file_name.clone().unwrap_or_else(|| "document".to_string()),
+                filename: doc
+                    .file_name
+                    .clone()
+                    .unwrap_or_else(|| "document".to_string()),
                 mime_type: doc.mime_type.clone(),
             });
         }
@@ -1616,89 +1837,153 @@ impl TelegramAdapter {
         }
         if let Some(contact) = &msg.contact {
             return Ok(MessageContent::Contact {
-                name: format!("{} {}", contact.first_name, contact.last_name.as_ref().map(|s| s.as_str()).unwrap_or("")).trim().to_string(),
+                name: format!(
+                    "{} {}",
+                    contact.first_name,
+                    contact.last_name.as_ref().map(|s| s.as_str()).unwrap_or("")
+                )
+                .trim()
+                .to_string(),
                 phone: contact.phone_number.clone(),
             });
         }
 
-        Ok(MessageContent::Unknown { data: serde_json::to_value(msg).unwrap_or_default() })
+        Ok(MessageContent::Unknown {
+            data: serde_json::to_value(msg).unwrap_or_default(),
+        })
     }
 
     #[allow(dead_code)]
     fn convert_outgoing(&self, msg: &OutgoingMessage) -> Result<serde_json::Value, PlatformError> {
-        let (chat_id, thread_id) = self.chat_and_thread_from_session(msg.session_id, &msg.metadata)?;
+        let (chat_id, thread_id) =
+            self.chat_and_thread_from_session(msg.session_id, &msg.metadata)?;
 
         match &msg.content {
-            MessageContent::Text { text } => {
-                serde_json::to_value(SendMessageRequest {
-                    chat_id,
-                    message_thread_id: thread_id,
-                    text: text.clone(),
-                    parse_mode: Some("HTML".to_string()),
-                    reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
-                    disable_web_page_preview: Some(true),
-                    reply_markup: None,
-                }).map_err(|e| PlatformError::Internal(e.to_string()))
-            }
-            MessageContent::Image { url, caption } => {
-                serde_json::to_value(SendPhotoRequest {
-                    chat_id,
-                    message_thread_id: thread_id,
-                    photo: url.clone(),
-                    caption: caption.clone(),
-                    parse_mode: Some("HTML".to_string()),
-                    reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
-                }).map_err(|e| PlatformError::Internal(e.to_string()))
-            }
-            MessageContent::File { url, filename: _, mime_type: _ } => {
-                serde_json::to_value(SendDocumentRequest {
-                    chat_id,
-                    message_thread_id: thread_id,
-                    document: url.clone(),
-                    caption: None,
-                    reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
-                }).map_err(|e| PlatformError::Internal(e.to_string()))
-            }
+            MessageContent::Text { text } => serde_json::to_value(SendMessageRequest {
+                chat_id,
+                message_thread_id: thread_id,
+                text: text.clone(),
+                parse_mode: Some("HTML".to_string()),
+                reply_to_message_id: msg
+                    .metadata
+                    .get("reply_to_telegram_id")
+                    .and_then(|v| v.as_i64()),
+                disable_web_page_preview: Some(true),
+                reply_markup: None,
+            })
+            .map_err(|e| PlatformError::Internal(e.to_string())),
+            MessageContent::Image { url, caption } => serde_json::to_value(SendPhotoRequest {
+                chat_id,
+                message_thread_id: thread_id,
+                photo: url.clone(),
+                caption: caption.clone(),
+                parse_mode: Some("HTML".to_string()),
+                reply_to_message_id: msg
+                    .metadata
+                    .get("reply_to_telegram_id")
+                    .and_then(|v| v.as_i64()),
+            })
+            .map_err(|e| PlatformError::Internal(e.to_string())),
+            MessageContent::File {
+                url,
+                filename: _,
+                mime_type: _,
+            } => serde_json::to_value(SendDocumentRequest {
+                chat_id,
+                message_thread_id: thread_id,
+                document: url.clone(),
+                caption: None,
+                reply_to_message_id: msg
+                    .metadata
+                    .get("reply_to_telegram_id")
+                    .and_then(|v| v.as_i64()),
+            })
+            .map_err(|e| PlatformError::Internal(e.to_string())),
             MessageContent::Audio { url, duration } => {
-                let is_voice = msg.metadata.get("is_voice").and_then(|v| v.as_bool()).unwrap_or(false);
+                let is_voice = msg
+                    .metadata
+                    .get("is_voice")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 if is_voice {
                     serde_json::to_value(SendVoiceRequest {
                         chat_id,
                         message_thread_id: thread_id,
                         voice: url.clone(),
-                        caption: msg.metadata.get("caption").and_then(|v| v.as_str()).map(ToString::to_string),
+                        caption: msg
+                            .metadata
+                            .get("caption")
+                            .and_then(|v| v.as_str())
+                            .map(ToString::to_string),
                         parse_mode: Some("HTML".to_string()),
                         duration: duration.map(|d| d as u32),
-                        reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
-                    }).map_err(|e| PlatformError::Internal(e.to_string()))
+                        reply_to_message_id: msg
+                            .metadata
+                            .get("reply_to_telegram_id")
+                            .and_then(|v| v.as_i64()),
+                    })
+                    .map_err(|e| PlatformError::Internal(e.to_string()))
                 } else {
                     serde_json::to_value(SendAudioRequest {
                         chat_id,
                         message_thread_id: thread_id,
                         audio: url.clone(),
-                        caption: msg.metadata.get("caption").and_then(|v| v.as_str()).map(ToString::to_string),
+                        caption: msg
+                            .metadata
+                            .get("caption")
+                            .and_then(|v| v.as_str())
+                            .map(ToString::to_string),
                         parse_mode: None,
                         duration: duration.map(|d| d as u32),
-                        performer: msg.metadata.get("performer").and_then(|v| v.as_str()).map(ToString::to_string),
-                        title: msg.metadata.get("title").and_then(|v| v.as_str()).map(ToString::to_string),
-                        reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
-                    }).map_err(|e| PlatformError::Internal(e.to_string()))
+                        performer: msg
+                            .metadata
+                            .get("performer")
+                            .and_then(|v| v.as_str())
+                            .map(ToString::to_string),
+                        title: msg
+                            .metadata
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .map(ToString::to_string),
+                        reply_to_message_id: msg
+                            .metadata
+                            .get("reply_to_telegram_id")
+                            .and_then(|v| v.as_i64()),
+                    })
+                    .map_err(|e| PlatformError::Internal(e.to_string()))
                 }
             }
-            MessageContent::Video { url, duration } => {
-                serde_json::to_value(SendVideoRequest {
-                    chat_id,
-                    message_thread_id: thread_id,
-                    video: url.clone(),
-                    caption: msg.metadata.get("caption").and_then(|v| v.as_str()).map(ToString::to_string),
-                    parse_mode: None,
-                    duration: duration.map(|d| d as u32),
-                    width: msg.metadata.get("width").and_then(|v| v.as_u64()).map(|w| w as u32),
-                    height: msg.metadata.get("height").and_then(|v| v.as_u64()).map(|h| h as u32),
-                    reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
-                }).map_err(|e| PlatformError::Internal(e.to_string()))
-            }
-            _ => Err(PlatformError::UnsupportedContent(format!("Content type not supported for Telegram: {:?}", msg.content))),
+            MessageContent::Video { url, duration } => serde_json::to_value(SendVideoRequest {
+                chat_id,
+                message_thread_id: thread_id,
+                video: url.clone(),
+                caption: msg
+                    .metadata
+                    .get("caption")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string),
+                parse_mode: None,
+                duration: duration.map(|d| d as u32),
+                width: msg
+                    .metadata
+                    .get("width")
+                    .and_then(|v| v.as_u64())
+                    .map(|w| w as u32),
+                height: msg
+                    .metadata
+                    .get("height")
+                    .and_then(|v| v.as_u64())
+                    .map(|h| h as u32),
+                reply_to_message_id: msg
+                    .metadata
+                    .get("reply_to_telegram_id")
+                    .and_then(|v| v.as_i64()),
+            })
+            .map_err(|e| PlatformError::Internal(e.to_string())),
+            _ => Err(PlatformError::UnsupportedContent(format!(
+                "Content type not supported for Telegram: {:?}",
+                msg.content
+            ))),
         }
     }
 
@@ -1728,7 +2013,11 @@ impl TelegramAdapter {
 
     pub fn chat_id_from_session(&self, session_id: Uuid) -> Result<i64, PlatformError> {
         let bytes = session_id.as_bytes();
-        let chat_id = i64::from_le_bytes(bytes[..8].try_into().map_err(|_| PlatformError::Internal("Invalid session ID".into()))?);
+        let chat_id = i64::from_le_bytes(
+            bytes[..8]
+                .try_into()
+                .map_err(|_| PlatformError::Internal("Invalid session ID".into()))?,
+        );
         Ok(chat_id)
     }
 }
@@ -1752,7 +2041,11 @@ impl PlatformAdapter for TelegramAdapter {
 
         let me: TelegramUser = self.make_request("getMe", &serde_json::json!({})).await?;
         *self.bot_info.write().await = Some(me.clone());
-        info!("Telegram bot initialized: @{} (id: {})", me.username.unwrap_or_default(), me.id);
+        info!(
+            "Telegram bot initialized: @{} (id: {})",
+            me.username.unwrap_or_default(),
+            me.id
+        );
 
         if let Some(webhook_url) = &config.webhook_url {
             let webhook_config = config.base.webhook.clone();
@@ -1767,14 +2060,22 @@ impl PlatformAdapter for TelegramAdapter {
             let _: serde_json::Value = self.make_request("setWebhook", &params).await?;
             info!("Telegram webhook set: {}", webhook_url);
         } else {
-            let _: serde_json::Value = self.make_request("deleteWebhook", &serde_json::json!({"drop_pending_updates": config.drop_pending_updates})).await?;
+            let _: serde_json::Value = self
+                .make_request(
+                    "deleteWebhook",
+                    &serde_json::json!({"drop_pending_updates": config.drop_pending_updates}),
+                )
+                .await?;
             info!("Telegram webhook deleted, using long polling");
         }
 
         Ok(())
     }
 
-    async fn start(&mut self, sender: mpsc::UnboundedSender<PlatformEvent>) -> Result<(), PlatformError> {
+    async fn start(
+        &mut self,
+        sender: mpsc::UnboundedSender<PlatformEvent>,
+    ) -> Result<(), PlatformError> {
         self.base.set_sender(sender);
         self.base.started = true;
 
@@ -1821,7 +2122,9 @@ impl PlatformAdapter for TelegramAdapter {
                             let status = response.status();
                             let resp_text = response.text().await.unwrap_or_default();
 
-                            match serde_json::from_str::<TelegramResponse<Vec<TelegramUpdate>>>(&resp_text) {
+                            match serde_json::from_str::<TelegramResponse<Vec<TelegramUpdate>>>(
+                                &resp_text,
+                            ) {
                                 Ok(tg_response) => {
                                     if tg_response.ok {
                                         conflict_retry_delay = 5;
@@ -1829,21 +2132,32 @@ impl PlatformAdapter for TelegramAdapter {
                                             for update in updates {
                                                 offset = update.update_id + 1;
 
-                                                match adapter_template.convert_incoming_with_cache(update).await {
+                                                match adapter_template
+                                                    .convert_incoming_with_cache(update)
+                                                    .await
+                                                {
                                                     Ok(messages) => {
                                                         for msg in messages {
-                                                            let thread_id = msg.raw.as_ref()
+                                                            let thread_id = msg
+                                                                .raw
+                                                                .as_ref()
                                                                 .and_then(|r| r.get("thread_id"))
                                                                 .and_then(|v| v.as_i64());
 
-                                                            if let Ok(chat_id) = adapter_template.chat_id_from_session(msg.session_id) {
+                                                            if let Ok(chat_id) = adapter_template
+                                                                .chat_id_from_session(
+                                                                    msg.session_id,
+                                                                )
+                                                            {
                                                                 let client_clone = client.clone();
-                                                                let bot_token_clone = bot_token.clone();
+                                                                let bot_token_clone =
+                                                                    bot_token.clone();
                                                                 tokio::spawn(async move {
                                                                     let action_url = format!("https://api.telegram.org/bot{}/sendChatAction", bot_token_clone);
                                                                     let mut body = serde_json::json!({"chat_id": chat_id, "action": "typing"});
                                                                     if let Some(tid) = thread_id {
-                                                                        body["message_thread_id"] = serde_json::json!(tid);
+                                                                        body["message_thread_id"] =
+                                                                            serde_json::json!(tid);
                                                                     }
                                                                     let _ = client_clone
                                                                         .post(&action_url)
@@ -1854,7 +2168,8 @@ impl PlatformAdapter for TelegramAdapter {
                                                                 });
                                                             }
 
-                                                            let _ = sender.send(PlatformEvent::Incoming(msg));
+                                                            let _ = sender
+                                                                .send(PlatformEvent::Incoming(msg));
                                                         }
                                                     }
                                                     Err(e) => {
@@ -1865,27 +2180,41 @@ impl PlatformAdapter for TelegramAdapter {
                                         }
                                     } else {
                                         let desc = tg_response.description.unwrap_or_default();
-                                        let status_code = tg_response.error_code.unwrap_or(status.as_u16() as i32) as u16;
+                                        let status_code = tg_response
+                                            .error_code
+                                            .unwrap_or(status.as_u16() as i32)
+                                            as u16;
 
                                         if looks_like_polling_conflict(status_code, &desc) {
                                             warn!(
                                                 "[telegram] Long-polling conflict detected (HTTP {} / {}). Backing off for {}s before retry...",
                                                 status_code, desc, conflict_retry_delay
                                             );
-                                            tokio::time::sleep(std::time::Duration::from_secs(conflict_retry_delay)).await;
-                                            conflict_retry_delay = std::cmp::min(conflict_retry_delay * 2, 60);
+                                            tokio::time::sleep(std::time::Duration::from_secs(
+                                                conflict_retry_delay,
+                                            ))
+                                            .await;
+                                            conflict_retry_delay =
+                                                std::cmp::min(conflict_retry_delay * 2, 60);
                                         } else {
                                             warn!("[telegram] Telegram API error in getUpdates: HTTP {} - {}", status_code, desc);
-                                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                                            tokio::time::sleep(std::time::Duration::from_secs(3))
+                                                .await;
                                         }
                                     }
                                 }
                                 Err(e) => {
                                     warn!("[telegram] Failed to parse getUpdates response (status {}): {}. Raw: {}", status, e, resp_text);
-                                    if status.as_u16() == 409 || looks_like_polling_conflict(status.as_u16(), &resp_text) {
+                                    if status.as_u16() == 409
+                                        || looks_like_polling_conflict(status.as_u16(), &resp_text)
+                                    {
                                         warn!("[telegram] 409 Conflict indicated by HTTP status. Backing off {}s", conflict_retry_delay);
-                                        tokio::time::sleep(std::time::Duration::from_secs(conflict_retry_delay)).await;
-                                        conflict_retry_delay = std::cmp::min(conflict_retry_delay * 2, 60);
+                                        tokio::time::sleep(std::time::Duration::from_secs(
+                                            conflict_retry_delay,
+                                        ))
+                                        .await;
+                                        conflict_retry_delay =
+                                            std::cmp::min(conflict_retry_delay * 2, 60);
                                     } else {
                                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                                     }
@@ -1893,7 +2222,8 @@ impl PlatformAdapter for TelegramAdapter {
                             }
                         }
                         Err(e) => {
-                            let stalled_dur = Instant::now().duration_since(*last_poll_time.read().await);
+                            let stalled_dur =
+                                Instant::now().duration_since(*last_poll_time.read().await);
                             if stalled_dur > std::time::Duration::from_secs(timeout + 30) {
                                 warn!("[telegram] Polling stall watchdog triggered: request exceeded timeout+30s ({:?}). Backing off and restarting connection...", stalled_dur);
                             } else {
@@ -1915,7 +2245,9 @@ impl PlatformAdapter for TelegramAdapter {
 
         if let Some(config) = &self.base.config {
             if config.webhook_url.is_some() {
-                let _: serde_json::Value = self.make_request("deleteWebhook", &serde_json::json!({})).await?;
+                let _: serde_json::Value = self
+                    .make_request("deleteWebhook", &serde_json::json!({}))
+                    .await?;
             }
         }
 
@@ -1928,17 +2260,28 @@ impl PlatformAdapter for TelegramAdapter {
             limiter.acquire().await?;
         }
 
-        let (chat_id, thread_id) = self.chat_and_thread_from_session(msg.session_id, &msg.metadata)?;
+        let (chat_id, thread_id) =
+            self.chat_and_thread_from_session(msg.session_id, &msg.metadata)?;
 
         match &msg.content {
             MessageContent::Text { text } => {
                 let chunks = chunk_message(text, 4000);
-                let reply_to_id = msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64());
+                let reply_to_id = msg
+                    .metadata
+                    .get("reply_to_telegram_id")
+                    .and_then(|v| v.as_i64());
                 let mut last_message_id = None;
 
                 for (idx, chunk) in chunks.iter().enumerate() {
                     let chunk_reply_to = if idx == 0 { reply_to_id } else { None };
-                    let sent = self.send_chunk_with_fallback_and_thread(chat_id, thread_id, chunk, chunk_reply_to).await?;
+                    let sent = self
+                        .send_chunk_with_fallback_and_thread(
+                            chat_id,
+                            thread_id,
+                            chunk,
+                            chunk_reply_to,
+                        )
+                        .await?;
                     last_message_id = Some(sent.message_id);
                 }
 
@@ -1951,11 +2294,28 @@ impl PlatformAdapter for TelegramAdapter {
                 })
             }
             MessageContent::Image { url, caption } => {
-                let reply_to_id = msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64());
+                let reply_to_id = msg
+                    .metadata
+                    .get("reply_to_telegram_id")
+                    .and_then(|v| v.as_i64());
                 let sent: SentMessage = if let Some(stripped_path) = url.strip_prefix("file://") {
-                    self.send_photo_file(chat_id, thread_id, Path::new(stripped_path), caption.as_deref(), reply_to_id).await?
+                    self.send_photo_file(
+                        chat_id,
+                        thread_id,
+                        Path::new(stripped_path),
+                        caption.as_deref(),
+                        reply_to_id,
+                    )
+                    .await?
                 } else if Path::new(url).exists() {
-                    self.send_photo_file(chat_id, thread_id, Path::new(url), caption.as_deref(), reply_to_id).await?
+                    self.send_photo_file(
+                        chat_id,
+                        thread_id,
+                        Path::new(url),
+                        caption.as_deref(),
+                        reply_to_id,
+                    )
+                    .await?
                 } else {
                     let req = SendPhotoRequest {
                         chat_id,
@@ -2004,7 +2364,10 @@ impl PlatformAdapter for TelegramAdapter {
                     message_thread_id: thread_id,
                     document: url.clone(),
                     caption: None,
-                    reply_to_message_id: msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64()),
+                    reply_to_message_id: msg
+                        .metadata
+                        .get("reply_to_telegram_id")
+                        .and_then(|v| v.as_i64()),
                 };
                 let sent: SentMessage = self.make_request("sendDocument", &req).await?;
 
@@ -2017,15 +2380,36 @@ impl PlatformAdapter for TelegramAdapter {
                 })
             }
             MessageContent::Audio { url, duration } => {
-                let is_voice = msg.metadata.get("is_voice").and_then(|v| v.as_bool()).unwrap_or(false);
+                let is_voice = msg
+                    .metadata
+                    .get("is_voice")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let caption = msg.metadata.get("caption").and_then(|v| v.as_str());
-                let reply_to_id = msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64());
+                let reply_to_id = msg
+                    .metadata
+                    .get("reply_to_telegram_id")
+                    .and_then(|v| v.as_i64());
 
                 let sent: SentMessage = if is_voice {
                     if let Some(stripped_path) = url.strip_prefix("file://") {
-                        self.send_voice(chat_id, thread_id, Path::new(stripped_path), caption, duration.map(|d| d as u32)).await?
+                        self.send_voice(
+                            chat_id,
+                            thread_id,
+                            Path::new(stripped_path),
+                            caption,
+                            duration.map(|d| d as u32),
+                        )
+                        .await?
                     } else if Path::new(url).exists() {
-                        self.send_voice(chat_id, thread_id, Path::new(url), caption, duration.map(|d| d as u32)).await?
+                        self.send_voice(
+                            chat_id,
+                            thread_id,
+                            Path::new(url),
+                            caption,
+                            duration.map(|d| d as u32),
+                        )
+                        .await?
                     } else {
                         let req = SendVoiceRequest {
                             chat_id,
@@ -2041,7 +2425,9 @@ impl PlatformAdapter for TelegramAdapter {
                             Err(PlatformError::Api { code, message }) => {
                                 let status_code = code.parse::<u16>().unwrap_or(0);
                                 if looks_like_parse_error(status_code, &message) {
-                                    warn!("[telegram] sendVoice HTML caption failed, retrying plain");
+                                    warn!(
+                                        "[telegram] sendVoice HTML caption failed, retrying plain"
+                                    );
                                     let plain_caption = caption.as_deref().map(strip_html_tags);
                                     let plain_req = SendVoiceRequest {
                                         chat_id,
@@ -2064,11 +2450,29 @@ impl PlatformAdapter for TelegramAdapter {
                     if let Some(stripped_path) = url.strip_prefix("file://") {
                         let title = msg.metadata.get("title").and_then(|v| v.as_str());
                         let performer = msg.metadata.get("performer").and_then(|v| v.as_str());
-                        self.send_audio(chat_id, thread_id, Path::new(stripped_path), caption, duration.map(|d| d as u32), title, performer).await?
+                        self.send_audio(
+                            chat_id,
+                            thread_id,
+                            Path::new(stripped_path),
+                            caption,
+                            duration.map(|d| d as u32),
+                            title,
+                            performer,
+                        )
+                        .await?
                     } else if Path::new(url).exists() {
                         let title = msg.metadata.get("title").and_then(|v| v.as_str());
                         let performer = msg.metadata.get("performer").and_then(|v| v.as_str());
-                        self.send_audio(chat_id, thread_id, Path::new(url), caption, duration.map(|d| d as u32), title, performer).await?
+                        self.send_audio(
+                            chat_id,
+                            thread_id,
+                            Path::new(url),
+                            caption,
+                            duration.map(|d| d as u32),
+                            title,
+                            performer,
+                        )
+                        .await?
                     } else {
                         let req = SendAudioRequest {
                             chat_id,
@@ -2077,8 +2481,16 @@ impl PlatformAdapter for TelegramAdapter {
                             caption: truncate_caption_1024(caption),
                             parse_mode: None,
                             duration: duration.map(|d| d as u32),
-                            performer: msg.metadata.get("performer").and_then(|v| v.as_str()).map(ToString::to_string),
-                            title: msg.metadata.get("title").and_then(|v| v.as_str()).map(ToString::to_string),
+                            performer: msg
+                                .metadata
+                                .get("performer")
+                                .and_then(|v| v.as_str())
+                                .map(ToString::to_string),
+                            title: msg
+                                .metadata
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .map(ToString::to_string),
                             reply_to_message_id: reply_to_id,
                         };
                         self.make_request("sendAudio", &req).await?
@@ -2095,14 +2507,43 @@ impl PlatformAdapter for TelegramAdapter {
             }
             MessageContent::Video { url, duration } => {
                 let caption = msg.metadata.get("caption").and_then(|v| v.as_str());
-                let reply_to_id = msg.metadata.get("reply_to_telegram_id").and_then(|v| v.as_i64());
-                let width = msg.metadata.get("width").and_then(|v| v.as_u64()).map(|w| w as u32);
-                let height = msg.metadata.get("height").and_then(|v| v.as_u64()).map(|h| h as u32);
+                let reply_to_id = msg
+                    .metadata
+                    .get("reply_to_telegram_id")
+                    .and_then(|v| v.as_i64());
+                let width = msg
+                    .metadata
+                    .get("width")
+                    .and_then(|v| v.as_u64())
+                    .map(|w| w as u32);
+                let height = msg
+                    .metadata
+                    .get("height")
+                    .and_then(|v| v.as_u64())
+                    .map(|h| h as u32);
 
                 let sent: SentMessage = if let Some(stripped_path) = url.strip_prefix("file://") {
-                    self.send_video(chat_id, thread_id, Path::new(stripped_path), caption, duration.map(|d| d as u32), width, height).await?
+                    self.send_video(
+                        chat_id,
+                        thread_id,
+                        Path::new(stripped_path),
+                        caption,
+                        duration.map(|d| d as u32),
+                        width,
+                        height,
+                    )
+                    .await?
                 } else if Path::new(url).exists() {
-                    self.send_video(chat_id, thread_id, Path::new(url), caption, duration.map(|d| d as u32), width, height).await?
+                    self.send_video(
+                        chat_id,
+                        thread_id,
+                        Path::new(url),
+                        caption,
+                        duration.map(|d| d as u32),
+                        width,
+                        height,
+                    )
+                    .await?
                 } else {
                     let req = SendVideoRequest {
                         chat_id,
@@ -2126,13 +2567,18 @@ impl PlatformAdapter for TelegramAdapter {
                     platform_message_id: Some(sent.message_id.to_string()),
                 })
             }
-            _ => Err(PlatformError::UnsupportedContent("Unsupported content type".into())),
+            _ => Err(PlatformError::UnsupportedContent(
+                "Unsupported content type".into(),
+            )),
         }
     }
 
-    async fn handle_webhook(&self, payload: serde_json::Value) -> Result<Vec<IncomingMessage>, PlatformError> {
-        let update: TelegramUpdate = serde_json::from_value(payload)
-            .map_err(|e| PlatformError::Internal(e.to_string()))?;
+    async fn handle_webhook(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<Vec<IncomingMessage>, PlatformError> {
+        let update: TelegramUpdate =
+            serde_json::from_value(payload).map_err(|e| PlatformError::Internal(e.to_string()))?;
         self.convert_incoming(update)
     }
 
@@ -2179,7 +2625,10 @@ mod tests {
         assert_ne!(uuid_t10_a, uuid_none);
 
         // Verification of chat_id and thread_id recovery from UUID
-        assert_eq!(adapter.chat_id_from_session(uuid_t10_a).unwrap(), -1001234567890);
+        assert_eq!(
+            adapter.chat_id_from_session(uuid_t10_a).unwrap(),
+            -1001234567890
+        );
         assert_eq!(adapter.thread_id_from_session(uuid_t10_a), Some(10));
         assert_eq!(adapter.thread_id_from_session(uuid_t20), Some(20));
         assert_eq!(adapter.thread_id_from_session(uuid_none), None);
@@ -2262,7 +2711,10 @@ mod tests {
             contact: None,
             reply_to_message: None,
         };
-        assert!(!TelegramAdapter::should_process_message(&group_plain_msg, Some(&bot)));
+        assert!(!TelegramAdapter::should_process_message(
+            &group_plain_msg,
+            Some(&bot)
+        ));
 
         // 3. Group command (/status) -> accepted
         let group_cmd_msg = TelegramMessage {
@@ -2286,7 +2738,10 @@ mod tests {
             contact: None,
             reply_to_message: None,
         };
-        assert!(TelegramAdapter::should_process_message(&group_cmd_msg, Some(&bot)));
+        assert!(TelegramAdapter::should_process_message(
+            &group_cmd_msg,
+            Some(&bot)
+        ));
 
         // 4. Group message mentioning @HermesBot -> accepted
         let group_mention_msg = TelegramMessage {
@@ -2318,7 +2773,10 @@ mod tests {
             contact: None,
             reply_to_message: None,
         };
-        assert!(TelegramAdapter::should_process_message(&group_mention_msg, Some(&bot)));
+        assert!(TelegramAdapter::should_process_message(
+            &group_mention_msg,
+            Some(&bot)
+        ));
 
         // 5. Group message replying to bot -> accepted
         let reply_to_bot_msg = TelegramMessage {
@@ -2362,7 +2820,10 @@ mod tests {
                 reply_to_message: None,
             })),
         };
-        assert!(TelegramAdapter::should_process_message(&reply_to_bot_msg, Some(&bot)));
+        assert!(TelegramAdapter::should_process_message(
+            &reply_to_bot_msg,
+            Some(&bot)
+        ));
     }
 
     #[test]
@@ -2394,7 +2855,9 @@ mod tests {
             },
         });
 
-        let download_url = adapter.download_url(file.file_path.as_deref().unwrap()).unwrap();
+        let download_url = adapter
+            .download_url(file.file_path.as_deref().unwrap())
+            .unwrap();
         assert_eq!(
             download_url,
             "https://api.telegram.org/file/bot123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/photos/file_42.jpg"
@@ -2407,15 +2870,14 @@ mod tests {
         let btn2 = InlineKeyboardButton::new("OpenRouter", "mp:openrouter");
         let cancel_btn = InlineKeyboardButton::new("✗ Cancel", "mx:cancel");
 
-        let markup = InlineKeyboardMarkup::new(vec![
-            vec![btn1, btn2],
-            vec![cancel_btn],
-        ]);
+        let markup = InlineKeyboardMarkup::new(vec![vec![btn1, btn2], vec![cancel_btn]]);
 
         let json = serde_json::to_string(&markup).expect("Failed to serialize markup");
         let val: serde_json::Value = serde_json::from_str(&json).expect("Failed to parse json");
 
-        let keyboard = val["inline_keyboard"].as_array().expect("Must have inline_keyboard array");
+        let keyboard = val["inline_keyboard"]
+            .as_array()
+            .expect("Must have inline_keyboard array");
         assert_eq!(keyboard.len(), 2);
         assert_eq!(keyboard[0][0]["text"], "⭐ 9Router Gateway");
         assert_eq!(keyboard[0][0]["callback_data"], "mp:9router");
@@ -2455,7 +2917,8 @@ mod tests {
             reply_markup: None,
         };
         let json_none = serde_json::to_string(&req_none).expect("Failed to serialize");
-        let val_none: serde_json::Value = serde_json::from_str(&json_none).expect("Failed to parse json");
+        let val_none: serde_json::Value =
+            serde_json::from_str(&json_none).expect("Failed to parse json");
 
         assert_eq!(val_none["chat_id"], 987654321);
         assert_eq!(val_none["message_id"], 100);
@@ -2467,10 +2930,16 @@ mod tests {
     #[test]
     fn test_truncate_caption_1024() {
         assert_eq!(truncate_caption_1024(None), None);
-        assert_eq!(truncate_caption_1024(Some("hello")), Some("hello".to_string()));
+        assert_eq!(
+            truncate_caption_1024(Some("hello")),
+            Some("hello".to_string())
+        );
 
         let exactly_1024 = "a".repeat(1024);
-        assert_eq!(truncate_caption_1024(Some(&exactly_1024)), Some(exactly_1024.clone()));
+        assert_eq!(
+            truncate_caption_1024(Some(&exactly_1024)),
+            Some(exactly_1024.clone())
+        );
 
         let over_1024 = "a".repeat(1500);
         let truncated = truncate_caption_1024(Some(&over_1024)).unwrap();
@@ -2600,34 +3069,59 @@ mod tests {
             },
         });
 
-        assert_eq!(adapter.api_url("sendVoice"), "https://api.telegram.org/bot123456:TEST_TOKEN/sendVoice");
-        assert_eq!(adapter.api_url("sendAudio"), "https://api.telegram.org/bot123456:TEST_TOKEN/sendAudio");
-        assert_eq!(adapter.api_url("sendVideo"), "https://api.telegram.org/bot123456:TEST_TOKEN/sendVideo");
+        assert_eq!(
+            adapter.api_url("sendVoice"),
+            "https://api.telegram.org/bot123456:TEST_TOKEN/sendVoice"
+        );
+        assert_eq!(
+            adapter.api_url("sendAudio"),
+            "https://api.telegram.org/bot123456:TEST_TOKEN/sendAudio"
+        );
+        assert_eq!(
+            adapter.api_url("sendVideo"),
+            "https://api.telegram.org/bot123456:TEST_TOKEN/sendVideo"
+        );
     }
 
     #[test]
     fn test_voice_caption_html_parse_error_fallback_logic() {
         // Verify that strip_html_tags and truncate work as expected for fallback
-        let complex_caption = "<b>Bold title</b> with <a href=\"https://example.com\">link</a> & <tag>broken";
+        let complex_caption =
+            "<b>Bold title</b> with <a href=\"https://example.com\">link</a> & <tag>broken";
         let truncated = truncate_caption_1024(Some(complex_caption)).unwrap();
         assert_eq!(truncated, complex_caption);
 
         let stripped = strip_html_tags(&truncated);
         assert_eq!(stripped, "Bold title with link & broken");
-        assert_eq!(truncate_caption_1024(Some(&stripped)), Some("Bold title with link & broken".to_string()));
+        assert_eq!(
+            truncate_caption_1024(Some(&stripped)),
+            Some("Bold title with link & broken".to_string())
+        );
 
         // Check error classification
-        assert!(looks_like_parse_error(400, "Bad Request: can't parse entities: Unexpected end tag"));
-        assert!(looks_like_parse_error(400, "Bad Request: tag 'tag' is not supported"));
+        assert!(looks_like_parse_error(
+            400,
+            "Bad Request: can't parse entities: Unexpected end tag"
+        ));
+        assert!(looks_like_parse_error(
+            400,
+            "Bad Request: tag 'tag' is not supported"
+        ));
     }
 
     #[test]
     fn test_looks_like_message_not_modified() {
         assert!(looks_like_message_not_modified("Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message"));
-        assert!(looks_like_message_not_modified("Error: Message is not modified"));
+        assert!(looks_like_message_not_modified(
+            "Error: Message is not modified"
+        ));
         assert!(looks_like_message_not_modified("NOT MODIFIED"));
         assert!(looks_like_message_not_modified("not modified"));
-        assert!(!looks_like_message_not_modified("Bad Request: chat not found"));
-        assert!(!looks_like_message_not_modified("Bad Request: message to edit not found"));
+        assert!(!looks_like_message_not_modified(
+            "Bad Request: chat not found"
+        ));
+        assert!(!looks_like_message_not_modified(
+            "Bad Request: message to edit not found"
+        ));
     }
 }

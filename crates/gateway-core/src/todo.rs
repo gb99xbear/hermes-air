@@ -120,7 +120,10 @@ impl TodoStore {
         let mut children: HashMap<String, Vec<TodoItem>> = HashMap::new();
         for item in &items {
             if let Some(ref parent) = item.parent {
-                children.entry(parent.clone()).or_default().push(item.clone());
+                children
+                    .entry(parent.clone())
+                    .or_default()
+                    .push(item.clone());
             }
         }
 
@@ -285,7 +288,10 @@ impl TodoStore {
         let mut sorted_indices: Vec<usize> = last_index.into_values().collect();
         sorted_indices.sort_unstable();
 
-        sorted_indices.into_iter().map(|idx| todos[idx].clone()).collect()
+        sorted_indices
+            .into_iter()
+            .map(|idx| todos[idx].clone())
+            .collect()
     }
 
     fn fresh_items(todos: &[serde_json::Value]) -> Vec<TodoItem> {
@@ -449,7 +455,7 @@ pub async fn todo_tool(
                     Ok(serde_json::Value::Array(arr)) => arr,
                     _ => {
                         return Err(
-                            "todos must be a list of objects, got unparseable string".to_string(),
+                            "todos must be a list of objects, got unparseable string".to_string()
                         );
                     }
                 }

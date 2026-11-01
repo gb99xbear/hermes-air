@@ -21,7 +21,11 @@ pub enum TurnEvent {
     /// Notification when a tool call starts
     ToolExecuting { name: String, id: String },
     /// Notification when a tool call completes
-    ToolCompleted { name: String, id: String, success: bool },
+    ToolCompleted {
+        name: String,
+        id: String,
+        success: bool,
+    },
     /// Turn completed with full response text
     Finished(String),
     /// System or slash command informational response
@@ -72,7 +76,10 @@ impl TurnProcessor {
         }
     }
 
-    pub fn with_reflection_engine(mut self, reflection_engine: Arc<BackgroundReviewEngine>) -> Self {
+    pub fn with_reflection_engine(
+        mut self,
+        reflection_engine: Arc<BackgroundReviewEngine>,
+    ) -> Self {
         self.reflection_engine = reflection_engine;
         self
     }
@@ -182,7 +189,10 @@ impl TurnProcessor {
             let reply_text = match cmd {
                 SlashCommand::Model(Some(ref target)) => {
                     let trimmed = target.trim().to_string();
-                    let _ = self.session_store.set_model_override(session_id, Some(trimmed.clone())).await;
+                    let _ = self
+                        .session_store
+                        .set_model_override(session_id, Some(trimmed.clone()))
+                        .await;
                     format!("Active model switched to: {}", trimmed)
                 }
                 SlashCommand::Compress(ref focus) => {
@@ -218,11 +228,16 @@ impl TurnProcessor {
             if is_clear {
                 let _ = self.session_store.delete(session_id).await;
                 let _ = self.session_store.clear_messages(session_id).await;
-                let _ = self.session_store.set_model_override(session_id, None).await;
+                let _ = self
+                    .session_store
+                    .set_model_override(session_id, None)
+                    .await;
                 let _ = event_tx.send(TurnEvent::ContextCleared).await;
             }
 
-            let _ = event_tx.send(TurnEvent::SlashReply(reply_text.clone())).await;
+            let _ = event_tx
+                .send(TurnEvent::SlashReply(reply_text.clone()))
+                .await;
             return Ok(reply_text);
         }
 
@@ -258,7 +273,10 @@ impl TurnProcessor {
         }
 
         // Build active system prompt
-        let sys_cfg = self.profile.as_ref().and_then(|p| p.system_prompt.as_deref());
+        let sys_cfg = self
+            .profile
+            .as_ref()
+            .and_then(|p| p.system_prompt.as_deref());
         let active_system_prompt = self.prompt_assembler.build_system_prompt(sys_cfg).await;
 
         let temperature = self.profile.as_ref().map(|p| p.temperature).unwrap_or(0.7);
@@ -283,7 +301,10 @@ impl TurnProcessor {
 
         let new_user_msg = ChatMessage::user(input_trimmed.to_string());
         messages.push(new_user_msg.clone());
-        let _ = self.session_store.append_message(session_id, new_user_msg).await;
+        let _ = self
+            .session_store
+            .append_message(session_id, new_user_msg)
+            .await;
 
         let tool_definitions = self.tool_registry.get_definitions();
         let max_tool_iterations = 10;
@@ -314,7 +335,10 @@ impl TurnProcessor {
                     match response {
                         ChatResponse::Text(text) => {
                             let asst_msg = ChatMessage::assistant(text.clone());
-                            let _ = self.session_store.append_message(session_id, asst_msg.clone()).await;
+                            let _ = self
+                                .session_store
+                                .append_message(session_id, asst_msg.clone())
+                                .await;
 
                             // Stream chunks to listener
                             let _ = event_tx.send(TurnEvent::Token(text.clone())).await;
@@ -367,7 +391,8 @@ impl TurnProcessor {
                                     })
                                     .await;
 
-                                let tool_msg = ChatMessage::tool(result.tool_call_id, result.output);
+                                let tool_msg =
+                                    ChatMessage::tool(result.tool_call_id, result.output);
                                 let _ = self
                                     .session_store
                                     .append_message(session_id, tool_msg.clone())
@@ -382,7 +407,10 @@ impl TurnProcessor {
                     let err_msg = format!("LLM error: {}. Use /model to switch models.", e);
                     let _ = event_tx.send(TurnEvent::Error(err_msg.clone())).await;
                     let asst_msg = ChatMessage::assistant(err_msg.clone());
-                    let _ = self.session_store.append_message(session_id, asst_msg).await;
+                    let _ = self
+                        .session_store
+                        .append_message(session_id, asst_msg)
+                        .await;
                     return Ok(err_msg);
                 }
             }
@@ -392,7 +420,10 @@ impl TurnProcessor {
             final_text = "Halted: Maximum tool iterations reached.".to_string();
             let _ = event_tx.send(TurnEvent::Finished(final_text.clone())).await;
             let asst_msg = ChatMessage::assistant(final_text.clone());
-            let _ = self.session_store.append_message(session_id, asst_msg.clone()).await;
+            let _ = self
+                .session_store
+                .append_message(session_id, asst_msg.clone())
+                .await;
 
             let mut reflection_messages = messages.clone();
             reflection_messages.push(asst_msg);

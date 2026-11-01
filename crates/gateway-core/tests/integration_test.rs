@@ -1,6 +1,6 @@
 use hermes_gateway_core::llm::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ChatResponse,
-    ToolCallFunctionRaw, ToolCallRaw, ToolCallRawExt,
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ChatResponse, ToolCallFunctionRaw,
+    ToolCallRaw, ToolCallRawExt,
 };
 use hermes_gateway_core::tools::{ToolCall, ToolRegistry};
 use serde_json::json;
@@ -60,7 +60,11 @@ async fn test_tool_registry_file_write_and_read() {
 
     let write_res = registry.execute(&write_call).await;
     assert_eq!(write_res.tool_call_id, "call_write_1");
-    assert!(write_res.success, "File write should succeed: {}", write_res.output);
+    assert!(
+        write_res.success,
+        "File write should succeed: {}",
+        write_res.output
+    );
     assert!(write_res.output.contains("bytes_written"));
 
     let read_call = ToolCall {
@@ -73,10 +77,22 @@ async fn test_tool_registry_file_write_and_read() {
 
     let read_res = registry.execute(&read_call).await;
     assert_eq!(read_res.tool_call_id, "call_read_1");
-    assert!(read_res.success, "File read should succeed: {}", read_res.output);
-    let read_json: serde_json::Value = serde_json::from_str(&read_res.output).expect("valid json from read_file");
-    assert_eq!(read_json.get("total_lines").and_then(|v| v.as_u64()), Some(1));
-    assert!(read_json.get("content").and_then(|v| v.as_str()).unwrap().contains("1|Hello Hermes Rust Core!"));
+    assert!(
+        read_res.success,
+        "File read should succeed: {}",
+        read_res.output
+    );
+    let read_json: serde_json::Value =
+        serde_json::from_str(&read_res.output).expect("valid json from read_file");
+    assert_eq!(
+        read_json.get("total_lines").and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert!(read_json
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .contains("1|Hello Hermes Rust Core!"));
 
     let _ = tokio::fs::remove_file(&test_file).await;
     let _ = tokio::fs::remove_dir(&test_dir).await;
@@ -91,7 +107,11 @@ async fn test_tool_registry_get_definitions() {
 
     let names: Vec<&str> = defs
         .iter()
-        .filter_map(|d| d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
+        .filter_map(|d| {
+            d.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+        })
         .collect();
 
     assert!(names.contains(&"terminal"));
@@ -177,18 +197,23 @@ fn test_chat_message_serialization_deserialization() {
         }]),
         tool_call_id: None,
     };
-    let json_assistant = serde_json::to_string(&msg_assistant).expect("serialize assistant message");
+    let json_assistant =
+        serde_json::to_string(&msg_assistant).expect("serialize assistant message");
     assert!(json_assistant.contains(r#""role":"assistant""#));
     assert!(json_assistant.contains(r#""call_def456""#));
     assert!(json_assistant.contains(r#""function""#));
 
-    let de_assistant: ChatMessage = serde_json::from_str(&json_assistant).expect("deserialize assistant message");
+    let de_assistant: ChatMessage =
+        serde_json::from_str(&json_assistant).expect("deserialize assistant message");
     assert_eq!(de_assistant.role, "assistant");
     let tc_raw = &de_assistant.tool_calls.expect("has tool calls")[0];
     let tc = tc_raw.to_tool_call();
     assert_eq!(tc.id, "call_def456");
     assert_eq!(tc.name, "terminal");
-    assert_eq!(tc.arguments.get("command").and_then(|v| v.as_str()), Some("ls"));
+    assert_eq!(
+        tc.arguments.get("command").and_then(|v| v.as_str()),
+        Some("ls")
+    );
 }
 
 #[test]
@@ -235,7 +260,10 @@ fn test_chat_response_parsing_text_and_tool_calls() {
     let resp_text: ChatCompletionResponse =
         serde_json::from_value(text_response_json).expect("deserialize text response");
     let msg_text = resp_text.choices.into_iter().next().unwrap().message;
-    assert_eq!(msg_text.content.as_deref(), Some("Hello, I am Hermes agent!"));
+    assert_eq!(
+        msg_text.content.as_deref(),
+        Some("Hello, I am Hermes agent!")
+    );
 
     let parsed_text_resp = if let Some(ref calls) = msg_text.tool_calls {
         if !calls.is_empty() {
@@ -376,9 +404,11 @@ async fn test_mock_agent_loop_multi_turn() {
     });
 
     assert_eq!(messages.len(), 4);
-    assert!(assistant_step2_msg.content.unwrap().contains("The current year is "));
+    assert!(assistant_step2_msg
+        .content
+        .unwrap()
+        .contains("The current year is "));
 }
-
 
 #[tokio::test]
 async fn test_prompt_assembler_empty_fallback() {
@@ -387,12 +417,21 @@ async fn test_prompt_assembler_empty_fallback() {
     let empty_dir = std::env::temp_dir().join("hermes_test_prompt_empty");
     let _ = tokio::fs::create_dir_all(&empty_dir).await;
 
-    let assembler = PromptAssembler::with_overrides(Some(empty_dir.clone()), Some(empty_dir.clone()));
+    let assembler =
+        PromptAssembler::with_overrides(Some(empty_dir.clone()), Some(empty_dir.clone()));
     let prompt = assembler.build_system_prompt(None).await;
-    assert!(prompt.is_empty(), "Prompt should be empty when no files and no base prompt");
+    assert!(
+        prompt.is_empty(),
+        "Prompt should be empty when no files and no base prompt"
+    );
 
-    let prompt_with_base = assembler.build_system_prompt(Some("Base system instruction")).await;
-    assert_eq!(prompt_with_base, "# PROFILE INSTRUCTIONS\n\nBase system instruction");
+    let prompt_with_base = assembler
+        .build_system_prompt(Some("Base system instruction"))
+        .await;
+    assert_eq!(
+        prompt_with_base,
+        "# PROFILE INSTRUCTIONS\n\nBase system instruction"
+    );
 
     let _ = tokio::fs::remove_dir_all(&empty_dir).await;
 }
@@ -409,18 +448,45 @@ async fn test_prompt_assembler_combines_all_sections() {
     let _ = tokio::fs::create_dir_all(&memories_dir).await;
     let _ = tokio::fs::create_dir_all(&cwd_dir).await;
 
-    tokio::fs::write(hermes_dir.join("SOUL.md"), "Default persona and soul definition.").await.unwrap();
-    tokio::fs::write(cwd_dir.join("AGENTS.md"), "Zero-refusal law and operational doctrine.").await.unwrap();
-    tokio::fs::write(memories_dir.join("MEMORY.md"), "Estate layout and infrastructure credentials.").await.unwrap();
-    tokio::fs::write(memories_dir.join("USER.md"), "User profile and preferences.").await.unwrap();
-    tokio::fs::write(cwd_dir.join("system.md"), "System level guidelines.").await.unwrap();
+    tokio::fs::write(
+        hermes_dir.join("SOUL.md"),
+        "Default persona and soul definition.",
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        cwd_dir.join("AGENTS.md"),
+        "Zero-refusal law and operational doctrine.",
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        memories_dir.join("MEMORY.md"),
+        "Estate layout and infrastructure credentials.",
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        memories_dir.join("USER.md"),
+        "User profile and preferences.",
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(cwd_dir.join("system.md"), "System level guidelines.")
+        .await
+        .unwrap();
 
     let assembler = PromptAssembler::with_overrides(Some(hermes_dir), Some(cwd_dir));
-    let assembled = assembler.build_system_prompt(Some("Profile base prompt")).await;
+    let assembled = assembler
+        .build_system_prompt(Some("Profile base prompt"))
+        .await;
 
     assert!(assembled.contains("# SOUL\n\nDefault persona and soul definition."));
-    assert!(assembled.contains("# OPERATIONAL DOCTRINE (AGENTS.md)\n\nZero-refusal law and operational doctrine."));
-    assert!(assembled.contains("# MEMORY & ESTATE RULES\n\nEstate layout and infrastructure credentials."));
+    assert!(assembled.contains(
+        "# OPERATIONAL DOCTRINE (AGENTS.md)\n\nZero-refusal law and operational doctrine."
+    ));
+    assert!(assembled
+        .contains("# MEMORY & ESTATE RULES\n\nEstate layout and infrastructure credentials."));
     assert!(assembled.contains("# USER PROFILE\n\nUser profile and preferences."));
     assert!(assembled.contains("# SYSTEM INSTRUCTIONS\n\nSystem level guidelines."));
     assert!(assembled.contains("# PROFILE INSTRUCTIONS\n\nProfile base prompt"));
@@ -431,14 +497,16 @@ async fn test_prompt_assembler_combines_all_sections() {
     let _ = tokio::fs::remove_dir_all(&test_dir).await;
 }
 
-
 #[tokio::test]
 async fn test_slash_command_parsing_suite() {
     use hermes_gateway_core::{parse_command, SlashCommand};
 
     assert_eq!(parse_command("/status"), Some(SlashCommand::Status));
     assert_eq!(parse_command("  /status  "), Some(SlashCommand::Status));
-    assert_eq!(parse_command("/status@HermesGatewayBot"), Some(SlashCommand::Status));
+    assert_eq!(
+        parse_command("/status@HermesGatewayBot"),
+        Some(SlashCommand::Status)
+    );
 
     assert_eq!(parse_command("/model"), Some(SlashCommand::Model(None)));
     assert_eq!(
@@ -451,7 +519,9 @@ async fn test_slash_command_parsing_suite() {
     );
     assert_eq!(
         parse_command("/model@HermesBot freet/claude-5-sonnet"),
-        Some(SlashCommand::Model(Some("freet/claude-5-sonnet".to_string())))
+        Some(SlashCommand::Model(Some(
+            "freet/claude-5-sonnet".to_string()
+        )))
     );
 
     assert_eq!(parse_command("/clear"), Some(SlashCommand::Clear));
@@ -537,8 +607,8 @@ async fn test_slash_command_output_handling() {
 
 #[tokio::test]
 async fn test_multi_turn_session_conversation_memory() {
-    use hermes_session_store::{MemorySessionStore, SessionStore};
     use hermes_protocol::{ChatMessage, Uuid};
+    use hermes_session_store::{MemorySessionStore, SessionStore};
 
     let store = MemorySessionStore::new();
     let session_id = Uuid::new_v4();
@@ -548,22 +618,32 @@ async fn test_multi_turn_session_conversation_memory() {
     store.append_message(session_id, user_msg_1).await.unwrap();
 
     // Assistant acknowledges in Turn 1
-    let assistant_msg_1 = ChatMessage::assistant("Got it! I will remember that your favorite fruit is Durian.");
-    store.append_message(session_id, assistant_msg_1).await.unwrap();
+    let assistant_msg_1 =
+        ChatMessage::assistant("Got it! I will remember that your favorite fruit is Durian.");
+    store
+        .append_message(session_id, assistant_msg_1)
+        .await
+        .unwrap();
 
     // Verify session store has Turn 1
     let history_turn_1 = store.get_messages(session_id, Some(30)).await.unwrap();
     assert_eq!(history_turn_1.len(), 2);
     assert_eq!(history_turn_1[0].role, "user");
-    assert_eq!(history_turn_1[0].content.as_deref(), Some("My favorite fruit is Durian"));
+    assert_eq!(
+        history_turn_1[0].content.as_deref(),
+        Some("My favorite fruit is Durian")
+    );
     assert_eq!(history_turn_1[1].role, "assistant");
-    assert_eq!(history_turn_1[1].content.as_deref(), Some("Got it! I will remember that your favorite fruit is Durian."));
+    assert_eq!(
+        history_turn_1[1].content.as_deref(),
+        Some("Got it! I will remember that your favorite fruit is Durian.")
+    );
 
     // Turn 2: User asks what fruit do I like?
     let user_msg_2 = ChatMessage::user("What fruit do I like?");
     // When Turn 2 is processed by Gateway, it loads history_turn_1
     let loaded_history = store.get_messages(session_id, Some(30)).await.unwrap();
-    
+
     // Construct simulated LLM payload with system prompt + history + new user message
     let mut turn_2_messages = Vec::new();
     turn_2_messages.push(ChatMessage::system("You are Hermes assistant."));
@@ -576,8 +656,12 @@ async fn test_multi_turn_session_conversation_memory() {
     store.append_message(session_id, user_msg_2).await.unwrap();
 
     // Assistant answers Turn 2 recalling Durian from context
-    let assistant_msg_2 = ChatMessage::assistant("You told me earlier that your favorite fruit is Durian!");
-    store.append_message(session_id, assistant_msg_2).await.unwrap();
+    let assistant_msg_2 =
+        ChatMessage::assistant("You told me earlier that your favorite fruit is Durian!");
+    store
+        .append_message(session_id, assistant_msg_2)
+        .await
+        .unwrap();
 
     // Verify full chronological transcript has 4 messages
     let full_history = store.get_messages(session_id, Some(30)).await.unwrap();
@@ -586,21 +670,26 @@ async fn test_multi_turn_session_conversation_memory() {
     assert_eq!(full_history[1].role, "assistant");
     assert_eq!(full_history[2].role, "user");
     assert_eq!(full_history[3].role, "assistant");
-    assert_eq!(full_history[3].content.as_deref(), Some("You told me earlier that your favorite fruit is Durian!"));
+    assert_eq!(
+        full_history[3].content.as_deref(),
+        Some("You told me earlier that your favorite fruit is Durian!")
+    );
 
     // Turn 3: User resets conversation via /clear
     store.clear_messages(session_id).await.unwrap();
     let history_after_clear = store.get_messages(session_id, Some(30)).await.unwrap();
-    assert!(history_after_clear.is_empty(), "Conversation history must be completely evicted on /clear");
+    assert!(
+        history_after_clear.is_empty(),
+        "Conversation history must be completely evicted on /clear"
+    );
 }
-
 
 #[tokio::test]
 async fn test_provider_profile_resolution_in_gateway() {
     use hermes_config::{
-        GatewayConfig, GatewaySection, ProfileConfig, PluginsConfig,
-        SessionStoreConfig, SessionStoreBackend, LoggingConfig, LogFormat, LogOutput,
-        MetricsConfig, DashboardConfig, TuiConfig, AcpConfig,
+        AcpConfig, DashboardConfig, GatewayConfig, GatewaySection, LogFormat, LogOutput,
+        LoggingConfig, MetricsConfig, PluginsConfig, ProfileConfig, SessionStoreBackend,
+        SessionStoreConfig, TuiConfig,
     };
     use hermes_gateway_core::Gateway;
     use std::collections::HashMap;
@@ -678,9 +767,14 @@ async fn test_provider_profile_resolution_in_gateway() {
         },
     };
 
-    let gateway = Gateway::new(config).await.expect("Gateway should initialize");
+    let gateway = Gateway::new(config)
+        .await
+        .expect("Gateway should initialize");
     let provider_reg = gateway.provider_registry();
-    let openrouter = provider_reg.get("openrouter").await.expect("openrouter profile should be present");
+    let openrouter = provider_reg
+        .get("openrouter")
+        .await
+        .expect("openrouter profile should be present");
     assert_eq!(openrouter.name, "openrouter");
     assert_eq!(openrouter.base_url, "https://openrouter.ai/api/v1");
 
@@ -698,17 +792,23 @@ async fn test_streaming_sse_parser_and_consumer_mock() {
     tokio::spawn(async move {
         for line in raw_sse.lines() {
             let trimmed = line.trim();
-            if trimmed.is_empty() { continue; }
+            if trimmed.is_empty() {
+                continue;
+            }
             if let Some(rest) = trimmed.strip_prefix("data: ") {
                 let rest = rest.trim();
-                if rest == "[DONE]" { break; }
+                if rest == "[DONE]" {
+                    break;
+                }
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(rest) {
-                    if let Some(content) = val.get("choices")
+                    if let Some(content) = val
+                        .get("choices")
                         .and_then(|c| c.get(0))
                         .and_then(|c| c.get("delta"))
                         .and_then(|d| d.get("content"))
-                        .and_then(|s| s.as_str()) {
-                            tx.send(content.to_string()).await.unwrap();
+                        .and_then(|s| s.as_str())
+                    {
+                        tx.send(content.to_string()).await.unwrap();
                     }
                 }
             }
@@ -734,18 +834,26 @@ async fn test_upstream_prompt_feedback_filter_extraction() {
         }
     });
 
-    let resp: ChatCompletionResponse = serde_json::from_value(raw_filter_json).expect("deserialization");
+    let resp: ChatCompletionResponse =
+        serde_json::from_value(raw_filter_json).expect("deserialization");
     assert!(resp.choices.is_empty());
     assert!(resp.response.is_some());
     let pf = resp.response.unwrap().prompt_feedback.unwrap();
     assert_eq!(pf.block_reason.as_deref(), Some("SAFETY"));
-    assert_eq!(pf.block_reason_message.as_deref(), Some("Prompt violates upstream content policy."));
+    assert_eq!(
+        pf.block_reason_message.as_deref(),
+        Some("Prompt violates upstream content policy.")
+    );
 
-    let reason = pf.block_reason_message
+    let reason = pf
+        .block_reason_message
         .as_deref()
         .or(pf.block_reason.as_deref())
         .unwrap_or("content policy violation");
-    let refusal_text = format!("⚠️ This request was blocked by upstream safety filters: {}", reason);
+    let refusal_text = format!(
+        "⚠️ This request was blocked by upstream safety filters: {}",
+        reason
+    );
     assert_eq!(
         refusal_text,
         "⚠️ This request was blocked by upstream safety filters: Prompt violates upstream content policy."
@@ -756,7 +864,10 @@ async fn test_upstream_prompt_feedback_filter_extraction() {
 #[tokio::test]
 async fn test_error_recovery_zero_fake_echo() {
     let simulated_error = anyhow::anyhow!("Connection timeout to upstream provider");
-    let error_reply = format!("⚠️ Upstream LLM error: {}. Sila guna arahan /model untuk tukar model.", simulated_error);
+    let error_reply = format!(
+        "⚠️ Upstream LLM error: {}. Sila guna arahan /model untuk tukar model.",
+        simulated_error
+    );
 
     assert!(error_reply.starts_with("⚠️ Upstream LLM error:"));
     assert!(error_reply.contains("Sila guna arahan /model untuk tukar model."));
@@ -765,8 +876,8 @@ async fn test_error_recovery_zero_fake_echo() {
 
 #[tokio::test]
 async fn test_multi_session_model_override_independence() {
-    use hermes_session_store::{MemorySessionStore, SessionStore};
     use hermes_protocol::Uuid;
+    use hermes_session_store::{MemorySessionStore, SessionStore};
 
     let store = MemorySessionStore::new();
     let session_a = Uuid::new_v4();
@@ -774,40 +885,70 @@ async fn test_multi_session_model_override_independence() {
     let default_model = "gemini-2.5-flash";
 
     // 1. Initial resolution without overrides falls back to default_model
-    let model_a_initial = store.get_model_override(session_a).await.unwrap()
+    let model_a_initial = store
+        .get_model_override(session_a)
+        .await
+        .unwrap()
         .unwrap_or_else(|| default_model.to_string());
-    let model_b_initial = store.get_model_override(session_b).await.unwrap()
+    let model_b_initial = store
+        .get_model_override(session_b)
+        .await
+        .unwrap()
         .unwrap_or_else(|| default_model.to_string());
     assert_eq!(model_a_initial, "gemini-2.5-flash");
     assert_eq!(model_b_initial, "gemini-2.5-flash");
 
     // 2. Set model override for Session A to Claude 3.7 Sonnet
-    store.set_model_override(session_a, Some("freet/claude-3-7-sonnet".to_string())).await.unwrap();
+    store
+        .set_model_override(session_a, Some("freet/claude-3-7-sonnet".to_string()))
+        .await
+        .unwrap();
 
     // Verify Session A uses Claude, while Session B independently remains default (no leakage!)
-    let model_a_after = store.get_model_override(session_a).await.unwrap()
+    let model_a_after = store
+        .get_model_override(session_a)
+        .await
+        .unwrap()
         .unwrap_or_else(|| default_model.to_string());
-    let model_b_after = store.get_model_override(session_b).await.unwrap()
+    let model_b_after = store
+        .get_model_override(session_b)
+        .await
+        .unwrap()
         .unwrap_or_else(|| default_model.to_string());
     assert_eq!(model_a_after, "freet/claude-3-7-sonnet");
     assert_eq!(model_b_after, "gemini-2.5-flash");
 
     // 3. Set model override for Session B to GPT-4o
-    store.set_model_override(session_b, Some("openai/gpt-4o".to_string())).await.unwrap();
+    store
+        .set_model_override(session_b, Some("openai/gpt-4o".to_string()))
+        .await
+        .unwrap();
 
     // Verify both sessions have distinct, isolated models
-    let model_a_final = store.get_model_override(session_a).await.unwrap()
+    let model_a_final = store
+        .get_model_override(session_a)
+        .await
+        .unwrap()
         .unwrap_or_else(|| default_model.to_string());
-    let model_b_final = store.get_model_override(session_b).await.unwrap()
+    let model_b_final = store
+        .get_model_override(session_b)
+        .await
+        .unwrap()
         .unwrap_or_else(|| default_model.to_string());
     assert_eq!(model_a_final, "freet/claude-3-7-sonnet");
     assert_eq!(model_b_final, "openai/gpt-4o");
 
     // 4. Reset Session A (/clear or /reset)
     store.set_model_override(session_a, None).await.unwrap();
-    let model_a_reset = store.get_model_override(session_a).await.unwrap()
+    let model_a_reset = store
+        .get_model_override(session_a)
+        .await
+        .unwrap()
         .unwrap_or_else(|| default_model.to_string());
-    let model_b_retained = store.get_model_override(session_b).await.unwrap()
+    let model_b_retained = store
+        .get_model_override(session_b)
+        .await
+        .unwrap()
         .unwrap_or_else(|| default_model.to_string());
     assert_eq!(model_a_reset, "gemini-2.5-flash");
     assert_eq!(model_b_retained, "openai/gpt-4o");
@@ -815,12 +956,12 @@ async fn test_multi_session_model_override_independence() {
 
 #[tokio::test]
 async fn test_interactive_model_picker_generator_and_callback_routing() {
+    use hermes_config::SessionStoreBackend;
     use hermes_gateway_core::{
-        build_provider_keyboard, build_model_keyboard, model_picker_card, provider_picker_header,
-        default_providers_list, ModelPickerState,
+        build_model_keyboard, build_provider_keyboard, default_providers_list, model_picker_card,
+        provider_picker_header, ModelPickerState,
     };
     use hermes_session_store::SessionStoreFactory;
-    use hermes_config::SessionStoreBackend;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -830,7 +971,10 @@ async fn test_interactive_model_picker_generator_and_callback_routing() {
     let providers = default_providers_list();
     let prov_kb = build_provider_keyboard(&providers, "9router");
     assert_eq!(prov_kb.inline_keyboard[0][0].text, "⭐ 9Router Gateway");
-    assert_eq!(prov_kb.inline_keyboard[0][0].callback_data.as_deref(), Some("mp:9router"));
+    assert_eq!(
+        prov_kb.inline_keyboard[0][0].callback_data.as_deref(),
+        Some("mp:9router")
+    );
 
     let header = provider_picker_header("ag/gemini-3.8-flash", "9Router Gateway");
     assert!(header.contains("HERMES ROUTER // MODEL SELECTOR"));
@@ -843,19 +987,34 @@ async fn test_interactive_model_picker_generator_and_callback_routing() {
         "thk/deepseek-v4.1-flash:free".to_string(),
         "gcli/grok-4.7-medium".to_string(),
     ];
-    let (model_kb, page, total) = build_model_keyboard(&sample_models, 0, "ag/gemini-3.8-flash", "9router");
+    let (model_kb, page, total) =
+        build_model_keyboard(&sample_models, 0, "ag/gemini-3.8-flash", "9router");
     assert_eq!(page, 1);
     assert_eq!(total, 1);
     assert_eq!(model_kb.inline_keyboard[0][0].text, "⭐ gemini-3.8-flash");
-    assert_eq!(model_kb.inline_keyboard[0][0].callback_data.as_deref(), Some("mm:ag/gemini-3.8-flash"));
+    assert_eq!(
+        model_kb.inline_keyboard[0][0].callback_data.as_deref(),
+        Some("mm:ag/gemini-3.8-flash")
+    );
 
-    let card = model_picker_card("9Router Gateway", 3, page, total, &sample_models, "ag/gemini-3.8-flash");
+    let card = model_picker_card(
+        "9Router Gateway",
+        3,
+        page,
+        total,
+        &sample_models,
+        "ag/gemini-3.8-flash",
+    );
     assert!(card.contains("PROVIDER : 9Router Gateway"));
     assert!(card.contains("⭐ ag/gemini-3.8-flash"));
     assert!(card.contains("Select a target model below:"));
 
     // 3. Test Session Model Override persistence via mm:<model_id> callback simulation
-    let store = Arc::new(SessionStoreFactory::create(SessionStoreBackend::Memory, None, 100, 3600).await.unwrap());
+    let store = Arc::new(
+        SessionStoreFactory::create(SessionStoreBackend::Memory, None, 100, 3600)
+            .await
+            .unwrap(),
+    );
     let session_id = Uuid::new_v4();
     let chat_id = 999888777i64;
 
@@ -877,7 +1036,10 @@ async fn test_interactive_model_picker_generator_and_callback_routing() {
 
     // Simulate model switch callback
     let chosen_model = "thk/deepseek-v4.1-flash:free";
-    store.set_model_override(session_id, Some(chosen_model.to_string())).await.unwrap();
+    store
+        .set_model_override(session_id, Some(chosen_model.to_string()))
+        .await
+        .unwrap();
 
     let persisted = store.get_model_override(session_id).await.unwrap();
     assert_eq!(persisted, Some(chosen_model.to_string()));
@@ -905,11 +1067,23 @@ async fn test_tool_registry_patch_execution() {
     };
 
     let patch_res = registry.execute(&patch_call).await;
-    assert!(patch_res.success, "Patch must succeed: {}", patch_res.output);
+    assert!(
+        patch_res.success,
+        "Patch must succeed: {}",
+        patch_res.output
+    );
     let patch_json: serde_json::Value = serde_json::from_str(&patch_res.output).unwrap();
     assert_eq!(patch_json.get("success"), Some(&json!(true)));
-    assert!(patch_json.get("diff").and_then(|v| v.as_str()).unwrap().contains("-    let x = 10;"));
-    assert!(patch_json.get("diff").and_then(|v| v.as_str()).unwrap().contains("+    let x = 42;"));
+    assert!(patch_json
+        .get("diff")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .contains("-    let x = 10;"));
+    assert!(patch_json
+        .get("diff")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .contains("+    let x = 42;"));
 
     // Verify on disk
     let updated = tokio::fs::read_to_string(&test_file).await.unwrap();
@@ -935,8 +1109,15 @@ async fn test_tool_registry_search_files_modes() {
     let file_b = test_dir.join("file_b.txt");
 
     let _ = tokio::fs::create_dir_all(&test_dir).await;
-    tokio::fs::write(&file_a, "target_token_123 in file a\nsecond line").await.unwrap();
-    tokio::fs::write(&file_b, "different text\ntarget_token_123 in file b\nthird line").await.unwrap();
+    tokio::fs::write(&file_a, "target_token_123 in file a\nsecond line")
+        .await
+        .unwrap();
+    tokio::fs::write(
+        &file_b,
+        "different text\ntarget_token_123 in file b\nthird line",
+    )
+    .await
+    .unwrap();
 
     // 1. Content search mode = "content"
     let call_content = ToolCall {
@@ -970,7 +1151,14 @@ async fn test_tool_registry_search_files_modes() {
     assert!(res_files_only.success);
     let json_fo: serde_json::Value = serde_json::from_str(&res_files_only.output).unwrap();
     assert_eq!(json_fo.get("total_count").and_then(|v| v.as_u64()), Some(2));
-    assert_eq!(json_fo.get("files").and_then(|v| v.as_array()).unwrap().len(), 2);
+    assert_eq!(
+        json_fo
+            .get("files")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .len(),
+        2
+    );
 
     // 3. Mode = "count"
     let call_count = ToolCall {
@@ -986,7 +1174,10 @@ async fn test_tool_registry_search_files_modes() {
     let res_count = registry.execute(&call_count).await;
     assert!(res_count.success);
     let json_cnt: serde_json::Value = serde_json::from_str(&res_count.output).unwrap();
-    assert_eq!(json_cnt.get("total_count").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(
+        json_cnt.get("total_count").and_then(|v| v.as_u64()),
+        Some(2)
+    );
 
     // 4. Target = "files" (glob match)
     let call_find_files = ToolCall {
@@ -1001,13 +1192,15 @@ async fn test_tool_registry_search_files_modes() {
     let res_find = registry.execute(&call_find_files).await;
     assert!(res_find.success);
     let json_find: serde_json::Value = serde_json::from_str(&res_find.output).unwrap();
-    assert_eq!(json_find.get("total_count").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(
+        json_find.get("total_count").and_then(|v| v.as_u64()),
+        Some(2)
+    );
 
     let _ = tokio::fs::remove_file(&file_a).await;
     let _ = tokio::fs::remove_file(&file_b).await;
     let _ = tokio::fs::remove_dir(&test_dir).await;
 }
-
 
 #[tokio::test]
 async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
@@ -1018,7 +1211,11 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
 
     let names: Vec<&str> = defs
         .iter()
-        .filter_map(|d| d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
+        .filter_map(|d| {
+            d.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+        })
         .collect();
 
     assert!(names.contains(&"web_search"));
@@ -1040,9 +1237,17 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let results_arr = val_ssrf.get("results").and_then(|r| r.as_array()).unwrap();
     assert_eq!(results_arr.len(), 2);
     assert!(results_arr[0].get("error").is_some());
-    assert!(results_arr[0].get("error").and_then(|e| e.as_str()).unwrap().contains("SSRF security violation"));
+    assert!(results_arr[0]
+        .get("error")
+        .and_then(|e| e.as_str())
+        .unwrap()
+        .contains("SSRF security violation"));
     assert!(results_arr[1].get("error").is_some());
-    assert!(results_arr[1].get("error").and_then(|e| e.as_str()).unwrap().contains("SSRF security violation"));
+    assert!(results_arr[1]
+        .get("error")
+        .and_then(|e| e.as_str())
+        .unwrap()
+        .contains("SSRF security violation"));
 
     // 2. web_search execution test
     let call_search = ToolCall {
@@ -1056,7 +1261,10 @@ async fn test_tool_registry_web_search_and_extract_definitions_and_execution() {
     let res_search = registry.execute(&call_search).await;
     assert!(res_search.success);
     let val_search: serde_json::Value = serde_json::from_str(&res_search.output).unwrap();
-    assert_eq!(val_search.get("success").and_then(|s| s.as_bool()), Some(true));
+    assert_eq!(
+        val_search.get("success").and_then(|s| s.as_bool()),
+        Some(true)
+    );
     assert!(val_search.get("data").is_some());
 }
 
@@ -1073,7 +1281,10 @@ async fn test_tool_registry_skills_list_and_view() {
     let res_list = registry.execute(&call_list).await;
     assert!(res_list.success);
     let parsed_list: serde_json::Value = serde_json::from_str(&res_list.output).unwrap();
-    assert_eq!(parsed_list.get("success").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        parsed_list.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 
     // 2. Test skill_view call with non-existent skill
     let call_view = ToolCall {
@@ -1086,13 +1297,16 @@ async fn test_tool_registry_skills_list_and_view() {
     let res_view = registry.execute(&call_view).await;
     assert!(!res_view.success);
     let parsed_view: serde_json::Value = serde_json::from_str(&res_view.output).unwrap();
-    assert_eq!(parsed_view.get("success").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(
+        parsed_view.get("success").and_then(|v| v.as_bool()),
+        Some(false)
+    );
 }
 
 #[tokio::test]
 async fn test_busy_guard_and_stop_cancellation() {
-    use hermes_gateway_core::{BusyPolicy, SlashCommand};
     use dashmap::DashMap;
+    use hermes_gateway_core::{BusyPolicy, SlashCommand};
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
@@ -1121,8 +1335,14 @@ async fn test_busy_guard_and_stop_cancellation() {
     assert_eq!(SlashCommand::Diff(None).busy_policy(), BusyPolicy::Dispatch);
 
     // 5. BusyPolicy check: /stop and /clear should be InterruptThenDispatch
-    assert_eq!(SlashCommand::Stop.busy_policy(), BusyPolicy::InterruptThenDispatch);
-    assert_eq!(SlashCommand::Clear.busy_policy(), BusyPolicy::InterruptThenDispatch);
+    assert_eq!(
+        SlashCommand::Stop.busy_policy(),
+        BusyPolicy::InterruptThenDispatch
+    );
+    assert_eq!(
+        SlashCommand::Clear.busy_policy(),
+        BusyPolicy::InterruptThenDispatch
+    );
 
     // 6. Simulate /stop action: cancel token and clear active turn
     if let Some((_, tok)) = active_turns.remove(&session_id) {
@@ -1193,21 +1413,26 @@ async fn test_slash_commands_context_whoami_profile_diff() {
     assert!(!diff_out.is_empty());
 }
 
-
 #[tokio::test]
 async fn test_compress_command_and_preflight_auto_compaction_integration() {
-    use hermes_gateway_core::{
-        parse_command, handle_compress, SlashCommand, ContextCompressor,
-        SUMMARY_PREFIX, HISTORICAL_TASK_HEADING,
-    };
-    use hermes_session_store::{MemorySessionStore, SessionStore};
-    use hermes_protocol::{ChatMessage, Uuid};
     use hermes_gateway_core::llm::LlmClient;
+    use hermes_gateway_core::{
+        handle_compress, parse_command, ContextCompressor, SlashCommand, HISTORICAL_TASK_HEADING,
+        SUMMARY_PREFIX,
+    };
+    use hermes_protocol::{ChatMessage, Uuid};
+    use hermes_session_store::{MemorySessionStore, SessionStore};
     use std::sync::Arc;
 
     // 1. Verify command parsing for /compress and /compact
-    assert_eq!(parse_command("/compress"), Some(SlashCommand::Compress(None)));
-    assert_eq!(parse_command("/compact"), Some(SlashCommand::Compress(None)));
+    assert_eq!(
+        parse_command("/compress"),
+        Some(SlashCommand::Compress(None))
+    );
+    assert_eq!(
+        parse_command("/compact"),
+        Some(SlashCommand::Compress(None))
+    );
     assert_eq!(
         parse_command("/compress backend api"),
         Some(SlashCommand::Compress(Some("backend api".to_string())))
@@ -1220,9 +1445,24 @@ async fn test_compress_command_and_preflight_auto_compaction_integration() {
     for i in 1..=20 {
         let long_payload = format!("Comprehensive diagnostic turn {}. System reports high CPU utilization, memory pressure, active database locks in thread pool, and repeated HTTP 504 gateway timeout incidents across worker nodes. Detailed stack trace: error in worker_pool.rs line 214 caused by mutex deadlock in session scheduler. Investigated logs from /var/log/hermes/service.log with 100 matching error patterns and memory heap dump analysis.", i);
         if i % 2 == 1 {
-            store.append_message(session_id, ChatMessage::user(format!("Step {}: {}", i, long_payload))).await.unwrap();
+            store
+                .append_message(
+                    session_id,
+                    ChatMessage::user(format!("Step {}: {}", i, long_payload)),
+                )
+                .await
+                .unwrap();
         } else {
-            store.append_message(session_id, ChatMessage::assistant(format!("Step {}: Remediation details: {}", i, long_payload))).await.unwrap();
+            store
+                .append_message(
+                    session_id,
+                    ChatMessage::assistant(format!(
+                        "Step {}: Remediation details: {}",
+                        i, long_payload
+                    )),
+                )
+                .await
+                .unwrap();
         }
     }
 
@@ -1239,7 +1479,14 @@ async fn test_compress_command_and_preflight_auto_compaction_integration() {
     // 4. Execute compaction on the session
     let client = LlmClient::new(None, None);
     let result = compressor
-        .compress_session(session_id, &store, &client, "gemini-2.5-flash", Some("backend error"), true)
+        .compress_session(
+            session_id,
+            &store,
+            &client,
+            "gemini-2.5-flash",
+            Some("backend error"),
+            true,
+        )
         .await
         .unwrap();
 
@@ -1253,7 +1500,10 @@ async fn test_compress_command_and_preflight_auto_compaction_integration() {
     let confirmation = handle_compress(result.pre_count, result.post_count, result.tokens_saved);
     assert_eq!(
         confirmation,
-        format!("🗜️ Context compacted: 20 messages → 5 messages ({} tokens saved).", result.tokens_saved)
+        format!(
+            "🗜️ Context compacted: 20 messages → 5 messages ({} tokens saved).",
+            result.tokens_saved
+        )
     );
 
     // 6. Verify session store state after compaction
@@ -1270,10 +1520,26 @@ async fn test_compress_command_and_preflight_auto_compaction_integration() {
     assert!(content.contains("## Completed Actions"));
 
     // Messages 1..=4 are the protected tail messages preserved verbatim
-    assert!(compacted_history[1].content.as_deref().unwrap().starts_with("Step 17:"));
-    assert!(compacted_history[2].content.as_deref().unwrap().starts_with("Step 18:"));
-    assert!(compacted_history[3].content.as_deref().unwrap().starts_with("Step 19:"));
-    assert!(compacted_history[4].content.as_deref().unwrap().starts_with("Step 20:"));
+    assert!(compacted_history[1]
+        .content
+        .as_deref()
+        .unwrap()
+        .starts_with("Step 17:"));
+    assert!(compacted_history[2]
+        .content
+        .as_deref()
+        .unwrap()
+        .starts_with("Step 18:"));
+    assert!(compacted_history[3]
+        .content
+        .as_deref()
+        .unwrap()
+        .starts_with("Step 19:"));
+    assert!(compacted_history[4]
+        .content
+        .as_deref()
+        .unwrap()
+        .starts_with("Step 20:"));
 }
 
 #[tokio::test]
@@ -1282,9 +1548,20 @@ async fn test_browser_automation_suite_integration() {
 
     // 1. Verify schema definitions
     let defs = registry.get_definitions();
-    let browser_tools = ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_take_screenshot", "browser_exec"];
+    let browser_tools = [
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_take_screenshot",
+        "browser_exec",
+    ];
     for tool_name in &browser_tools {
-        assert!(defs.iter().any(|d| d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) == Some(*tool_name)));
+        assert!(defs.iter().any(|d| d
+            .get("function")
+            .and_then(|f| f.get("name"))
+            .and_then(|n| n.as_str())
+            == Some(*tool_name)));
     }
 
     // 2. Test SSRF protection via execute(browser_navigate)
@@ -1342,7 +1619,11 @@ async fn test_browser_automation_suite_integration() {
     };
     let res_shot = registry.execute(&screenshot_call).await;
     // Without active Chrome CDP, it cleanly returns failure error without crashing
-    assert!(res_shot.output.contains("error") || res_shot.output.contains("Failed to connect") || res_shot.success);
+    assert!(
+        res_shot.output.contains("error")
+            || res_shot.output.contains("Failed to connect")
+            || res_shot.success
+    );
 
     assert!(res.output.contains("Missing required 'code'"));
 }
@@ -1353,13 +1634,27 @@ async fn test_execute_code_tool_definition() {
 
     let exec_code_def = defs
         .iter()
-        .find(|d| d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) == Some("execute_code"))
+        .find(|d| {
+            d.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                == Some("execute_code")
+        })
         .expect("execute_code definition must be present");
 
-    assert_eq!(exec_code_def.get("type").and_then(|t| t.as_str()), Some("function"));
+    assert_eq!(
+        exec_code_def.get("type").and_then(|t| t.as_str()),
+        Some("function")
+    );
     let func = exec_code_def.get("function").expect("function object");
-    assert_eq!(func.get("name").and_then(|n| n.as_str()), Some("execute_code"));
-    let desc = func.get("description").and_then(|d| d.as_str()).expect("description");
+    assert_eq!(
+        func.get("name").and_then(|n| n.as_str()),
+        Some("execute_code")
+    );
+    let desc = func
+        .get("description")
+        .and_then(|d| d.as_str())
+        .expect("description");
     assert!(desc.contains("Run Python that calls Hermes tools programmatically"));
     assert!(desc.contains("from hermes_tools import"));
 
@@ -1369,7 +1664,10 @@ async fn test_execute_code_tool_definition() {
     assert!(props.get("code").is_some());
     assert!(props.get("reset").is_some());
 
-    let req = params.get("required").and_then(|r| r.as_array()).expect("required");
+    let req = params
+        .get("required")
+        .and_then(|r| r.as_array())
+        .expect("required");
     assert!(req.contains(&json!("code")));
 }
 
@@ -1389,9 +1687,16 @@ async fn test_execute_code_integration() {
 
     let res_basic = registry.execute(&call_basic).await;
     assert_eq!(res_basic.tool_call_id, "call_exec_1");
-    assert!(res_basic.success, "execute_code should succeed: {}", res_basic.output);
+    assert!(
+        res_basic.success,
+        "execute_code should succeed: {}",
+        res_basic.output
+    );
     let parsed: serde_json::Value = serde_json::from_str(&res_basic.output).expect("valid json");
-    assert_eq!(parsed.get("status").and_then(|v| v.as_str()), Some("success"));
+    assert_eq!(
+        parsed.get("status").and_then(|v| v.as_str()),
+        Some("success")
+    );
     let out = parsed.get("output").and_then(|v| v.as_str()).unwrap();
     assert!(out.contains("CALC_RESULT=56088"));
 
@@ -1407,7 +1712,10 @@ async fn test_execute_code_integration() {
     let res_persist = registry.execute(&call_persist).await;
     assert!(res_persist.success);
     let parsed_persist: serde_json::Value = serde_json::from_str(&res_persist.output).unwrap();
-    let out_persist = parsed_persist.get("output").and_then(|v| v.as_str()).unwrap();
+    let out_persist = parsed_persist
+        .get("output")
+        .and_then(|v| v.as_str())
+        .unwrap();
     assert!(out_persist.contains("PERSIST_VERIFY=56100"));
 
     // 3. Reset flag test
@@ -1437,7 +1745,6 @@ async fn test_execute_code_integration() {
     assert!(res_nocode.output.contains("No code provided"));
 }
 
-
 #[tokio::test]
 async fn test_todo_list_tool_definition_and_execution() {
     let registry = ToolRegistry::new();
@@ -1446,7 +1753,12 @@ async fn test_todo_list_tool_definition_and_execution() {
     // 1. Verify schema definition
     let todo_def = defs
         .iter()
-        .find(|d| d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) == Some("todo_list"))
+        .find(|d| {
+            d.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                == Some("todo_list")
+        })
         .expect("todo_list tool definition must exist");
 
     let func = todo_def.get("function").unwrap();
@@ -1524,13 +1836,22 @@ async fn test_todo_list_tool_definition_and_execution() {
 
 #[tokio::test]
 async fn test_cronjob_manage_tool_integration() {
-    let cron_scheduler = std::sync::Arc::new(hermes_cron::CronScheduler::new(None).await.expect("scheduler init"));
+    let cron_scheduler = std::sync::Arc::new(
+        hermes_cron::CronScheduler::new(None)
+            .await
+            .expect("scheduler init"),
+    );
     let registry = ToolRegistry::new().with_cron_scheduler(cron_scheduler);
 
     // 1. Verify cronjob_manage tool definition exists
     let defs = registry.get_definitions();
-    let cron_def = defs.iter().find(|d| d["function"]["name"] == "cronjob_manage");
-    assert!(cron_def.is_some(), "cronjob_manage tool definition must be registered");
+    let cron_def = defs
+        .iter()
+        .find(|d| d["function"]["name"] == "cronjob_manage");
+    assert!(
+        cron_def.is_some(),
+        "cronjob_manage tool definition must be registered"
+    );
 
     // 2. Action: create
     let create_call = ToolCall {
@@ -1546,7 +1867,11 @@ async fn test_cronjob_manage_tool_integration() {
         }),
     };
     let create_res = registry.execute(&create_call).await;
-    assert!(create_res.success, "create should succeed: {}", create_res.output);
+    assert!(
+        create_res.success,
+        "create should succeed: {}",
+        create_res.output
+    );
     let create_json: serde_json::Value = serde_json::from_str(&create_res.output).unwrap();
     assert_eq!(create_json["success"], true);
     let job_id = create_json["job_id"].as_str().unwrap().to_string();
@@ -1581,7 +1906,11 @@ async fn test_cronjob_manage_tool_integration() {
         }),
     };
     let update_res = registry.execute(&update_call).await;
-    assert!(update_res.success, "update should succeed: {}", update_res.output);
+    assert!(
+        update_res.success,
+        "update should succeed: {}",
+        update_res.output
+    );
     let update_json: serde_json::Value = serde_json::from_str(&update_res.output).unwrap();
     assert_eq!(update_json["success"], true);
     assert_eq!(update_json["job"]["name"], "deep-health-scan");
@@ -1597,7 +1926,11 @@ async fn test_cronjob_manage_tool_integration() {
         }),
     };
     let pause_res = registry.execute(&pause_call).await;
-    assert!(pause_res.success, "pause should succeed: {}", pause_res.output);
+    assert!(
+        pause_res.success,
+        "pause should succeed: {}",
+        pause_res.output
+    );
     let pause_json: serde_json::Value = serde_json::from_str(&pause_res.output).unwrap();
     assert_eq!(pause_json["job"]["state"], "paused");
     assert_eq!(pause_json["job"]["enabled"], false);
@@ -1613,7 +1946,11 @@ async fn test_cronjob_manage_tool_integration() {
         }),
     };
     let resume_res = registry.execute(&resume_call).await;
-    assert!(resume_res.success, "resume should succeed: {}", resume_res.output);
+    assert!(
+        resume_res.success,
+        "resume should succeed: {}",
+        resume_res.output
+    );
     let resume_json: serde_json::Value = serde_json::from_str(&resume_res.output).unwrap();
     assert_eq!(resume_json["job"]["state"], "scheduled");
     assert_eq!(resume_json["job"]["enabled"], true);
@@ -1645,7 +1982,11 @@ async fn test_cronjob_manage_tool_integration() {
         }),
     };
     let remove_res = registry.execute(&remove_call).await;
-    assert!(remove_res.success, "remove should succeed: {}", remove_res.output);
+    assert!(
+        remove_res.success,
+        "remove should succeed: {}",
+        remove_res.output
+    );
     let remove_json: serde_json::Value = serde_json::from_str(&remove_res.output).unwrap();
     assert_eq!(remove_json["success"], true);
     assert_eq!(remove_json["removed_job"]["id"], job_id);
@@ -1656,26 +1997,35 @@ async fn test_cronjob_manage_tool_integration() {
     assert_eq!(list_json2["count"], 0);
 }
 
-
 #[tokio::test]
 async fn test_background_review_and_reflection_integration() {
-    use hermes_gateway_core::reflection::{
-        BackgroundReviewConfig, BackgroundReviewEngine, LearningSignal,
-        SKILL_REVIEW_PROMPT, MEMORY_REVIEW_PROMPT, COMBINED_REVIEW_PROMPT,
-    };
     use hermes_gateway_core::llm::{ChatMessage, LlmClient};
+    use hermes_gateway_core::reflection::{
+        BackgroundReviewConfig, BackgroundReviewEngine, LearningSignal, COMBINED_REVIEW_PROMPT,
+        MEMORY_REVIEW_PROMPT, SKILL_REVIEW_PROMPT,
+    };
     use hermes_skills::SkillRegistry;
     use std::sync::Arc;
     use uuid::Uuid;
 
     // Verify prompts are non-empty and well-formed
-    assert!(SKILL_REVIEW_PROMPT.contains("Review the conversation above and update the skill library"));
-    assert!(MEMORY_REVIEW_PROMPT.contains("Review the conversation above and consider saving to memory"));
-    assert!(COMBINED_REVIEW_PROMPT.contains("**Memory**") && COMBINED_REVIEW_PROMPT.contains("**Skills**"));
+    assert!(
+        SKILL_REVIEW_PROMPT.contains("Review the conversation above and update the skill library")
+    );
+    assert!(MEMORY_REVIEW_PROMPT
+        .contains("Review the conversation above and consider saving to memory"));
+    assert!(
+        COMBINED_REVIEW_PROMPT.contains("**Memory**")
+            && COMBINED_REVIEW_PROMPT.contains("**Skills**")
+    );
 
     let skill_registry = Arc::new(SkillRegistry::default());
     let provider_profile = hermes_gateway_core::providers::ProviderProfile::default();
-    let llm_client = Arc::new(LlmClient::from_provider_profile(&provider_profile, None, None));
+    let llm_client = Arc::new(LlmClient::from_provider_profile(
+        &provider_profile,
+        None,
+        None,
+    ));
 
     let config = BackgroundReviewConfig {
         enabled: true,
@@ -1684,14 +2034,22 @@ async fn test_background_review_and_reflection_integration() {
         max_history_messages: 20,
     };
 
-    let engine = Arc::new(BackgroundReviewEngine::new(config, llm_client, skill_registry.clone()));
+    let engine = Arc::new(BackgroundReviewEngine::new(
+        config,
+        llm_client,
+        skill_registry.clone(),
+    ));
 
     // 1. Signal detection test
     let history = vec![
         ChatMessage::user("How do I build this crate?".to_string()),
         ChatMessage::assistant("You run cargo build directly.".to_string()),
-        ChatMessage::user("Stop doing that, don't build without checking dependencies first!".to_string()),
-        ChatMessage::assistant("Understood, the solution is checking Cargo.lock before running builds.".to_string()),
+        ChatMessage::user(
+            "Stop doing that, don't build without checking dependencies first!".to_string(),
+        ),
+        ChatMessage::assistant(
+            "Understood, the solution is checking Cargo.lock before running builds.".to_string(),
+        ),
     ];
 
     let signals = BackgroundReviewEngine::detect_learning_signals(&history);
@@ -1716,10 +2074,16 @@ Always check Cargo.lock presence and freshness before running cargo build.
     BackgroundReviewEngine::persist_extracted_learnings(&skill_registry, sample_skill_md).await;
 
     let loaded = skill_registry.get("cargo-lock-check").await;
-    assert!(loaded.is_some(), "Curated skill should be registered in SkillRegistry");
+    assert!(
+        loaded.is_some(),
+        "Curated skill should be registered in SkillRegistry"
+    );
     let skill = loaded.unwrap();
     assert_eq!(skill.name, "cargo-lock-check");
-    assert_eq!(skill.description, "Verify Cargo.lock before invoking cargo build");
+    assert_eq!(
+        skill.description,
+        "Verify Cargo.lock before invoking cargo build"
+    );
     assert!(skill.content.contains("Always check Cargo.lock"));
 }
 
@@ -1734,9 +2098,15 @@ async fn test_delegate_task_tool_integration() {
 
     // 1. Verify delegate_task definition schema
     let defs = registry.get_definitions();
-    let delegate_def = defs.iter().find(|d| {
-        d.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) == Some("delegate_task")
-    }).expect("delegate_task tool must be present in ToolRegistry definitions");
+    let delegate_def = defs
+        .iter()
+        .find(|d| {
+            d.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                == Some("delegate_task")
+        })
+        .expect("delegate_task tool must be present in ToolRegistry definitions");
 
     let params = &delegate_def["function"]["parameters"];
     assert!(params["properties"].get("tasks").is_some());
@@ -1773,13 +2143,20 @@ async fn test_delegate_task_tool_integration() {
         }),
     };
     let spawn_result = registry.execute(&spawn_call).await;
-    assert!(spawn_result.success, "Spawn should succeed: {}", spawn_result.output);
+    assert!(
+        spawn_result.success,
+        "Spawn should succeed: {}",
+        spawn_result.output
+    );
     let spawn_val: serde_json::Value = serde_json::from_str(&spawn_result.output).unwrap();
     assert_eq!(spawn_val["action"], "spawn");
     assert_eq!(spawn_val["count"], 1);
     let subagent_res = &spawn_val["results"][0];
     assert_eq!(subagent_res["status"], "completed");
-    assert!(subagent_res["summary"].as_str().unwrap().contains("Calculate arithmetic 2 + 2"));
+    assert!(subagent_res["summary"]
+        .as_str()
+        .unwrap()
+        .contains("Calculate arithmetic 2 + 2"));
 
     // 4. Test action="steer" and action="stop" on non-existent subagent
     let steer_call = ToolCall {
@@ -1819,8 +2196,13 @@ async fn test_session_search_tool_integration() {
 
     // 1. Verify session_search tool definition exists in get_definitions
     let defs = registry.get_definitions();
-    let ss_def = defs.iter().find(|d| d["function"]["name"] == "session_search");
-    assert!(ss_def.is_some(), "session_search definition must be registered in ToolRegistry");
+    let ss_def = defs
+        .iter()
+        .find(|d| d["function"]["name"] == "session_search");
+    assert!(
+        ss_def.is_some(),
+        "session_search definition must be registered in ToolRegistry"
+    );
 
     // 2. Populate store with test sessions
     let sid1 = uuid::Uuid::new_v4();
@@ -1836,7 +2218,10 @@ async fn test_session_search_tool_integration() {
         updated_at: time::OffsetDateTime::now_utc(),
         metadata: std::collections::HashMap::new(),
     };
-    session1.metadata.insert("title".to_string(), serde_json::json!("Rust Gateway Core Discussion"));
+    session1.metadata.insert(
+        "title".to_string(),
+        serde_json::json!("Rust Gateway Core Discussion"),
+    );
     store.set(&session1).await.unwrap();
 
     let mut session2 = Session {
@@ -1849,16 +2234,59 @@ async fn test_session_search_tool_integration() {
         updated_at: time::OffsetDateTime::now_utc(),
         metadata: std::collections::HashMap::new(),
     };
-    session2.metadata.insert("title".to_string(), serde_json::json!("Python Recall Architecture"));
+    session2.metadata.insert(
+        "title".to_string(),
+        serde_json::json!("Python Recall Architecture"),
+    );
     store.set(&session2).await.unwrap();
 
-    store.append_message(sid1, ChatMessage::user("Can you explain the session_search tool implementation?")).await.unwrap();
-    store.append_message(sid1, ChatMessage::assistant("It implements discovery, browse, read, and scroll shapes in Rust.")).await.unwrap();
-    store.append_message(sid1, ChatMessage::user("What is the maximum message content cap?")).await.unwrap();
-    store.append_message(sid1, ChatMessage::assistant("The cap is 2000 characters per message to prevent context explosion.")).await.unwrap();
+    store
+        .append_message(
+            sid1,
+            ChatMessage::user("Can you explain the session_search tool implementation?"),
+        )
+        .await
+        .unwrap();
+    store
+        .append_message(
+            sid1,
+            ChatMessage::assistant(
+                "It implements discovery, browse, read, and scroll shapes in Rust.",
+            ),
+        )
+        .await
+        .unwrap();
+    store
+        .append_message(
+            sid1,
+            ChatMessage::user("What is the maximum message content cap?"),
+        )
+        .await
+        .unwrap();
+    store
+        .append_message(
+            sid1,
+            ChatMessage::assistant(
+                "The cap is 2000 characters per message to prevent context explosion.",
+            ),
+        )
+        .await
+        .unwrap();
 
-    store.append_message(sid2, ChatMessage::user("How does FTS5 ranking demote cron jobs?")).await.unwrap();
-    store.append_message(sid2, ChatMessage::assistant("Cron jobs are demoted to prevent recall blindness.")).await.unwrap();
+    store
+        .append_message(
+            sid2,
+            ChatMessage::user("How does FTS5 ranking demote cron jobs?"),
+        )
+        .await
+        .unwrap();
+    store
+        .append_message(
+            sid2,
+            ChatMessage::assistant("Cron jobs are demoted to prevent recall blindness."),
+        )
+        .await
+        .unwrap();
 
     // 3. Test Browse Shape via ToolRegistry::execute
     let browse_call = ToolCall {
@@ -1926,7 +2354,6 @@ async fn test_session_search_tool_integration() {
     assert_eq!(messages[1]["anchor"], true);
 }
 
-
 #[tokio::test]
 async fn test_memory_tool_integration() {
     use hermes_gateway_core::memory::MemoryStore;
@@ -1941,7 +2368,10 @@ async fn test_memory_tool_integration() {
     // 1. The memory definition is registered.
     let defs = registry.get_definitions();
     let mem_def = defs.iter().find(|d| d["function"]["name"] == "memory");
-    assert!(mem_def.is_some(), "memory definition must be registered in ToolRegistry");
+    assert!(
+        mem_def.is_some(),
+        "memory definition must be registered in ToolRegistry"
+    );
 
     // 2. Add a user-profile fact through ToolRegistry dispatch.
     let add_user = ToolCall {
@@ -1954,7 +2384,11 @@ async fn test_memory_tool_integration() {
         }),
     };
     let res_user = registry.execute(&add_user).await;
-    assert!(res_user.success, "user add must succeed: {}", res_user.output);
+    assert!(
+        res_user.success,
+        "user add must succeed: {}",
+        res_user.output
+    );
     let v_user: serde_json::Value = serde_json::from_str(&res_user.output).unwrap();
     assert_eq!(v_user["success"], serde_json::json!(true));
     assert_eq!(v_user["target"], serde_json::json!("user"));
@@ -1970,14 +2404,24 @@ async fn test_memory_tool_integration() {
         }),
     };
     let res_mem = registry.execute(&add_mem).await;
-    assert!(res_mem.success, "memory add must succeed: {}", res_mem.output);
+    assert!(
+        res_mem.success,
+        "memory add must succeed: {}",
+        res_mem.output
+    );
     let v_mem: serde_json::Value = serde_json::from_str(&res_mem.output).unwrap();
     assert_eq!(v_mem["target"], serde_json::json!("memory"));
     assert_eq!(v_mem["entry_count"], serde_json::json!(1));
 
     // 4. The two targets are isolated and both persisted to disk in the delimiter format.
-    assert_eq!(store.entries_for("user"), vec!["Prefers terse, result-first replies.".to_string()]);
-    assert_eq!(store.entries_for("memory"), vec!["Gateway runs a single-node scheduler.".to_string()]);
+    assert_eq!(
+        store.entries_for("user"),
+        vec!["Prefers terse, result-first replies.".to_string()]
+    );
+    assert_eq!(
+        store.entries_for("memory"),
+        vec!["Gateway runs a single-node scheduler.".to_string()]
+    );
 
     // 5. A batch call frees room and adds atomically in one dispatch.
     let batch = ToolCall {
@@ -1992,7 +2436,11 @@ async fn test_memory_tool_integration() {
         }),
     };
     let res_batch = registry.execute(&batch).await;
-    assert!(res_batch.success, "batch must succeed: {}", res_batch.output);
+    assert!(
+        res_batch.success,
+        "batch must succeed: {}",
+        res_batch.output
+    );
     let v_batch: serde_json::Value = serde_json::from_str(&res_batch.output).unwrap();
     assert_eq!(v_batch["success"], serde_json::json!(true));
     assert_eq!(v_batch["entry_count"], serde_json::json!(1));

@@ -1,57 +1,76 @@
 // hermes-gateway-core - Core gateway logic
+pub mod browser;
+pub mod clarify;
+pub mod code_exec;
 pub mod commands;
 pub mod compression;
-pub mod todo;
+pub mod delegation;
+pub mod fuzzy_match;
 pub mod llm;
-pub mod stream;
+pub mod memory;
+pub mod process;
+pub mod process_checkpoint;
+pub mod process_watch;
 pub mod prompt;
 pub mod providers;
-pub mod fuzzy_match;
-pub mod session_search;
-pub mod tools;
-pub mod web;
-pub mod browser;
-pub mod code_exec;
 pub mod reflection;
-pub mod turn_processor;
-pub mod delegation;
-pub mod memory;
-pub mod threat_patterns;
+pub mod session_search;
 pub mod skill_manager;
-pub mod clarify;
+pub mod stream;
+pub mod threat_patterns;
+pub mod todo;
+pub mod tools;
+pub mod turn_processor;
+pub mod web;
 pub mod x_search;
-pub mod process;
-pub mod process_watch;
-pub mod process_checkpoint;
 
+pub use code_exec::{
+    head_tail_split, spill_full_stdout, truncate_stdout_text, CodeExecutionEngine,
+    TruncationMetadata,
+};
 pub use commands::{
     build_model_keyboard, build_provider_keyboard, default_providers_list, handle_clear,
-    handle_command, handle_context, handle_diff, handle_model, handle_profile,
-    handle_start_or_help, handle_status, handle_stop, handle_whoami, handle_compress, model_picker_card,
-    parse_command, provider_picker_header, BusyPolicy, CommandContext, ProviderItem,
-    SlashCommand, MODEL_PAGE_SIZE,
+    handle_command, handle_compress, handle_context, handle_diff, handle_model, handle_profile,
+    handle_start_or_help, handle_status, handle_stop, handle_whoami, model_picker_card,
+    parse_command, provider_picker_header, BusyPolicy, CommandContext, ProviderItem, SlashCommand,
+    MODEL_PAGE_SIZE,
 };
-pub use compression::{CompressionResult, ContextCompressor, HISTORICAL_TASK_HEADING, SUMMARY_PREFIX};
-pub use todo::{TodoItem, TodoStore, todo_tool, TODO_INJECTION_HEADER, VALID_STATUSES, MAX_TODO_CONTENT_CHARS, MAX_TODO_ITEMS};
+pub use compression::{
+    CompressionResult, ContextCompressor, HISTORICAL_TASK_HEADING, SUMMARY_PREFIX,
+};
+pub use delegation::{
+    DelegationAction, DelegationManager, SubagentRunOutcome, SubagentState, TaskSpec,
+};
 pub use llm::{ChatMessage, ChatResponse, LlmClient, ToolCallRawExt};
-pub use stream::GatewayStreamConsumer;
+pub use memory::{get_definition as memory_definition, memory_tool, MemoryStore};
 pub use prompt::PromptAssembler;
 pub use providers::{ProviderProfile, ProviderRegistry};
+pub use reflection::{
+    BackgroundReviewConfig, BackgroundReviewEngine, LearningSignal, COMBINED_REVIEW_PROMPT,
+    MEMORY_REVIEW_PROMPT, SKILL_REVIEW_PROMPT,
+};
+pub use stream::GatewayStreamConsumer;
+pub use todo::{
+    todo_tool, TodoItem, TodoStore, MAX_TODO_CONTENT_CHARS, MAX_TODO_ITEMS, TODO_INJECTION_HEADER,
+    VALID_STATUSES,
+};
 pub use tools::{ToolCall, ToolRegistry, ToolResult};
-pub use code_exec::{CodeExecutionEngine, TruncationMetadata, truncate_stdout_text, spill_full_stdout, head_tail_split};
-pub use web::{web_extract, web_search, WebExtractItem, WebExtractResponse, WebSearchResponse, WebSearchResultItem};
-pub use reflection::{BackgroundReviewConfig, BackgroundReviewEngine, LearningSignal, SKILL_REVIEW_PROMPT, MEMORY_REVIEW_PROMPT, COMBINED_REVIEW_PROMPT};
-pub use memory::{memory_tool, MemoryStore, get_definition as memory_definition};
-pub use turn_processor::{TurnProcessor, TurnEvent};
-pub use delegation::{DelegationAction, DelegationManager, SubagentRunOutcome, SubagentState, TaskSpec};
+pub use turn_processor::{TurnEvent, TurnProcessor};
+pub use web::{
+    web_extract, web_search, WebExtractItem, WebExtractResponse, WebSearchResponse,
+    WebSearchResultItem,
+};
 
+use dashmap::DashMap;
 use hermes_config::GatewayConfig;
 use hermes_platform_adapter::PlatformAdapter;
 use hermes_platform_telegram::{TelegramAdapter, TelegramConfig};
-use hermes_protocol::{IncomingMessage, MessageContent, MessageId, OutgoingMessage, Platform, PlatformError, PlatformEvent};
+use hermes_protocol::{
+    IncomingMessage, MessageContent, MessageId, OutgoingMessage, Platform, PlatformError,
+    PlatformEvent,
+};
 use hermes_relay::{WsRelayConfig, WsRelayServer};
 use hermes_session_store::{SessionStore, SessionStoreFactory};
-use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -130,19 +149,16 @@ impl Gateway {
             .map(|p| p.model_provider.as_str())
             .unwrap_or("9router");
 
-        let provider_profile = provider_registry
-            .get(target_provider_name)
-            .await
-;
+        let provider_profile = provider_registry.get(target_provider_name).await;
 
         let provider_profile = match provider_profile {
             Some(p) => p,
             None => {
-                info!("Provider {} not found in registry, falling back to 9router default", target_provider_name);
-                provider_registry
-                    .get("9router")
-                    .await
-                    .unwrap_or_default()
+                info!(
+                    "Provider {} not found in registry, falling back to 9router default",
+                    target_provider_name
+                );
+                provider_registry.get("9router").await.unwrap_or_default()
             }
         };
 
@@ -172,7 +188,7 @@ impl Gateway {
                     // Fallback to in-memory scheduler if initialization fails
                     futures::executor::block_on(hermes_cron::CronScheduler::new(None))
                         .expect("CronScheduler fallback must succeed")
-                })
+                }),
         );
         let _ = cron_scheduler.start().await;
 
@@ -188,7 +204,7 @@ impl Gateway {
                 .with_cron_scheduler(cron_scheduler.clone())
                 .with_delegation_manager(delegation_manager.clone())
                 .with_session_store(session_store_arc.clone())
-                .with_memory_store(memory_store.clone())
+                .with_memory_store(memory_store.clone()),
         );
         let prompt_assembler = Arc::new(PromptAssembler::new());
 
@@ -214,7 +230,9 @@ impl Gateway {
         })
     }
 
-    pub fn config(&self) -> &GatewayConfig { &self.config }
+    pub fn config(&self) -> &GatewayConfig {
+        &self.config
+    }
 
     pub fn delegation_manager(&self) -> Arc<DelegationManager> {
         self.delegation_manager.clone()
@@ -271,7 +289,6 @@ impl Gateway {
         self.session_store.clone()
     }
 
-
     pub async fn run(mut self) -> anyhow::Result<()> {
         info!("Starting Hermes Air Gateway");
 
@@ -287,9 +304,9 @@ impl Gateway {
         let mut telegram_adapter: Option<Arc<TelegramAdapter>> = None;
         if let Some(tg_config_entry) = self.config.platforms.get("telegram") {
             if tg_config_entry.enabled {
-                match serde_json::from_value::<TelegramConfig>(
-                    serde_json::Value::Object(tg_config_entry.config.clone()),
-                ) {
+                match serde_json::from_value::<TelegramConfig>(serde_json::Value::Object(
+                    tg_config_entry.config.clone(),
+                )) {
                     Ok(parsed_cfg) => {
                         let mut adapter = TelegramAdapter::new();
                         if let Err(e) = adapter.initialize(parsed_cfg).await {
@@ -392,7 +409,11 @@ impl Gateway {
                     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
                         let mut models: Vec<String> = data
                             .iter()
-                            .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(|s| s.to_string()))
+                            .filter_map(|m| {
+                                m.get("id")
+                                    .and_then(|id| id.as_str())
+                                    .map(|s| s.to_string())
+                            })
                             .collect();
                         if !models.is_empty() {
                             models.sort();
@@ -455,7 +476,9 @@ impl Gateway {
 
         // 1. Cancel action: mx:cancel or mx
         if callback_data == "mx:cancel" || callback_data == "mx" {
-            let _ = tg_adapter.answer_callback_query(callback_query_id, Some("Cancelled")).await;
+            let _ = tg_adapter
+                .answer_callback_query(callback_query_id, Some("Cancelled"))
+                .await;
             picker_states.write().await.remove(&chat_id);
             return tg_adapter
                 .edit_message_with_keyboard(
@@ -469,7 +492,9 @@ impl Gateway {
 
         // No-op (e.g. current page counter button)
         if callback_data == "mx:noop" {
-            return tg_adapter.answer_callback_query(callback_query_id, None).await;
+            return tg_adapter
+                .answer_callback_query(callback_query_id, None)
+                .await;
         }
 
         // 2. Back to Provider Selection: mb:back or mb
@@ -485,7 +510,9 @@ impl Gateway {
             let keyboard = build_provider_keyboard(&providers, &active_provider);
             let header = provider_picker_header(&active_model, &active_provider);
 
-            let _ = tg_adapter.answer_callback_query(callback_query_id, None).await;
+            let _ = tg_adapter
+                .answer_callback_query(callback_query_id, None)
+                .await;
             return tg_adapter
                 .edit_message_with_keyboard(chat_id, message_id, &header, Some(keyboard))
                 .await;
@@ -493,7 +520,9 @@ impl Gateway {
 
         // 3. Provider selected: mp:<provider_slug>
         if let Some(provider_slug) = callback_data.strip_prefix("mp:") {
-            let _ = tg_adapter.answer_callback_query(callback_query_id, None).await;
+            let _ = tg_adapter
+                .answer_callback_query(callback_query_id, None)
+                .await;
 
             let providers = default_providers_list();
             let p_name = providers
@@ -540,7 +569,11 @@ impl Gateway {
 
             let start = 0;
             let end = std::cmp::min(MODEL_PAGE_SIZE, models.len());
-            let page_models = if !models.is_empty() { &models[start..end] } else { &[] };
+            let page_models = if !models.is_empty() {
+                &models[start..end]
+            } else {
+                &[]
+            };
 
             let text = model_picker_card(
                 &p_name,
@@ -569,12 +602,20 @@ impl Gateway {
                     picker_states.write().await.insert(chat_id, state.clone());
 
                     let models = &state.model_list;
-                    let (keyboard, cur_page, total_pages) =
-                        build_model_keyboard(models, target_page, &state.current_model, provider_slug);
+                    let (keyboard, cur_page, total_pages) = build_model_keyboard(
+                        models,
+                        target_page,
+                        &state.current_model,
+                        provider_slug,
+                    );
 
                     let start = target_page * MODEL_PAGE_SIZE;
                     let end = std::cmp::min(start + MODEL_PAGE_SIZE, models.len());
-                    let page_models = if start < models.len() { &models[start..end] } else { &[] };
+                    let page_models = if start < models.len() {
+                        &models[start..end]
+                    } else {
+                        &[]
+                    };
 
                     let text = model_picker_card(
                         &state.selected_provider_name,
@@ -585,7 +626,9 @@ impl Gateway {
                         &state.current_model,
                     );
 
-                    let _ = tg_adapter.answer_callback_query(callback_query_id, None).await;
+                    let _ = tg_adapter
+                        .answer_callback_query(callback_query_id, None)
+                        .await;
                     return tg_adapter
                         .edit_message_with_keyboard(chat_id, message_id, &text, Some(keyboard))
                         .await;
@@ -607,7 +650,9 @@ impl Gateway {
                 let keyboard = build_provider_keyboard(&providers, &active_provider);
                 let header = provider_picker_header(&active_model, &active_provider);
 
-                let _ = tg_adapter.answer_callback_query(callback_query_id, Some("Providers refreshed")).await;
+                let _ = tg_adapter
+                    .answer_callback_query(callback_query_id, Some("Providers refreshed"))
+                    .await;
                 return tg_adapter
                     .edit_message_with_keyboard(chat_id, message_id, &header, Some(keyboard))
                     .await;
@@ -615,16 +660,25 @@ impl Gateway {
                 let provider_slug = target;
                 let mut state_opt = picker_states.read().await.get(&chat_id).cloned();
                 if let Some(ref mut state) = state_opt {
-                    let models = Self::fetch_provider_models(provider_slug, provider_registry).await;
+                    let models =
+                        Self::fetch_provider_models(provider_slug, provider_registry).await;
                     state.model_list = models.clone();
                     picker_states.write().await.insert(chat_id, state.clone());
 
-                    let (keyboard, cur_page, total_pages) =
-                        build_model_keyboard(&models, state.model_page, &state.current_model, provider_slug);
+                    let (keyboard, cur_page, total_pages) = build_model_keyboard(
+                        &models,
+                        state.model_page,
+                        &state.current_model,
+                        provider_slug,
+                    );
 
                     let start = state.model_page * MODEL_PAGE_SIZE;
                     let end = std::cmp::min(start + MODEL_PAGE_SIZE, models.len());
-                    let page_models = if start < models.len() { &models[start..end] } else { &[] };
+                    let page_models = if start < models.len() {
+                        &models[start..end]
+                    } else {
+                        &[]
+                    };
 
                     let text = model_picker_card(
                         &state.selected_provider_name,
@@ -635,7 +689,9 @@ impl Gateway {
                         &state.current_model,
                     );
 
-                    let _ = tg_adapter.answer_callback_query(callback_query_id, Some("Models refreshed")).await;
+                    let _ = tg_adapter
+                        .answer_callback_query(callback_query_id, Some("Models refreshed"))
+                        .await;
                     return tg_adapter
                         .edit_message_with_keyboard(chat_id, message_id, &text, Some(keyboard))
                         .await;
@@ -671,7 +727,10 @@ impl Gateway {
             );
 
             let _ = tg_adapter
-                .answer_callback_query(callback_query_id, Some(&format!("Model switched to {}", new_model)))
+                .answer_callback_query(
+                    callback_query_id,
+                    Some(&format!("Model switched to {}", new_model)),
+                )
                 .await;
 
             return tg_adapter
@@ -679,7 +738,9 @@ impl Gateway {
                 .await;
         }
 
-        let _ = tg_adapter.answer_callback_query(callback_query_id, None).await;
+        let _ = tg_adapter
+            .answer_callback_query(callback_query_id, None)
+            .await;
         Ok(())
     }
 
@@ -698,7 +759,11 @@ impl Gateway {
         compressor: &Arc<tokio::sync::Mutex<ContextCompressor>>,
     ) {
         // Handle Callback Query updates from Telegram (e.g. model selector taps)
-        if let MessageContent::System { ref event, ref data } = msg.content {
+        if let MessageContent::System {
+            ref event,
+            ref data,
+        } = msg.content
+        {
             if event == "callback_query" {
                 if let Some(ref adapter) = tg_adapter {
                     let callback_data = data
@@ -712,15 +777,14 @@ impl Gateway {
                         .and_then(|id| id.as_str())
                         .unwrap_or_default();
 
-                    let chat_id = data
-                        .get("chat_id")
-                        .and_then(|c| c.as_i64())
-                        .unwrap_or_else(|| adapter.chat_id_from_session(msg.session_id).unwrap_or(0));
+                    let chat_id =
+                        data.get("chat_id")
+                            .and_then(|c| c.as_i64())
+                            .unwrap_or_else(|| {
+                                adapter.chat_id_from_session(msg.session_id).unwrap_or(0)
+                            });
 
-                    let message_id = data
-                        .get("message_id")
-                        .and_then(|m| m.as_i64())
-                        .unwrap_or(0);
+                    let message_id = data.get("message_id").and_then(|m| m.as_i64()).unwrap_or(0);
 
                     if let Err(e) = Self::handle_callback_query(
                         callback_data,
@@ -749,7 +813,10 @@ impl Gateway {
             }
         };
 
-        info!("Processing incoming message from {}: {}", msg.platform, prompt_text);
+        info!(
+            "Processing incoming message from {}: {}",
+            msg.platform, prompt_text
+        );
 
         let default_model = profile
             .as_ref()
@@ -760,7 +827,10 @@ impl Gateway {
         let session_override = match session_store.get_model_override(msg.session_id).await {
             Ok(ov) => ov,
             Err(e) => {
-                warn!("Failed to query model override for session {}: {:?}", msg.session_id, e);
+                warn!(
+                    "Failed to query model override for session {}: {:?}",
+                    msg.session_id, e
+                );
                 None
             }
         };
@@ -788,7 +858,11 @@ impl Gateway {
             if is_busy {
                 match policy {
                     BusyPolicy::Reject => {
-                        info!("Rejecting slash command /{} for busy session {}", cmd.name(), msg.session_id);
+                        info!(
+                            "Rejecting slash command /{} for busy session {}",
+                            cmd.name(),
+                            msg.session_id
+                        );
                         let reject_text = format!(
                             "⏳ Agent is running — `/{}` can't run mid-turn. Wait for the current response or `/stop` first.",
                             cmd.name()
@@ -805,28 +879,42 @@ impl Gateway {
                         return;
                     }
                     BusyPolicy::InterruptThenDispatch => {
-                        info!("Interrupting active turn for busy session {} before executing /{}", msg.session_id, cmd.name());
+                        info!(
+                            "Interrupting active turn for busy session {} before executing /{}",
+                            msg.session_id,
+                            cmd.name()
+                        );
                         if let Some((_, token)) = active_turns.remove(&msg.session_id) {
                             token.cancel();
                             info!("CancellationToken triggered for session {}", msg.session_id);
                         }
                     }
                     BusyPolicy::Dispatch => {
-                        info!("Dispatching concurrent slash command /{} mid-turn for session {}", cmd.name(), msg.session_id);
+                        info!(
+                            "Dispatching concurrent slash command /{} mid-turn for session {}",
+                            cmd.name(),
+                            msg.session_id
+                        );
                     }
                 }
             }
 
             // If command is /model with no arguments and Telegram adapter is active,
             // render the Interactive Inline Keyboard Model Selector!
-            if matches!(cmd, SlashCommand::Model(None)) && tg_adapter.is_some() && msg.platform == Platform::Telegram {
+            if matches!(cmd, SlashCommand::Model(None))
+                && tg_adapter.is_some()
+                && msg.platform == Platform::Telegram
+            {
                 if let Some(adapter) = tg_adapter {
                     if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
                         let providers = default_providers_list();
                         let keyboard = build_provider_keyboard(&providers, active_provider);
                         let header = provider_picker_header(&active_model, active_provider);
 
-                        match adapter.send_message_with_keyboard(chat_id, &header, keyboard).await {
+                        match adapter
+                            .send_message_with_keyboard(chat_id, &header, keyboard)
+                            .await
+                        {
                             Ok(sent) => {
                                 let state = ModelPickerState {
                                     message_id: sent.message_id,
@@ -840,7 +928,10 @@ impl Gateway {
                                     model_page: 0,
                                 };
                                 model_picker_states.write().await.insert(chat_id, state);
-                                info!("[model-picker] Sent interactive picker message {} for chat {}", sent.message_id, chat_id);
+                                info!(
+                                    "[model-picker] Sent interactive picker message {} for chat {}",
+                                    sent.message_id, chat_id
+                                );
                                 return;
                             }
                             Err(e) => {
@@ -857,7 +948,10 @@ impl Gateway {
             if is_stop {
                 if let Some((_, token)) = active_turns.remove(&msg.session_id) {
                     token.cancel();
-                    info!("Cancelled running turn on /stop for session {}", msg.session_id);
+                    info!(
+                        "Cancelled running turn on /stop for session {}",
+                        msg.session_id
+                    );
                 }
             }
 
@@ -877,10 +971,32 @@ impl Gateway {
                 .map(|p| p.max_tokens as usize)
                 .unwrap_or(128_000);
 
-            let raw_chat_id = msg.raw.as_ref().and_then(|r| r.get("chat")).and_then(|c| c.get("id")).and_then(|id| id.as_i64()).map(|i| i.to_string());
-            let raw_user_id = msg.raw.as_ref().and_then(|r| r.get("from")).and_then(|f| f.get("id")).and_then(|id| id.as_i64()).map(|i| i.to_string());
-            let raw_chat_type = msg.raw.as_ref().and_then(|r| r.get("chat")).and_then(|c| c.get("type")).and_then(|t| t.as_str());
-            let raw_thread_id = msg.raw.as_ref().and_then(|r| r.get("message_thread_id")).and_then(|t| t.as_i64()).map(|i| i.to_string());
+            let raw_chat_id = msg
+                .raw
+                .as_ref()
+                .and_then(|r| r.get("chat"))
+                .and_then(|c| c.get("id"))
+                .and_then(|id| id.as_i64())
+                .map(|i| i.to_string());
+            let raw_user_id = msg
+                .raw
+                .as_ref()
+                .and_then(|r| r.get("from"))
+                .and_then(|f| f.get("id"))
+                .and_then(|id| id.as_i64())
+                .map(|i| i.to_string());
+            let raw_chat_type = msg
+                .raw
+                .as_ref()
+                .and_then(|r| r.get("chat"))
+                .and_then(|c| c.get("type"))
+                .and_then(|t| t.as_str());
+            let raw_thread_id = msg
+                .raw
+                .as_ref()
+                .and_then(|r| r.get("message_thread_id"))
+                .and_then(|t| t.as_i64())
+                .map(|i| i.to_string());
 
             let platform_str = msg.platform.as_str();
 
@@ -905,24 +1021,36 @@ impl Gateway {
             let reply_text = match cmd {
                 SlashCommand::Model(Some(ref target)) => {
                     let trimmed_target = target.trim().to_string();
-                    if let Err(e) = session_store.set_model_override(msg.session_id, Some(trimmed_target.clone())).await {
-                        warn!("Failed to persist model override for session {}: {:?}", msg.session_id, e);
+                    if let Err(e) = session_store
+                        .set_model_override(msg.session_id, Some(trimmed_target.clone()))
+                        .await
+                    {
+                        warn!(
+                            "Failed to persist model override for session {}: {:?}",
+                            msg.session_id, e
+                        );
                     } else {
-                        info!("Session {} active model dynamically switched to: {}", msg.session_id, trimmed_target);
+                        info!(
+                            "Session {} active model dynamically switched to: {}",
+                            msg.session_id, trimmed_target
+                        );
                     }
                     handle_model(&Some(target.clone()), &active_model, |_| Ok(()))
                 }
                 SlashCommand::Compress(ref focus) => {
                     let mut comp = compressor.lock().await;
-                    match comp.compress_session_with_todo(
-                        msg.session_id,
-                        session_store,
-                        llm_client,
-                        &active_model,
-                        focus.as_deref(),
-                        true,
-                        Some(&tool_registry.todo_store),
-                    ).await {
+                    match comp
+                        .compress_session_with_todo(
+                            msg.session_id,
+                            session_store,
+                            llm_client,
+                            &active_model,
+                            focus.as_deref(),
+                            true,
+                            Some(&tool_registry.todo_store),
+                        )
+                        .await
+                    {
                         Ok(res) => {
                             if res.compacted {
                                 handle_compress(res.pre_count, res.post_count, res.tokens_saved)
@@ -931,7 +1059,10 @@ impl Gateway {
                             }
                         }
                         Err(e) => {
-                            warn!("Manual compression failed for session {}: {:?}", msg.session_id, e);
+                            warn!(
+                                "Manual compression failed for session {}: {:?}",
+                                msg.session_id, e
+                            );
                             format!("❌ Failed to compact context: {}", e)
                         }
                     }
@@ -941,17 +1072,29 @@ impl Gateway {
 
             if is_clear {
                 if let Err(e) = session_store.delete(msg.session_id).await {
-                    warn!("Failed to delete session {} on /clear: {:?}", msg.session_id, e);
+                    warn!(
+                        "Failed to delete session {} on /clear: {:?}",
+                        msg.session_id, e
+                    );
                 } else {
                     info!("Cleared session metadata for session {}", msg.session_id);
                 }
                 if let Err(e) = session_store.clear_messages(msg.session_id).await {
-                    warn!("Failed to clear conversation history for session {} on /clear: {:?}", msg.session_id, e);
+                    warn!(
+                        "Failed to clear conversation history for session {} on /clear: {:?}",
+                        msg.session_id, e
+                    );
                 } else {
-                    info!("Cleared conversation turn history for session {}", msg.session_id);
+                    info!(
+                        "Cleared conversation turn history for session {}",
+                        msg.session_id
+                    );
                 }
                 if let Err(e) = session_store.set_model_override(msg.session_id, None).await {
-                    warn!("Failed to clear model override for session {} on /clear: {:?}", msg.session_id, e);
+                    warn!(
+                        "Failed to clear model override for session {} on /clear: {:?}",
+                        msg.session_id, e
+                    );
                 } else {
                     info!("Cleared model override for session {}", msg.session_id);
                 }
@@ -984,9 +1127,7 @@ impl Gateway {
             }
         }
 
-        let system_prompt = profile
-            .as_ref()
-            .and_then(|p| p.system_prompt.as_deref());
+        let system_prompt = profile.as_ref().and_then(|p| p.system_prompt.as_deref());
         let temperature = profile.as_ref().map(|p| p.temperature).unwrap_or(0.7);
         let max_tokens = profile.as_ref().map(|p| p.max_tokens).unwrap_or(4096);
 
@@ -1009,16 +1150,22 @@ impl Gateway {
                     "Pre-flight compression triggered for session {}: ~{} tokens >= threshold {} of context_window {}",
                     msg.session_id, current_tokens, comp.threshold, context_window
                 );
-                if let Err(e) = comp.compress_session_with_todo(
-                    msg.session_id,
-                    session_store,
-                    llm_client,
-                    &active_model,
-                    None,
-                    false,
-                    Some(&tool_registry.todo_store),
-                ).await {
-                    warn!("Autonomous pre-flight compaction failed for session {}: {:?}", msg.session_id, e);
+                if let Err(e) = comp
+                    .compress_session_with_todo(
+                        msg.session_id,
+                        session_store,
+                        llm_client,
+                        &active_model,
+                        None,
+                        false,
+                        Some(&tool_registry.todo_store),
+                    )
+                    .await
+                {
+                    warn!(
+                        "Autonomous pre-flight compaction failed for session {}: {:?}",
+                        msg.session_id, e
+                    );
                 }
             }
         }
@@ -1031,7 +1178,10 @@ impl Gateway {
             .get_messages(msg.session_id, Some(30))
             .await
             .unwrap_or_else(|e| {
-                warn!("Failed to load conversation history for session {}: {:?}", msg.session_id, e);
+                warn!(
+                    "Failed to load conversation history for session {}: {:?}",
+                    msg.session_id, e
+                );
                 Vec::new()
             });
 
@@ -1054,8 +1204,14 @@ impl Gateway {
         messages.push(new_user_msg.clone());
 
         // Append incoming user message to session store turn history
-        if let Err(e) = session_store.append_message(msg.session_id, new_user_msg).await {
-            warn!("Failed to persist incoming user message for session {}: {:?}", msg.session_id, e);
+        if let Err(e) = session_store
+            .append_message(msg.session_id, new_user_msg)
+            .await
+        {
+            warn!(
+                "Failed to persist incoming user message for session {}: {:?}",
+                msg.session_id, e
+            );
         }
 
         let tool_definitions = tool_registry.get_definitions();
@@ -1065,11 +1221,15 @@ impl Gateway {
         let mut streamed_delivery = false;
 
         // If tool definitions are empty and Telegram adapter is active, stream directly on single call!
-        if tool_definitions.is_empty() && tg_adapter.is_some() && msg.platform == Platform::Telegram {
+        if tool_definitions.is_empty() && tg_adapter.is_some() && msg.platform == Platform::Telegram
+        {
             if let Some(adapter) = tg_adapter {
                 if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
                     if turn_token.is_cancelled() {
-                        info!("Turn cancelled before stream start for session {}", msg.session_id);
+                        info!(
+                            "Turn cancelled before stream start for session {}",
+                            msg.session_id
+                        );
                         active_turns.remove(&msg.session_id);
                         return;
                     }
@@ -1081,7 +1241,8 @@ impl Gateway {
                         Ok(rx) => {
                             info!("Streaming chat response directly via GatewayStreamConsumer for chat_id: {}", chat_id);
                             let thread_id = adapter.thread_id_from_session(msg.session_id);
-                                            let mut consumer = GatewayStreamConsumer::new(chat_id).with_thread(thread_id);
+                            let mut consumer =
+                                GatewayStreamConsumer::new(chat_id).with_thread(thread_id);
                             let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
                             match consumer.consume_stream(rx, adapter, reply_to_id).await {
                                 Ok(acc) => {
@@ -1093,7 +1254,9 @@ impl Gateway {
                                     streamed_delivery = true;
                                     final_text = acc.clone();
                                     let asst_msg = ChatMessage::assistant(acc.clone());
-                                    if let Err(e) = session_store.append_message(msg.session_id, asst_msg).await {
+                                    if let Err(e) =
+                                        session_store.append_message(msg.session_id, asst_msg).await
+                                    {
                                         warn!("Failed to persist assistant message for session {}: {:?}", msg.session_id, e);
                                     }
                                     // Also check for MEDIA images in streamed response
@@ -1101,8 +1264,17 @@ impl Gateway {
                                         let p = std::path::Path::new(&img_path);
                                         if p.exists() {
                                             let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
-                                            let thread_id = adapter.thread_id_from_session(msg.session_id);
-                                            let _ = adapter.send_photo_file(chat_id, thread_id, p, None, reply_to_id).await;
+                                            let thread_id =
+                                                adapter.thread_id_from_session(msg.session_id);
+                                            let _ = adapter
+                                                .send_photo_file(
+                                                    chat_id,
+                                                    thread_id,
+                                                    p,
+                                                    None,
+                                                    reply_to_id,
+                                                )
+                                                .await;
                                         }
                                     }
                                 }
@@ -1115,19 +1287,25 @@ impl Gateway {
                             error!("Failed to initiate LLM stream: {:?}", e);
                             final_text = format!("⚠️ Upstream LLM error: {}. Sila guna arahan /model untuk tukar model.", e);
                             let fallback_msg = ChatMessage::assistant(final_text.clone());
-                            let _ = session_store.append_message(msg.session_id, fallback_msg).await;
+                            let _ = session_store
+                                .append_message(msg.session_id, fallback_msg)
+                                .await;
                         }
                     }
                 }
             }
         }
 
-// If not delivered via direct stream, run recursive tool loop
+        // If not delivered via direct stream, run recursive tool loop
         if !streamed_delivery && final_text.is_empty() {
             let mut progress_bubble_id: Option<(i64, i64)> = None;
             while iteration < max_tool_iterations {
                 if turn_token.is_cancelled() {
-                    info!("Turn cancelled before iteration {} for session {}", iteration + 1, msg.session_id);
+                    info!(
+                        "Turn cancelled before iteration {} for session {}",
+                        iteration + 1,
+                        msg.session_id
+                    );
                     active_turns.remove(&msg.session_id);
                     return;
                 }
@@ -1152,29 +1330,49 @@ impl Gateway {
                                 final_text = text.clone();
                                 // Persist final assistant response to session store
                                 let asst_msg = ChatMessage::assistant(text.clone());
-                                if let Err(e) = session_store.append_message(msg.session_id, asst_msg).await {
-                                    warn!("Failed to persist assistant message for session {}: {:?}", msg.session_id, e);
+                                if let Err(e) =
+                                    session_store.append_message(msg.session_id, asst_msg).await
+                                {
+                                    warn!(
+                                        "Failed to persist assistant message for session {}: {:?}",
+                                        msg.session_id, e
+                                    );
                                 }
 
                                 // If Telegram adapter is active and we completed after tool execution, stream or send final text
                                 if tg_adapter.is_some() && msg.platform == Platform::Telegram {
                                     if let Some(adapter) = tg_adapter {
-                                        if let Ok(chat_id) = adapter.chat_id_from_session(msg.session_id) {
+                                        if let Ok(chat_id) =
+                                            adapter.chat_id_from_session(msg.session_id)
+                                        {
                                             let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
-                                            let thread_id = adapter.thread_id_from_session(msg.session_id);
-                                            let mut consumer = GatewayStreamConsumer::new(chat_id).with_thread(thread_id);
+                                            let thread_id =
+                                                adapter.thread_id_from_session(msg.session_id);
+                                            let mut consumer = GatewayStreamConsumer::new(chat_id)
+                                                .with_thread(thread_id);
                                             // Deliver final completed text smoothly via stream consumer
                                             let (tx, rx) = tokio::sync::mpsc::channel(1);
                                             let _ = tx.send(text.clone()).await;
                                             drop(tx);
-                                            let _ = consumer.consume_stream(rx, adapter, reply_to_id).await;
+                                            let _ = consumer
+                                                .consume_stream(rx, adapter, reply_to_id)
+                                                .await;
                                             streamed_delivery = true;
                                             // Deliver MEDIA images if present
                                             for img_path in Self::extract_media_image_paths(&text) {
                                                 let p = std::path::Path::new(&img_path);
                                                 if p.exists() {
-                                                    let thread_id = adapter.thread_id_from_session(msg.session_id);
-                                            let _ = adapter.send_photo_file(chat_id, thread_id, p, None, reply_to_id).await;
+                                                    let thread_id = adapter
+                                                        .thread_id_from_session(msg.session_id);
+                                                    let _ = adapter
+                                                        .send_photo_file(
+                                                            chat_id,
+                                                            thread_id,
+                                                            p,
+                                                            None,
+                                                            reply_to_id,
+                                                        )
+                                                        .await;
                                                 }
                                             }
                                         }
@@ -1190,7 +1388,10 @@ impl Gateway {
                                     tool_calls: raw_msg.tool_calls,
                                     tool_call_id: None,
                                 };
-                                if let Err(e) = session_store.append_message(msg.session_id, asst_call_msg.clone()).await {
+                                if let Err(e) = session_store
+                                    .append_message(msg.session_id, asst_call_msg.clone())
+                                    .await
+                                {
                                     warn!("Failed to persist assistant tool calls for session {}: {:?}", msg.session_id, e);
                                 }
                                 messages.push(asst_call_msg);
@@ -1210,59 +1411,105 @@ impl Gateway {
                                 // Execute each tool call and append tool result to context and store
                                 for call in calls {
                                     if turn_token.is_cancelled() {
-                                        info!("Turn cancelled mid-tool execution for session {}", msg.session_id);
-                                        if let (Some(ref _adapter), Some((_cid, _mid))) = (&tg_adapter, progress_bubble_id) {
+                                        info!(
+                                            "Turn cancelled mid-tool execution for session {}",
+                                            msg.session_id
+                                        );
+                                        if let (Some(ref _adapter), Some((_cid, _mid))) =
+                                            (&tg_adapter, progress_bubble_id)
+                                        {
                                             // keep progress bubble permanently
                                         }
                                         active_turns.remove(&msg.session_id);
                                         return;
                                     }
 
-                                    let progress_text = format!("🔧 Running tool: {}...", call.name);
-                                    if let (Some(ref adapter), Some(cid)) = (&tg_adapter, tg_chat_id) {
+                                    let progress_text =
+                                        format!("🔧 Running tool: {}...", call.name);
+                                    if let (Some(ref adapter), Some(cid)) =
+                                        (&tg_adapter, tg_chat_id)
+                                    {
                                         let adapter_clone = adapter.clone();
                                         tokio::spawn(async move {
-                                            let _ = adapter_clone.send_chat_action(cid, "typing").await;
+                                            let _ =
+                                                adapter_clone.send_chat_action(cid, "typing").await;
                                         });
 
                                         match progress_bubble_id {
                                             Some((cid, mid)) => {
-                                                let _ = adapter.edit_text(cid, mid, &progress_text).await;
+                                                let _ = adapter
+                                                    .edit_text(cid, mid, &progress_text)
+                                                    .await;
                                             }
                                             None => {
                                                 let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
-                                                let thread_id = adapter.thread_id_from_session(msg.session_id);
-                                                if let Ok(sent) = adapter.send_chunk_with_fallback_and_thread(cid, thread_id, &progress_text, reply_to_id).await {
-                                                    progress_bubble_id = Some((cid, sent.message_id));
+                                                let thread_id =
+                                                    adapter.thread_id_from_session(msg.session_id);
+                                                if let Ok(sent) = adapter
+                                                    .send_chunk_with_fallback_and_thread(
+                                                        cid,
+                                                        thread_id,
+                                                        &progress_text,
+                                                        reply_to_id,
+                                                    )
+                                                    .await
+                                                {
+                                                    progress_bubble_id =
+                                                        Some((cid, sent.message_id));
                                                 }
                                             }
                                         }
                                     }
 
-                                    info!("Executing tool call {} (id: {}) in agent loop", call.name, call.id);
+                                    info!(
+                                        "Executing tool call {} (id: {}) in agent loop",
+                                        call.name, call.id
+                                    );
                                     let result = tool_registry.execute(&call).await;
 
                                     // If tool output directly emits MEDIA image tags, also deliver them
-                                    if let (Some(ref adapter), Some(cid)) = (&tg_adapter, tg_chat_id) {
-                                        for img_path in Self::extract_media_image_paths(&result.output) {
+                                    if let (Some(ref adapter), Some(cid)) =
+                                        (&tg_adapter, tg_chat_id)
+                                    {
+                                        for img_path in
+                                            Self::extract_media_image_paths(&result.output)
+                                        {
                                             let p = std::path::Path::new(&img_path);
                                             if p.exists() {
                                                 let reply_to_id: Option<i64> = None; // reply_to_mode=off parity with Python Hermes
-                                                let thread_id = adapter.thread_id_from_session(msg.session_id);
-                                                let _ = adapter.send_photo_file(cid, thread_id, p, None, reply_to_id).await;
+                                                let thread_id =
+                                                    adapter.thread_id_from_session(msg.session_id);
+                                                let _ = adapter
+                                                    .send_photo_file(
+                                                        cid,
+                                                        thread_id,
+                                                        p,
+                                                        None,
+                                                        reply_to_id,
+                                                    )
+                                                    .await;
                                             }
                                         }
                                     }
 
-                                    let tool_msg = ChatMessage::tool(result.tool_call_id, result.output);
-                                    if let Err(e) = session_store.append_message(msg.session_id, tool_msg.clone()).await {
-                                        warn!("Failed to persist tool result for session {}: {:?}", msg.session_id, e);
+                                    let tool_msg =
+                                        ChatMessage::tool(result.tool_call_id, result.output);
+                                    if let Err(e) = session_store
+                                        .append_message(msg.session_id, tool_msg.clone())
+                                        .await
+                                    {
+                                        warn!(
+                                            "Failed to persist tool result for session {}: {:?}",
+                                            msg.session_id, e
+                                        );
                                     }
                                     messages.push(tool_msg);
                                 }
 
                                 // Delete or clean up progress bubble on tool completion
-                                if let (Some(ref _adapter), Some((_cid, _mid))) = (&tg_adapter, progress_bubble_id) {
+                                if let (Some(ref _adapter), Some((_cid, _mid))) =
+                                    (&tg_adapter, progress_bubble_id)
+                                {
                                     // keep progress bubble permanently
                                 }
                             }
@@ -1270,9 +1517,14 @@ impl Gateway {
                     }
                     Err(e) => {
                         error!("LLM chat completion with tools failed: {}", e);
-                        final_text = format!("⚠️ Upstream LLM error: {}. Sila guna arahan /model untuk tukar model.", e);
+                        final_text = format!(
+                            "⚠️ Upstream LLM error: {}. Sila guna arahan /model untuk tukar model.",
+                            e
+                        );
                         let fallback_msg = ChatMessage::assistant(final_text.clone());
-                        let _ = session_store.append_message(msg.session_id, fallback_msg).await;
+                        let _ = session_store
+                            .append_message(msg.session_id, fallback_msg)
+                            .await;
                         break;
                     }
                 }
@@ -1280,7 +1532,10 @@ impl Gateway {
         }
 
         if final_text.is_empty() && iteration >= max_tool_iterations {
-            warn!("Agent loop reached maximum tool iterations ({})", max_tool_iterations);
+            warn!(
+                "Agent loop reached maximum tool iterations ({})",
+                max_tool_iterations
+            );
             final_text = "Task halted: maximum tool execution iterations reached.".to_string();
             let halt_msg = ChatMessage::assistant(final_text.clone());
             let _ = session_store.append_message(msg.session_id, halt_msg).await;
@@ -1304,24 +1559,29 @@ impl Gateway {
     }
 
     pub fn extract_media_image_paths(text: &str) -> Vec<String> {
-    let mut images = Vec::new();
-    let image_extensions = [".png", ".jpg", ".jpeg", ".webp"];
-    let mut search_from = 0;
-    while let Some(idx) = text[search_from..].find("MEDIA:") {
-        let start = search_from + idx + "MEDIA:".len();
-        let rem = &text[start..];
-        let end = rem.find(|c: char| c.is_whitespace() || c == '`' || c == '"' || c == '\'').unwrap_or(rem.len());
-        let raw_path = rem[..end].trim();
-        let lower = raw_path.to_lowercase();
-        if image_extensions.iter().any(|ext| lower.ends_with(ext)) {
-            images.push(raw_path.to_string());
+        let mut images = Vec::new();
+        let image_extensions = [".png", ".jpg", ".jpeg", ".webp"];
+        let mut search_from = 0;
+        while let Some(idx) = text[search_from..].find("MEDIA:") {
+            let start = search_from + idx + "MEDIA:".len();
+            let rem = &text[start..];
+            let end = rem
+                .find(|c: char| c.is_whitespace() || c == '`' || c == '"' || c == '\'')
+                .unwrap_or(rem.len());
+            let raw_path = rem[..end].trim();
+            let lower = raw_path.to_lowercase();
+            if image_extensions.iter().any(|ext| lower.ends_with(ext)) {
+                images.push(raw_path.to_string());
+            }
+            search_from = start + end;
         }
-        search_from = start + end;
+        images
     }
-    images
-}
 
-    async fn dispatch_outgoing(outgoing: OutgoingMessage, tg_adapter: &Option<Arc<TelegramAdapter>>) {
+    async fn dispatch_outgoing(
+        outgoing: OutgoingMessage,
+        tg_adapter: &Option<Arc<TelegramAdapter>>,
+    ) {
         match outgoing.platform {
             Platform::Telegram => {
                 if let Some(adapter) = tg_adapter {
@@ -1341,7 +1601,10 @@ impl Gateway {
                     for img_path in media_images {
                         let path = std::path::Path::new(&img_path);
                         if path.exists() {
-                            info!("Delivering native Telegram photo for MEDIA tag: {}", img_path);
+                            info!(
+                                "Delivering native Telegram photo for MEDIA tag: {}",
+                                img_path
+                            );
                             let img_msg = OutgoingMessage {
                                 id: MessageId::new(),
                                 session_id: outgoing.session_id,
@@ -1354,7 +1617,10 @@ impl Gateway {
                                 metadata: outgoing.metadata.clone(),
                             };
                             if let Err(e) = adapter.send(img_msg).await {
-                                warn!("Failed to deliver native Telegram photo for {}: {:?}", img_path, e);
+                                warn!(
+                                    "Failed to deliver native Telegram photo for {}: {:?}",
+                                    img_path, e
+                                );
                             }
                         }
                     }
@@ -1363,7 +1629,10 @@ impl Gateway {
                 }
             }
             platform => {
-                warn!("Platform {} not yet hooked up for outbound dispatch", platform);
+                warn!(
+                    "Platform {} not yet hooked up for outbound dispatch",
+                    platform
+                );
             }
         }
     }

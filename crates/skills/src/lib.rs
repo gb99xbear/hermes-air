@@ -165,31 +165,34 @@ impl Skill {
     pub fn from_markdown(path: &PathBuf) -> Result<Self, SkillError> {
         let content = std::fs::read_to_string(path).map_err(SkillError::Io)?;
         let (frontmatter_str, body) = Self::parse_frontmatter(&content)?;
-        
-        let yaml_val: serde_yaml::Value = serde_yaml::from_str(&frontmatter_str)
-            .map_err(|e| SkillError::Parse(e.to_string()))?;
 
-        let mut skill: Skill = serde_yaml::from_value(yaml_val.clone())
-            .unwrap_or_else(|_| Skill {
-                name: path.parent().and_then(|p| p.file_name()).map(|f| f.to_string_lossy().to_string()).unwrap_or_default(),
-                version: String::new(),
-                description: String::new(),
-                category: String::new(),
-                tags: Vec::new(),
-                author: String::new(),
-                license: String::new(),
-                platforms: Vec::new(),
-                dependencies: Vec::new(),
-                triggers: Vec::new(),
-                when_to_use: String::new(),
-                content: String::new(),
-                references: Vec::new(),
-                templates: HashMap::new(),
-                scripts: HashMap::new(),
-                metadata: None,
-                skill_dir: None,
-                skill_file: None,
-            });
+        let yaml_val: serde_yaml::Value =
+            serde_yaml::from_str(&frontmatter_str).map_err(|e| SkillError::Parse(e.to_string()))?;
+
+        let mut skill: Skill = serde_yaml::from_value(yaml_val.clone()).unwrap_or_else(|_| Skill {
+            name: path
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            version: String::new(),
+            description: String::new(),
+            category: String::new(),
+            tags: Vec::new(),
+            author: String::new(),
+            license: String::new(),
+            platforms: Vec::new(),
+            dependencies: Vec::new(),
+            triggers: Vec::new(),
+            when_to_use: String::new(),
+            content: String::new(),
+            references: Vec::new(),
+            templates: HashMap::new(),
+            scripts: HashMap::new(),
+            metadata: None,
+            skill_dir: None,
+            skill_file: None,
+        });
 
         if let Ok(json_meta) = serde_json::to_value(&yaml_val) {
             if let Some(meta) = json_meta.get("metadata") {
@@ -198,10 +201,15 @@ impl Skill {
         }
 
         if skill.name.is_empty() {
-            skill.name = path.parent()
+            skill.name = path
+                .parent()
                 .and_then(|p| p.file_name())
                 .map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+                .unwrap_or_else(|| {
+                    path.file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                });
         }
 
         if skill.description.is_empty() {
@@ -228,7 +236,7 @@ impl Skill {
         if !trimmed.starts_with("---") {
             return Ok((String::new(), content.to_string()));
         }
-        
+
         let after_first = &trimmed[3..];
         if let Some(end_idx) = after_first.find("---") {
             let frontmatter = &after_first[..end_idx];
@@ -295,14 +303,30 @@ impl SkillRegistry {
         let loaded = tokio::task::spawn_blocking(move || {
             let mut result = Vec::new();
             let excluded_dirs: HashSet<&'static str> = [
-                ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks",
-                ".venv", "venv", "node_modules", "site-packages", "__pycache__",
-                ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-            ].into_iter().collect();
+                ".git",
+                ".github",
+                ".hub",
+                ".archive",
+                ".curator_backups",
+                ".locks",
+                ".venv",
+                "venv",
+                "node_modules",
+                "site-packages",
+                "__pycache__",
+                ".tox",
+                ".nox",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+            ]
+            .into_iter()
+            .collect();
 
-            let support_dirs: HashSet<&'static str> = [
-                "references", "templates", "assets", "scripts"
-            ].into_iter().collect();
+            let support_dirs: HashSet<&'static str> =
+                ["references", "templates", "assets", "scripts"]
+                    .into_iter()
+                    .collect();
 
             let mut it = WalkDir::new(&dir_clone).follow_links(true).into_iter();
             while let Some(entry_res) = it.next() {
@@ -339,7 +363,9 @@ impl SkillRegistry {
                 }
             }
             result
-        }).await.map_err(|e| SkillError::Validation(format!("Join error: {}", e)))?;
+        })
+        .await
+        .map_err(|e| SkillError::Validation(format!("Join error: {}", e)))?;
 
         let mut skills_lock = self.skills.write().await;
         for skill in loaded {
@@ -364,50 +390,63 @@ impl SkillRegistry {
 
     pub async fn search(&self, query: &str) -> Vec<Skill> {
         let skills = self.skills.read().await;
-        skills.values()
+        skills
+            .values()
             .filter(|s| {
-                s.name.contains(query) ||
-                s.description.contains(query) ||
-                s.tags.iter().any(|t| t.contains(query)) ||
-                s.triggers.iter().any(|t| t.contains(query))
+                s.name.contains(query)
+                    || s.description.contains(query)
+                    || s.tags.iter().any(|t| t.contains(query))
+                    || s.triggers.iter().any(|t| t.contains(query))
             })
             .cloned()
             .collect()
     }
 
     pub async fn get_by_category(&self, category: &str) -> Vec<Skill> {
-        self.skills.read().await.values()
+        self.skills
+            .read()
+            .await
+            .values()
             .filter(|s| s.category == category)
             .cloned()
             .collect()
     }
 
     pub async fn get_by_platform(&self, platform: Platform) -> Vec<Skill> {
-        self.skills.read().await.values()
+        self.skills
+            .read()
+            .await
+            .values()
             .filter(|s| s.platforms.contains(&platform))
             .cloned()
             .collect()
     }
 
     pub async fn resolve_dependencies(&self, skill_name: &str) -> Result<Vec<Skill>, SkillError> {
-        let _skill = self.get(skill_name).await
+        let _skill = self
+            .get(skill_name)
+            .await
             .ok_or_else(|| SkillError::NotFound(skill_name.to_string()))?;
-        
+
         let mut resolved = Vec::new();
         let mut visited = HashSet::new();
-        
+
         fn resolve<'a>(
             registry: &'a SkillRegistry,
             name: &'a str,
             resolved: &'a mut Vec<Skill>,
             visited: &'a mut HashSet<String>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SkillError>> + Send + 'a>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SkillError>> + Send + 'a>>
+        {
             Box::pin(async move {
                 if visited.contains(name) {
-                    return Err(SkillError::Dependency(format!("Circular dependency: {}", name)));
+                    return Err(SkillError::Dependency(format!(
+                        "Circular dependency: {}",
+                        name
+                    )));
                 }
                 visited.insert(name.to_string());
-                
+
                 if let Some(skill) = registry.get(name).await {
                     let deps = skill.dependencies.clone();
                     for dep in &deps {
@@ -420,7 +459,7 @@ impl SkillRegistry {
                 Ok(())
             })
         }
-        
+
         resolve(self, skill_name, &mut resolved, &mut visited).await?;
         Ok(resolved)
     }
@@ -491,7 +530,9 @@ impl SkillRegistry {
             skills: items,
             categories: categories_set.into_iter().collect(),
             count,
-            hint: Some("Use skill_view(name) to see full content, tags, and linked files".to_string()),
+            hint: Some(
+                "Use skill_view(name) to see full content, tags, and linked files".to_string(),
+            ),
             message: None,
         }
     }
@@ -500,8 +541,12 @@ impl SkillRegistry {
         if name.contains("..") {
             return SkillViewResponse {
                 success: false,
-                error: Some("Skill name cannot contain '..' path traversal components.".to_string()),
-                hint: Some("Use a skill name or relative path within the skills directory.".to_string()),
+                error: Some(
+                    "Skill name cannot contain '..' path traversal components.".to_string(),
+                ),
+                hint: Some(
+                    "Use a skill name or relative path within the skills directory.".to_string(),
+                ),
                 ..Default::default()
             };
         }
@@ -568,7 +613,10 @@ impl SkillRegistry {
             }
         }
 
-        let linked_files = skill.skill_dir.as_ref().map(|dir| Self::collect_linked_files(dir));
+        let linked_files = skill
+            .skill_dir
+            .as_ref()
+            .map(|dir| Self::collect_linked_files(dir));
         let has_linked = linked_files.as_ref().map_or(false, |m| !m.is_empty());
 
         let rel_path = skill.skill_file.as_ref().map(|sf| {
@@ -577,7 +625,9 @@ impl SkillRegistry {
                     return rel.to_string_lossy().to_string();
                 }
             }
-            sf.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()
+            sf.file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default()
         });
 
         SkillViewResponse {
@@ -588,7 +638,10 @@ impl SkillRegistry {
             related_skills: Some(related_skills),
             content: Some(skill.content.clone()),
             path: rel_path,
-            skill_dir: skill.skill_dir.as_ref().map(|d| d.to_string_lossy().to_string()),
+            skill_dir: skill
+                .skill_dir
+                .as_ref()
+                .map(|d| d.to_string_lossy().to_string()),
             file: None,
             is_binary: None,
             org_provenance: None,
@@ -606,7 +659,10 @@ impl SkillRegistry {
             setup_needed: false,
             setup_skipped: false,
             readiness_status: "available".to_string(),
-            _source_path: skill.skill_file.as_ref().map(|f| f.to_string_lossy().to_string()),
+            _source_path: skill
+                .skill_file
+                .as_ref()
+                .map(|f| f.to_string_lossy().to_string()),
             metadata: skill.metadata.clone(),
             error: None,
             hint: None,
@@ -639,7 +695,10 @@ impl SkillRegistry {
                 let available = Self::collect_available_files(skill_dir);
                 return SkillViewResponse {
                     success: false,
-                    error: Some(format!("File '{}' not found in skill '{}'.", file_path, skill.name)),
+                    error: Some(format!(
+                        "File '{}' not found in skill '{}'.",
+                        file_path, skill.name
+                    )),
                     available_files: Some(available),
                     hint: Some("Use one of the available file paths listed above".to_string()),
                     ..Default::default()
@@ -660,7 +719,10 @@ impl SkillRegistry {
             let available = Self::collect_available_files(skill_dir);
             return SkillViewResponse {
                 success: false,
-                error: Some(format!("File '{}' not found in skill '{}'.", file_path, skill.name)),
+                error: Some(format!(
+                    "File '{}' not found in skill '{}'.",
+                    file_path, skill.name
+                )),
                 available_files: Some(available),
                 hint: Some("Use one of the available file paths listed above".to_string()),
                 ..Default::default()
@@ -668,30 +730,33 @@ impl SkillRegistry {
         }
 
         match std::fs::read(&canonical_target) {
-            Ok(bytes) => {
-                match String::from_utf8(bytes) {
-                    Ok(text) => SkillViewResponse {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => SkillViewResponse {
+                    success: true,
+                    name: Some(skill.name.clone()),
+                    file: Some(file_path.to_string()),
+                    content: Some(text),
+                    is_binary: Some(false),
+                    ..Default::default()
+                },
+                Err(_) => {
+                    let size = std::fs::metadata(&canonical_target)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    let fname = canonical_target
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    SkillViewResponse {
                         success: true,
                         name: Some(skill.name.clone()),
                         file: Some(file_path.to_string()),
-                        content: Some(text),
-                        is_binary: Some(false),
+                        is_binary: Some(true),
+                        content: Some(format!("[Binary file: {}, size: {} bytes]", fname, size)),
                         ..Default::default()
-                    },
-                    Err(_) => {
-                        let size = std::fs::metadata(&canonical_target).map(|m| m.len()).unwrap_or(0);
-                        let fname = canonical_target.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
-                        SkillViewResponse {
-                            success: true,
-                            name: Some(skill.name.clone()),
-                            file: Some(file_path.to_string()),
-                            is_binary: Some(true),
-                            content: Some(format!("[Binary file: {}, size: {} bytes]", fname, size)),
-                            ..Default::default()
-                        }
                     }
                 }
-            }
+            },
             Err(e) => SkillViewResponse {
                 success: false,
                 error: Some(format!("Failed to read '{}': {}", file_path, e)),
@@ -748,7 +813,10 @@ impl SkillRegistry {
         let path = skill.skill_file.as_ref()?;
         for root in search_roots {
             if let Ok(rel) = path.strip_prefix(root) {
-                let components: Vec<_> = rel.iter().map(|c| c.to_string_lossy().to_string()).collect();
+                let components: Vec<_> = rel
+                    .iter()
+                    .map(|c| c.to_string_lossy().to_string())
+                    .collect();
                 if components.len() >= 3 {
                     return Some(components[0].clone());
                 }
@@ -797,7 +865,10 @@ impl SkillRegistry {
                     } else {
                         "other".to_string()
                     };
-                    groups.entry(group_key).or_insert_with(Vec::new).push(rel_str);
+                    groups
+                        .entry(group_key)
+                        .or_insert_with(Vec::new)
+                        .push(rel_str);
                 }
             }
         }
@@ -849,7 +920,10 @@ pub struct Curator {
 
 impl Curator {
     pub fn new(registry: SkillRegistry, llm_client: Option<Box<dyn LlmClient>>) -> Self {
-        Self { _registry: registry, llm_client }
+        Self {
+            _registry: registry,
+            llm_client,
+        }
     }
 
     pub async fn generate_skill(&self, request: &str) -> Result<Skill, SkillError> {
@@ -860,8 +934,8 @@ impl Curator {
             );
             let response = llm.complete(&prompt).await?;
             let (frontmatter, body) = Skill::parse_frontmatter(&response)?;
-            let mut skill: Skill = serde_yaml::from_str(&frontmatter)
-                .map_err(|e| SkillError::Parse(e.to_string()))?;
+            let mut skill: Skill =
+                serde_yaml::from_str(&frontmatter).map_err(|e| SkillError::Parse(e.to_string()))?;
             skill.content = body;
             Ok(skill)
         } else {
@@ -878,19 +952,25 @@ impl Curator {
 
 ");
             for (idx, sc) in skills_content.iter().enumerate() {
-                prompt.push_str(&format!("=== Skill {} ===
+                prompt.push_str(&format!(
+                    "=== Skill {} ===
 {}
 
-", idx + 1, sc));
+",
+                    idx + 1,
+                    sc
+                ));
             }
             let response = llm.complete(&prompt).await?;
             let (frontmatter, body) = Skill::parse_frontmatter(&response)?;
-            let mut skill: Skill = serde_yaml::from_str(&frontmatter)
-                .map_err(|e| SkillError::Parse(e.to_string()))?;
+            let mut skill: Skill =
+                serde_yaml::from_str(&frontmatter).map_err(|e| SkillError::Parse(e.to_string()))?;
             skill.content = body;
             Ok(skill)
         } else {
-            Err(SkillError::Validation("No LLM client configured for skill merging".into()))
+            Err(SkillError::Validation(
+                "No LLM client configured for skill merging".into(),
+            ))
         }
     }
 }
@@ -908,7 +988,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_skills_list_and_view() {
-        let temp_dir = std::env::temp_dir().join(format!("hermes_skills_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("hermes_skills_test_{}", uuid::Uuid::new_v4()));
         let skill_dir = temp_dir.join("test-skill");
         let refs_dir = skill_dir.join("references");
         std::fs::create_dir_all(&refs_dir).unwrap();
@@ -934,7 +1015,9 @@ This is the instructions body.
         skill_file.write_all(skill_md_content.as_bytes()).unwrap();
 
         let mut ref_file = File::create(refs_dir.join("guide.md")).unwrap();
-        ref_file.write_all(b"# Guide content\nDetails here.").unwrap();
+        ref_file
+            .write_all(b"# Guide content\nDetails here.")
+            .unwrap();
 
         let registry = SkillRegistry::new(vec![temp_dir.clone()]);
         registry.load_all().await.unwrap();
@@ -944,24 +1027,42 @@ This is the instructions body.
         assert!(list_resp.success);
         assert_eq!(list_resp.count, 1);
         assert_eq!(list_resp.skills[0].name, "test-skill");
-        assert_eq!(list_resp.skills[0].description, "A test skill for verification");
+        assert_eq!(
+            list_resp.skills[0].description,
+            "A test skill for verification"
+        );
 
         // 2. Test skill_view main
         let view_resp = registry.skill_view("test-skill", None).await;
         assert!(view_resp.success);
         assert_eq!(view_resp.name.as_deref(), Some("test-skill"));
         assert!(view_resp.content.as_ref().unwrap().contains("# Test Skill"));
-        assert_eq!(view_resp.tags.as_ref().unwrap(), &vec!["test-tag-hermes".to_string()]);
-        assert_eq!(view_resp.related_skills.as_ref().unwrap(), &vec!["another-skill".to_string()]);
+        assert_eq!(
+            view_resp.tags.as_ref().unwrap(),
+            &vec!["test-tag-hermes".to_string()]
+        );
+        assert_eq!(
+            view_resp.related_skills.as_ref().unwrap(),
+            &vec!["another-skill".to_string()]
+        );
         assert!(view_resp.linked_files.is_some());
         let linked = view_resp.linked_files.unwrap();
-        assert_eq!(linked.get("references").unwrap(), &vec!["references/guide.md".to_string()]);
+        assert_eq!(
+            linked.get("references").unwrap(),
+            &vec!["references/guide.md".to_string()]
+        );
 
         // 3. Test skill_view linked file
-        let file_resp = registry.skill_view("test-skill", Some("references/guide.md")).await;
+        let file_resp = registry
+            .skill_view("test-skill", Some("references/guide.md"))
+            .await;
         assert!(file_resp.success);
         assert_eq!(file_resp.file.as_deref(), Some("references/guide.md"));
-        assert!(file_resp.content.as_ref().unwrap().contains("# Guide content"));
+        assert!(file_resp
+            .content
+            .as_ref()
+            .unwrap()
+            .contains("# Guide content"));
 
         // Clean up
         let _ = std::fs::remove_dir_all(temp_dir);
@@ -984,8 +1085,10 @@ tags:
 # Test Skill
 This content is preserved and not discarded.
 "#;
-        let (frontmatter, body) = Skill::parse_frontmatter(fake_llm_output).expect("Must parse frontmatter");
-        let skill: Skill = serde_yaml::from_str(&frontmatter).expect("Must deserialize frontmatter");
+        let (frontmatter, body) =
+            Skill::parse_frontmatter(fake_llm_output).expect("Must parse frontmatter");
+        let skill: Skill =
+            serde_yaml::from_str(&frontmatter).expect("Must deserialize frontmatter");
         assert_eq!(skill.name, "test-skill");
         assert_eq!(skill.description, "A verified test skill generated by LLM");
         assert!(body.contains("This content is preserved and not discarded"));

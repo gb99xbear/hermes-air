@@ -1,9 +1,9 @@
 pub mod banner;
 pub mod setup;
 // Hermes Air - Main Binary (CLI & Gateway)
+use clap::{Parser, Subcommand};
 use hermes_config::{ConfigLoader, LogFormat, LogOutput, LoggingConfig};
 use hermes_gateway_core::{commands::parse_command, Gateway, TurnEvent};
-use clap::{Parser, Subcommand};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::fs::{File, OpenOptions};
@@ -213,8 +213,8 @@ fn init_logging(cfg: &LoggingConfig, quiet: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(cfg.level.clone()));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(cfg.level.clone()));
 
     let writer = build_log_writer(cfg)?;
     let builder = fmt()
@@ -314,7 +314,12 @@ async fn run_interactive_chat(
 
     let active_model_display = current_model_override
         .clone()
-        .or_else(|| gateway.config().get_profile(&gateway.config().gateway.default_profile).map(|p| p.model.clone()))
+        .or_else(|| {
+            gateway
+                .config()
+                .get_profile(&gateway.config().gateway.default_profile)
+                .map(|p| p.model.clone())
+        })
         .unwrap_or_else(|| "ag/gemini-3.8-flash".to_string());
 
     print_interactive_banner(&active_model_display, &session_id.to_string());
@@ -341,14 +346,19 @@ async fn run_interactive_chat(
                 let _ = rl.add_history_entry(trimmed);
 
                 // Check for local exit commands
-                if trimmed == "exit" || trimmed == "quit" || trimmed == "/exit" || trimmed == "/quit" {
+                if trimmed == "exit"
+                    || trimmed == "quit"
+                    || trimmed == "/exit"
+                    || trimmed == "/quit"
+                {
                     println!("\x1b[32mFarewell!\x1b[0m");
                     break;
                 }
 
                 // Check for model switch command
                 if let Some(cmd) = parse_command(trimmed) {
-                    if let hermes_gateway_core::commands::SlashCommand::Model(Some(ref new_m)) = cmd {
+                    if let hermes_gateway_core::commands::SlashCommand::Model(Some(ref new_m)) = cmd
+                    {
                         let target = new_m.trim().to_string();
                         current_model_override = Some(target.clone());
                         println!("\x1b[1;32m⭐ Model switched to: \x1b[33m{}\x1b[0m", target);
@@ -476,9 +486,7 @@ async fn main() -> anyhow::Result<()> {
             banner::print_setup_header();
             setup::run_setup_wizard(&cli.config, section.as_deref())
         }
-        Some(Commands::Gateway) => {
-            gateway.run().await
-        }
+        Some(Commands::Gateway) => gateway.run().await,
         Some(Commands::Chat { model }) => {
             let selected_model = model.as_deref().or(cli.model.as_deref());
             run_interactive_chat(&gateway, selected_model).await
@@ -559,7 +567,8 @@ mod tests {
 
     #[test]
     fn test_cli_parsing_oneshot_query() {
-        let cli = Cli::try_parse_from(&["hermes-air", "-q", "hello world", "-m", "fast-model"]).unwrap();
+        let cli =
+            Cli::try_parse_from(&["hermes-air", "-q", "hello world", "-m", "fast-model"]).unwrap();
         assert_eq!(cli.query.as_deref(), Some("hello world"));
         assert_eq!(cli.model.as_deref(), Some("fast-model"));
     }

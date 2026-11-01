@@ -109,21 +109,40 @@ pub fn print_startup_banner(model_name: &str, cwd: &Path, session_id: &str) {
             let pad_total = 44usize.saturating_sub(s_trimmed.chars().count());
             let pad_left = pad_total / 2;
             let pad_right = pad_total - pad_left;
-            format!("{}{}{}", " ".repeat(pad_left), s_trimmed, " ".repeat(pad_right))
+            format!(
+                "{}{}{}",
+                " ".repeat(pad_left),
+                s_trimmed,
+                " ".repeat(pad_right)
+            )
         } else if i == 32 {
             let cwd_str = cwd.to_string_lossy();
-            let s_trimmed = if cwd_str.chars().count() > 44 { &cwd_str[..44] } else { &cwd_str };
+            let s_trimmed = if cwd_str.chars().count() > 44 {
+                &cwd_str[..44]
+            } else {
+                &cwd_str
+            };
             let pad_total = 44usize.saturating_sub(s_trimmed.chars().count());
             let pad_left = pad_total / 2;
             let pad_right = pad_total - pad_left;
-            format!("{}{}{}", " ".repeat(pad_left), s_trimmed, " ".repeat(pad_right))
+            format!(
+                "{}{}{}",
+                " ".repeat(pad_left),
+                s_trimmed,
+                " ".repeat(pad_right)
+            )
         } else if i == 33 {
             let s = format!("Session: {}", session_id);
             let s_trimmed = if s.chars().count() > 44 { &s[..44] } else { &s };
             let pad_total = 44usize.saturating_sub(s_trimmed.chars().count());
             let pad_left = pad_total / 2;
             let pad_right = pad_total - pad_left;
-            format!("{}{}{}", " ".repeat(pad_left), s_trimmed, " ".repeat(pad_right))
+            format!(
+                "{}{}{}",
+                " ".repeat(pad_left),
+                s_trimmed,
+                " ".repeat(pad_right)
+            )
         } else {
             let s = caduceus_lines[i];
             let pad = 44usize.saturating_sub(s.chars().count());
@@ -131,15 +150,29 @@ pub fn print_startup_banner(model_name: &str, cwd: &Path, session_id: &str) {
         };
 
         let l_color = if i >= 31 { gray_dim } else { gold_bold };
-        let r_color = if r_is_header { gold_bold } else if r_text.is_empty() { "" } else { yellow_text };
+        let r_color = if r_is_header {
+            gold_bold
+        } else if r_text.is_empty() {
+            ""
+        } else {
+            yellow_text
+        };
 
         println!(
             "{}│{} {}{}{} {}│{} {}{}{}{} {}│{}",
-            amber_box, reset,
-            l_color, l_cell, reset,
-            amber_box, reset,
-            r_color, r_text, reset, " ".repeat(r_pad),
-            amber_box, reset
+            amber_box,
+            reset,
+            l_color,
+            l_cell,
+            reset,
+            amber_box,
+            reset,
+            r_color,
+            r_text,
+            reset,
+            " ".repeat(r_pad),
+            amber_box,
+            reset
         );
     }
 
@@ -167,8 +200,17 @@ pub fn print_setup_header() {
     println!("|  _  | |___|  _ <| |  | | |___ ___) |  / ___ \\ | ||  _ <  / ___ \\ |_| | |___| |\\  | | |  ");
     println!("|_| |_|_____|_| \\_\\_|  |_|_____|____/  /_/   \\_\\___|_| \\_\\/_/   \\_\\____|_____|_| \\_| |_|  ");
     println!("{}", reset);
-    println!("{}{}===================================================={}", cyan, "\x1b[1m", reset);
-    println!("{}🌿 Hermes Air 🍃 - Interactive Setup Wizard{}", gold_bold, reset);
-    println!("{}{}===================================================={}", cyan, "\x1b[1m", reset);
+    println!(
+        "{}{}===================================================={}",
+        cyan, "\x1b[1m", reset
+    );
+    println!(
+        "{}🌿 Hermes Air 🍃 - Interactive Setup Wizard{}",
+        gold_bold, reset
+    );
+    println!(
+        "{}{}===================================================={}",
+        cyan, "\x1b[1m", reset
+    );
     println!();
 }

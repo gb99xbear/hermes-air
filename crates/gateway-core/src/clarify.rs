@@ -179,7 +179,10 @@ pub fn flatten_choice(choice: &Value) -> String {
 /// Suffix the first choice (schema says best-first) with `RECOMMENDED_LABEL`;
 /// idempotent, and a lone choice is left untouched (nothing to prefer it over).
 pub fn mark_recommended(choices: &[String]) -> Vec<String> {
-    let first = choices.first().map(|s| s.trim().to_string()).unwrap_or_default();
+    let first = choices
+        .first()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     if choices.len() < 2 || first != strip_recommended(&first) {
         return choices.to_vec();
     }
@@ -273,7 +276,10 @@ pub fn normalize_questions(questions: &[Value]) -> (Option<Vec<Question>>, Optio
     if questions.len() > MAX_QUESTIONS {
         return (
             None,
-            Some(format!("questions supports at most {} items.", MAX_QUESTIONS)),
+            Some(format!(
+                "questions supports at most {} items.",
+                MAX_QUESTIONS
+            )),
         );
     }
     let mut normalized = Vec::with_capacity(questions.len());
@@ -301,7 +307,10 @@ pub fn normalize_questions(questions: &[Value]) -> (Option<Vec<Question>>, Optio
         if text.is_empty() {
             return (
                 None,
-                Some(format!("questions[{}].question must be non-empty text.", index)),
+                Some(format!(
+                    "questions[{}].question must be non-empty text.",
+                    index
+                )),
             );
         }
         let raw_choices = item.get("choices");
@@ -591,7 +600,9 @@ mod tests {
     }
 
     /// Single-question callback that answers from a scripted queue.
-    fn scripted_single(answers: Vec<Option<&'static str>>) -> impl Fn(&str, Option<&[String]>, bool) -> CallbackResult {
+    fn scripted_single(
+        answers: Vec<Option<&'static str>>,
+    ) -> impl Fn(&str, Option<&[String]>, bool) -> CallbackResult {
         let queue: Mutex<Vec<Option<&'static str>>> = Mutex::new(answers);
         move |_q, _c, _m| {
             let mut q = queue.lock().unwrap();
@@ -718,7 +729,9 @@ mod tests {
 
     #[test]
     fn normalize_questions_caps_batch_size() {
-        let many: Vec<Value> = (0..=MAX_QUESTIONS).map(|i| qv(&format!("q{}", i))).collect();
+        let many: Vec<Value> = (0..=MAX_QUESTIONS)
+            .map(|i| qv(&format!("q{}", i)))
+            .collect();
         let (norm, err) = normalize_questions(&many);
         assert!(norm.is_none());
         assert!(err.unwrap().contains("at most 5"));
@@ -793,7 +806,12 @@ mod tests {
     #[test]
     fn batch_result_marks_timeout_with_notice() {
         let (norm, _) = normalize_questions(&[qv("Q1?")]);
-        let out = batch_result(&norm.unwrap(), &Answers::new(), true, Some("delivery failed"));
+        let out = batch_result(
+            &norm.unwrap(),
+            &Answers::new(),
+            true,
+            Some("delivery failed"),
+        );
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["timed_out"], json!(true));
         assert_eq!(v["notice"], json!("delivery failed"));
@@ -906,7 +924,13 @@ mod tests {
             Ok((a, false))
         };
         let questions = vec![qv("Q1?"), qv("Q2?"), qv("Q3?")];
-        let out = clarify_tool("", None, false, Some(&questions), &ClarifyCallback::batch(&cb));
+        let out = clarify_tool(
+            "",
+            None,
+            false,
+            Some(&questions),
+            &ClarifyCallback::batch(&cb),
+        );
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["responses"][0]["user_response"], json!("one"));
         assert_eq!(v["responses"][1]["user_response"], json!(""));
@@ -915,9 +939,16 @@ mod tests {
 
     #[test]
     fn batch_timeout_flag_propagates() {
-        let cb = |_qs: &[Question]| -> Result<(Answers, bool), String> { Ok((Answers::new(), true)) };
+        let cb =
+            |_qs: &[Question]| -> Result<(Answers, bool), String> { Ok((Answers::new(), true)) };
         let questions = vec![qv("Q1?")];
-        let out = clarify_tool("", None, false, Some(&questions), &ClarifyCallback::batch(&cb));
+        let out = clarify_tool(
+            "",
+            None,
+            false,
+            Some(&questions),
+            &ClarifyCallback::batch(&cb),
+        );
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["timed_out"], json!(true));
     }
@@ -927,7 +958,13 @@ mod tests {
         // First answers, second walks away -> third is never asked.
         let cb = scripted_single(vec![Some("first-answer"), None, Some("never")]);
         let questions = vec![qv("Q1?"), qv("Q2?"), qv("Q3?")];
-        let out = clarify_tool("", None, false, Some(&questions), &ClarifyCallback::single(&cb));
+        let out = clarify_tool(
+            "",
+            None,
+            false,
+            Some(&questions),
+            &ClarifyCallback::single(&cb),
+        );
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["responses"][0]["user_response"], json!("first-answer"));
         assert_eq!(v["responses"][1]["user_response"], json!(""));
@@ -938,7 +975,13 @@ mod tests {
     fn legacy_callback_keeps_earlier_answers_on_walkaway() {
         let cb = scripted_single(vec![Some("kept"), None]);
         let questions = vec![qv("Q1?"), qv("Q2?")];
-        let out = clarify_tool("", None, false, Some(&questions), &ClarifyCallback::single(&cb));
+        let out = clarify_tool(
+            "",
+            None,
+            false,
+            Some(&questions),
+            &ClarifyCallback::single(&cb),
+        );
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["responses"][0]["user_response"], json!("kept"));
     }
@@ -1012,7 +1055,10 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         let msg = v["error"].as_str().unwrap();
         assert!(msg.ends_with("... [truncated]"));
-        assert_eq!(msg.chars().count(), 2048 + "... [truncated]".chars().count());
+        assert_eq!(
+            msg.chars().count(),
+            2048 + "... [truncated]".chars().count()
+        );
     }
 
     #[test]
@@ -1028,8 +1074,8 @@ mod tests {
             json!(MAX_QUESTIONS)
         );
         assert_eq!(
-            d["function"]["parameters"]["properties"]["questions"]["items"]["properties"]["choices"]
-                ["maxItems"],
+            d["function"]["parameters"]["properties"]["questions"]["items"]["properties"]
+                ["choices"]["maxItems"],
             json!(MAX_CHOICES)
         );
     }

@@ -1,13 +1,12 @@
 // Code Execution Engine - Programmatic Tool Calling (PTC)
 // Manages Python execution sessions, hermes_tools RPC helper injection, limits, and output truncation/spill.
 
-
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -43,7 +42,10 @@ pub fn head_tail_split(budget: usize) -> (usize, usize) {
 
 /// Formats the truncation notice matching Python Hermes parity
 pub fn truncation_notice(omitted: usize, total: usize, label: &str, unit: &str) -> String {
-    format!("\n\n... [{} TRUNCATED - {} {} omitted out of {} total] ...\n\n", label, omitted, unit, total)
+    format!(
+        "\n\n... [{} TRUNCATED - {} {} omitted out of {} total] ...\n\n",
+        label, omitted, unit, total
+    )
 }
 
 /// Computes SHA256 hex digest for byte spill filename
@@ -59,7 +61,10 @@ pub async fn spill_full_stdout(stdout_text: &str) -> Option<String> {
     let mut text_to_spill = stdout_text.to_string();
     if text_to_spill.len() > MAX_SPILLED_STDOUT_BYTES {
         text_to_spill.truncate(MAX_SPILLED_STDOUT_BYTES);
-        text_to_spill.push_str(&format!("\n\n[... spill capped at {} bytes ...]", MAX_SPILLED_STDOUT_BYTES));
+        text_to_spill.push_str(&format!(
+            "\n\n[... spill capped at {} bytes ...]",
+            MAX_SPILLED_STDOUT_BYTES
+        ));
     }
 
     let dir = Path::new(SPILL_DIR_PATH);
@@ -306,7 +311,8 @@ impl CodeExecutionEngine {
         };
 
         let arc_state = Arc::new(Mutex::new(state));
-        self.sessions.insert(session_id.to_string(), arc_state.clone());
+        self.sessions
+            .insert(session_id.to_string(), arc_state.clone());
         arc_state
     }
 
@@ -333,7 +339,11 @@ impl CodeExecutionEngine {
         let (session_dir, execution_count, variables_state_file) = {
             let mut session = session_arc.lock().await;
             session.execution_count += 1;
-            (session.session_dir.clone(), session.execution_count, session.variables_state_file.clone())
+            (
+                session.session_dir.clone(),
+                session.execution_count,
+                session.variables_state_file.clone(),
+            )
         };
 
         // Ensure session directory exists
@@ -524,7 +534,10 @@ except Exception:
                     res_obj["stdout_spill_path"] = json!(p);
                 }
                 if !output.status.success() {
-                    res_obj["error"] = json!(format!("Script exited with code {:?}", output.status.code()));
+                    res_obj["error"] = json!(format!(
+                        "Script exited with code {:?}",
+                        output.status.code()
+                    ));
                 }
 
                 Ok(res_obj)
@@ -532,8 +545,12 @@ except Exception:
             Ok(Err(e)) => Err(format!("Execution process failure: {}", e)),
             Err(_) => {
                 // Timeout occurred
-                let timeout_msg = format!("Script timed out after {}s and was killed.", timeout_duration.as_secs());
-                let (truncated_out, meta) = truncate_stdout_text(&format!("⏰ {}", timeout_msg)).await;
+                let timeout_msg = format!(
+                    "Script timed out after {}s and was killed.",
+                    timeout_duration.as_secs()
+                );
+                let (truncated_out, meta) =
+                    truncate_stdout_text(&format!("⏰ {}", timeout_msg)).await;
                 let res_obj = json!({
                     "status": "timeout",
                     "output": truncated_out,
@@ -551,7 +568,11 @@ except Exception:
     }
 
     /// Handles RPC requests sent from Python hermes_tools
-    pub async fn handle_rpc_request(req_str: &str, tool_registry: &ToolRegistry, expected_token: &str) -> Value {
+    pub async fn handle_rpc_request(
+        req_str: &str,
+        tool_registry: &ToolRegistry,
+        expected_token: &str,
+    ) -> Value {
         let req_json: Value = match serde_json::from_str(req_str) {
             Ok(v) => v,
             Err(e) => {
@@ -633,7 +654,10 @@ mod tests {
         assert!(meta.stdout_truncated);
         assert_eq!(meta.stdout_bytes_captured, MAX_STDOUT_BYTES);
         assert_eq!(meta.stdout_bytes_total, large_out.len());
-        assert_eq!(meta.stdout_bytes_omitted, large_out.len() - MAX_STDOUT_BYTES);
+        assert_eq!(
+            meta.stdout_bytes_omitted,
+            large_out.len() - MAX_STDOUT_BYTES
+        );
 
         assert!(truncated.contains("... [OUTPUT TRUNCATED -"));
         assert!(truncated.contains("omitted out of"));
@@ -660,7 +684,10 @@ b = 20
 print(f"SUM={a+b}")
 "#;
 
-        let res = engine.execute(session_id, code, true, Some(10), None).await.expect("execute should succeed");
+        let res = engine
+            .execute(session_id, code, true, Some(10), None)
+            .await
+            .expect("execute should succeed");
         assert_eq!(res.get("status").and_then(|v| v.as_str()), Some("success"));
         assert_eq!(res.get("exit_code").and_then(|v| v.as_i64()), Some(0));
         let output = res.get("output").and_then(|v| v.as_str()).unwrap();
@@ -674,19 +701,28 @@ print(f"SUM={a+b}")
 
         // Step 1: define variable
         let code1 = "x = 42\nprint('Initialized x')";
-        let res1 = engine.execute(session_id, code1, true, Some(10), None).await.unwrap();
+        let res1 = engine
+            .execute(session_id, code1, true, Some(10), None)
+            .await
+            .unwrap();
         assert_eq!(res1.get("status").and_then(|v| v.as_str()), Some("success"));
 
         // Step 2: use variable from previous execution
         let code2 = "print(f'VALUE_OF_X={x}')";
-        let res2 = engine.execute(session_id, code2, false, Some(10), None).await.unwrap();
+        let res2 = engine
+            .execute(session_id, code2, false, Some(10), None)
+            .await
+            .unwrap();
         assert_eq!(res2.get("status").and_then(|v| v.as_str()), Some("success"));
         let output2 = res2.get("output").and_then(|v| v.as_str()).unwrap();
         assert!(output2.contains("VALUE_OF_X=42"));
 
         // Step 3: execute with reset=true, variable should be gone
         let code3 = "print('x in globals:', 'x' in globals() or 'x' in locals())";
-        let res3 = engine.execute(session_id, code3, true, Some(10), None).await.unwrap();
+        let res3 = engine
+            .execute(session_id, code3, true, Some(10), None)
+            .await
+            .unwrap();
         assert_eq!(res3.get("status").and_then(|v| v.as_str()), Some("success"));
         let output3 = res3.get("output").and_then(|v| v.as_str()).unwrap();
         assert!(output3.contains("x in globals: False"));

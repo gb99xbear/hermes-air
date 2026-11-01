@@ -2,8 +2,8 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::process::Command;
 use thiserror::Error;
+use tokio::process::Command;
 
 #[derive(Debug, Error)]
 pub enum McpError {
@@ -74,11 +74,19 @@ pub struct McpPromptArgument {
 pub trait McpClient: Send + Sync {
     async fn initialize(&mut self) -> Result<(), McpError>;
     async fn list_tools(&self) -> Result<Vec<McpTool>, McpError>;
-    async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> Result<serde_json::Value, McpError>;
+    async fn call_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError>;
     async fn list_resources(&self) -> Result<Vec<McpResource>, McpError>;
     async fn read_resource(&self, uri: &str) -> Result<String, McpError>;
     async fn list_prompts(&self) -> Result<Vec<McpPrompt>, McpError>;
-    async fn get_prompt(&self, name: &str, arguments: serde_json::Value) -> Result<String, McpError>;
+    async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<String, McpError>;
     async fn shutdown(&mut self) -> Result<(), McpError>;
 }
 
@@ -106,7 +114,12 @@ impl StdioMcpClient {
     }
 
     async fn start_process(&mut self) -> Result<(), McpError> {
-        let mut cmd = Command::new(self.config.command.as_ref().ok_or(McpError::Protocol("No command".into()))?);
+        let mut cmd = Command::new(
+            self.config
+                .command
+                .as_ref()
+                .ok_or(McpError::Protocol("No command".into()))?,
+        );
         cmd.args(&self.config.args);
         for (k, v) in &self.config.env {
             cmd.env(k, v);
@@ -116,7 +129,7 @@ impl StdioMcpClient {
         cmd.stderr(std::process::Stdio::piped());
 
         let mut child = cmd.spawn().map_err(|e| McpError::Io(e))?;
-        
+
         self.stdin = child.stdin.take();
         self.stdout = child.stdout.take();
         self.process = Some(child);
@@ -137,7 +150,11 @@ impl McpClient for StdioMcpClient {
         Ok(vec![])
     }
 
-    async fn call_tool(&self, _name: &str, _arguments: serde_json::Value) -> Result<serde_json::Value, McpError> {
+    async fn call_tool(
+        &self,
+        _name: &str,
+        _arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
         Ok(serde_json::json!({}))
     }
 
@@ -153,7 +170,11 @@ impl McpClient for StdioMcpClient {
         Ok(vec![])
     }
 
-    async fn get_prompt(&self, _name: &str, _arguments: serde_json::Value) -> Result<String, McpError> {
+    async fn get_prompt(
+        &self,
+        _name: &str,
+        _arguments: serde_json::Value,
+    ) -> Result<String, McpError> {
         Ok(String::new())
     }
 
@@ -169,7 +190,10 @@ pub struct McpServer {
     tools: HashMap<String, McpTool>,
     resources: HashMap<String, McpResource>,
     prompts: HashMap<String, McpPrompt>,
-    tool_handlers: HashMap<String, Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, McpError> + Send + Sync>>,
+    tool_handlers: HashMap<
+        String,
+        Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, McpError> + Send + Sync>,
+    >,
 }
 
 impl McpServer {
@@ -182,7 +206,14 @@ impl McpServer {
         }
     }
 
-    pub fn register_tool(&mut self, tool: McpTool, handler: impl Fn(serde_json::Value) -> Result<serde_json::Value, McpError> + Send + Sync + 'static) {
+    pub fn register_tool(
+        &mut self,
+        tool: McpTool,
+        handler: impl Fn(serde_json::Value) -> Result<serde_json::Value, McpError>
+            + Send
+            + Sync
+            + 'static,
+    ) {
         let tool_name = tool.name.clone();
         self.tools.insert(tool_name.clone(), tool);
         self.tool_handlers.insert(tool_name, Box::new(handler));

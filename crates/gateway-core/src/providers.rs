@@ -133,7 +133,10 @@ impl ProviderProfile {
         };
 
         // Split by '/' or '?' or '#' to isolate host[:port]
-        let host_port = after_scheme.split(&['/', '?', '#'][..]).next().unwrap_or("");
+        let host_port = after_scheme
+            .split(&['/', '?', '#'][..])
+            .next()
+            .unwrap_or("");
 
         // Split host from port (handle IPv6 in brackets if needed, or standard host:port)
         if host_port.starts_with('[') {
@@ -214,7 +217,8 @@ impl ProviderRegistry {
                 "9router-oracle".to_string(),
             ],
             display_name: "9Router Gateway".to_string(),
-            description: "9Router AI Gateway - OpenAI-compatible inference with live model catalog".to_string(),
+            description: "9Router AI Gateway - OpenAI-compatible inference with live model catalog"
+                .to_string(),
             signup_url: "http://127.0.0.1:20128/".to_string(),
             env_vars: vec![
                 "ROUTER9_API_KEY".to_string(),
@@ -353,12 +357,10 @@ impl ProviderRegistry {
             display_name: "Google Gemini".to_string(),
             description: "Google AI Studio Gemini API".to_string(),
             signup_url: "https://aistudio.google.com/".to_string(),
-            env_vars: vec![
-                "GEMINI_API_KEY".to_string(),
-                "GOOGLE_API_KEY".to_string(),
-            ],
+            env_vars: vec!["GEMINI_API_KEY".to_string(), "GOOGLE_API_KEY".to_string()],
             base_url: "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
-            models_url: "https://generativelanguage.googleapis.com/v1beta/openai/models".to_string(),
+            models_url: "https://generativelanguage.googleapis.com/v1beta/openai/models"
+                .to_string(),
             auth_type: "api_key".to_string(),
             supports_health_check: true,
             supports_model_listing: true,
@@ -366,10 +368,7 @@ impl ProviderRegistry {
             supports_vision_tool_messages: true,
             supports_prompt_cache_key: false,
             native_reasoning_details_type: None,
-            fallback_models: vec![
-                "gemini-2.5-flash".to_string(),
-                "gemini-2.5-pro".to_string(),
-            ],
+            fallback_models: vec!["gemini-2.5-flash".to_string(), "gemini-2.5-pro".to_string()],
             model_aliases: HashMap::new(),
             hostname: "generativelanguage.googleapis.com".to_string(),
             default_headers: HashMap::new(),
@@ -502,16 +501,25 @@ mod tests {
         let registry = ProviderRegistry::new();
 
         // Check pre-registered 9router
-        let profile_9r = registry.get("9router").await.expect("9router must be registered");
+        let profile_9r = registry
+            .get("9router")
+            .await
+            .expect("9router must be registered");
         assert_eq!(profile_9r.name, "9router");
         assert_eq!(profile_9r.base_url, "http://127.0.0.1:20128/v1");
 
         // Alias lookup
-        let by_alias = registry.get("router9").await.expect("alias router9 must resolve");
+        let by_alias = registry
+            .get("router9")
+            .await
+            .expect("alias router9 must resolve");
         assert_eq!(by_alias.name, "9router");
 
         // Case insensitivity
-        let by_case = registry.get("9ROUTER-ORACLE").await.expect("case-insensitive alias lookup");
+        let by_case = registry
+            .get("9ROUTER-ORACLE")
+            .await
+            .expect("case-insensitive alias lookup");
         assert_eq!(by_case.name, "9router");
 
         // Custom registration
@@ -523,7 +531,10 @@ mod tests {
         };
         registry.register(custom).await;
 
-        let resolved_custom = registry.get("cc").await.expect("custom alias cc must resolve");
+        let resolved_custom = registry
+            .get("cc")
+            .await
+            .expect("custom alias cc must resolve");
         assert_eq!(resolved_custom.name, "custom-corp");
         assert_eq!(resolved_custom.base_url, "https://api.custom.corp/v1");
     }
@@ -531,13 +542,31 @@ mod tests {
     #[tokio::test]
     async fn test_default_builtin_providers_catalog() {
         let registry = ProviderRegistry::new();
-        let expected = vec!["9router", "openai", "openrouter", "anthropic", "gemini", "deepseek"];
+        let expected = vec![
+            "9router",
+            "openai",
+            "openrouter",
+            "anthropic",
+            "gemini",
+            "deepseek",
+        ];
 
         for name in expected {
-            let p = registry.get(name).await.unwrap_or_else(|| panic!("Missing default provider {}", name));
+            let p = registry
+                .get(name)
+                .await
+                .unwrap_or_else(|| panic!("Missing default provider {}", name));
             assert_eq!(p.name, name);
-            assert!(!p.base_url.is_empty(), "Provider {} should have a base_url", name);
-            assert!(!p.env_vars.is_empty(), "Provider {} should have env_vars", name);
+            assert!(
+                !p.base_url.is_empty(),
+                "Provider {} should have a base_url",
+                name
+            );
+            assert!(
+                !p.env_vars.is_empty(),
+                "Provider {} should have env_vars",
+                name
+            );
         }
     }
 }

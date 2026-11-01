@@ -1,5 +1,5 @@
-use std::time::Instant;
 use hermes_platform_telegram::{InlineKeyboardButton, InlineKeyboardMarkup};
+use std::time::Instant;
 
 /// Busy Policy classification matching Python gateway/run_busy.py
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,7 +165,7 @@ pub fn handle_status(ctx: &CommandContext) -> String {
     };
 
     format!(
-"<b>{} Gateway Status</b>
+        "<b>{} Gateway Status</b>
 
 <b>Directives (One-Tap Copy):</b>
 <code>{}</code>
@@ -225,7 +225,7 @@ pub fn handle_context(ctx: &CommandContext) -> String {
     let headroom = window.saturating_sub(used);
 
     format!(
-"⚡ <b>CONTEXT WINDOW</b>
+        "⚡ <b>CONTEXT WINDOW</b>
 
 <b>Model:</b> <code>{}</code>
 <b>Window:</b> {} tokens
@@ -267,7 +267,7 @@ pub fn handle_whoami(ctx: &CommandContext) -> String {
     let thread_id = ctx.thread_id.unwrap_or("none");
 
     format!(
-"<b>You</b> — {} ({})
+        "<b>You</b> — {} ({})
 • <b>User ID:</b> <code>{}</code>
 • <b>Chat ID:</b> <code>{}</code>
 • <b>Chat Type:</b> <code>{}</code>
@@ -283,7 +283,7 @@ pub fn handle_whoami(ctx: &CommandContext) -> String {
 /// Handle /profile command
 pub fn handle_profile(ctx: &CommandContext) -> String {
     format!(
-"🎭 <b>Agent Profile Configuration</b>
+        "🎭 <b>Agent Profile Configuration</b>
 
 • <b>Profile Name:</b> <code>{}</code>
 • <b>Active Model:</b> <code>{}</code>
@@ -294,7 +294,9 @@ pub fn handle_profile(ctx: &CommandContext) -> String {
         ctx.active_model,
         ctx.gateway_name,
         ctx.gateway_version,
-        ctx.session_id.map(|u| u.to_string()).unwrap_or_else(|| "none".to_string())
+        ctx.session_id
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| "none".to_string())
     )
 }
 
@@ -322,7 +324,9 @@ pub fn handle_diff(arg: &Option<String>) -> String {
 
     match (git_status, git_diff) {
         (Ok(status_out), Ok(diff_out)) => {
-            let status_str = String::from_utf8_lossy(&status_out.stdout).trim().to_string();
+            let status_str = String::from_utf8_lossy(&status_out.stdout)
+                .trim()
+                .to_string();
             let diff_str = String::from_utf8_lossy(&diff_out.stdout).trim().to_string();
 
             if status_str.is_empty() && diff_str.is_empty() {
@@ -337,13 +341,21 @@ pub fn handle_diff(arg: &Option<String>) -> String {
                 } else {
                     String::new()
                 };
-                out.push(format!("<b>Status:</b>\n<pre>\n{}{}\n</pre>", lines.join("\n"), extra));
+                out.push(format!(
+                    "<b>Status:</b>\n<pre>\n{}{}\n</pre>",
+                    lines.join("\n"),
+                    extra
+                ));
             }
 
             if !diff_str.is_empty() {
                 let truncated_diff = if diff_str.lines().count() > 60 {
                     let first_lines: Vec<&str> = diff_str.lines().take(60).collect();
-                    format!("{}\n... (truncated — {} lines total; use /diff --stat for a summary)", first_lines.join("\n"), diff_str.lines().count())
+                    format!(
+                        "{}\n... (truncated — {} lines total; use /diff --stat for a summary)",
+                        first_lines.join("\n"),
+                        diff_str.lines().count()
+                    )
                 } else if diff_str.len() > 3000 {
                     format!("{}...\n(truncated at 3000 chars)", &diff_str[..3000])
                 } else {
@@ -354,7 +366,10 @@ pub fn handle_diff(arg: &Option<String>) -> String {
 
             out.join("\n\n")
         }
-        _ => "⚠️ <i>Git repository not detected or git command unavailable in working directory.</i>".to_string(),
+        _ => {
+            "⚠️ <i>Git repository not detected or git command unavailable in working directory.</i>"
+                .to_string()
+        }
     }
 }
 
@@ -426,18 +441,36 @@ pub struct ProviderItem {
 
 pub fn default_providers_list() -> Vec<ProviderItem> {
     vec![
-        ProviderItem { slug: "9router".to_string(), name: "9Router Gateway".to_string() },
-        ProviderItem { slug: "tokenharbor".to_string(), name: "TokenHarbor".to_string() },
-        ProviderItem { slug: "openrouter".to_string(), name: "OpenRouter".to_string() },
-        ProviderItem { slug: "anthropic".to_string(), name: "Anthropic".to_string() },
-        ProviderItem { slug: "openai".to_string(), name: "OpenAI".to_string() },
+        ProviderItem {
+            slug: "9router".to_string(),
+            name: "9Router Gateway".to_string(),
+        },
+        ProviderItem {
+            slug: "tokenharbor".to_string(),
+            name: "TokenHarbor".to_string(),
+        },
+        ProviderItem {
+            slug: "openrouter".to_string(),
+            name: "OpenRouter".to_string(),
+        },
+        ProviderItem {
+            slug: "anthropic".to_string(),
+            name: "Anthropic".to_string(),
+        },
+        ProviderItem {
+            slug: "openai".to_string(),
+            name: "OpenAI".to_string(),
+        },
     ]
 }
 
 /// Build the provider selection keyboard.
 /// Displays active provider with ⭐, lays out 2 buttons per row,
 /// and adds bottom navigation: [🔄 Refresh] (mrf:prov) and [✗ Cancel] (mx:cancel).
-pub fn build_provider_keyboard(providers: &[ProviderItem], active_provider: &str) -> InlineKeyboardMarkup {
+pub fn build_provider_keyboard(
+    providers: &[ProviderItem],
+    active_provider: &str,
+) -> InlineKeyboardMarkup {
     let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
     let mut current_row: Vec<InlineKeyboardButton> = Vec::new();
 
@@ -525,7 +558,10 @@ pub fn build_model_keyboard(
         }
 
         // Each model button callbacks with `mm:<model_id>`
-        rows.push(vec![InlineKeyboardButton::new(display_name, format!("mm:{}", model_id))]);
+        rows.push(vec![InlineKeyboardButton::new(
+            display_name,
+            format!("mm:{}", model_id),
+        )]);
     }
 
     // Pagination row if total_pages > 1
@@ -557,7 +593,11 @@ pub fn build_model_keyboard(
         InlineKeyboardButton::new("✗ Cancel", "mx:cancel"),
     ]);
 
-    (InlineKeyboardMarkup::new(rows), current_page + 1, total_pages)
+    (
+        InlineKeyboardMarkup::new(rows),
+        current_page + 1,
+        total_pages,
+    )
 }
 
 /// Header card text for Model selection screen matching Python blueprint
@@ -582,9 +622,15 @@ pub fn model_picker_card(
             || mid_lower.contains("3.7")
         {
             "🟢 ~0.1s"
-        } else if mid_lower.contains("deepseek") || mid_lower.contains("gemma") || mid_lower.contains("free") {
+        } else if mid_lower.contains("deepseek")
+            || mid_lower.contains("gemma")
+            || mid_lower.contains("free")
+        {
             "🟢 ~0.3s"
-        } else if mid_lower.contains("grok") || mid_lower.contains("luna") || mid_lower.contains("atria") {
+        } else if mid_lower.contains("grok")
+            || mid_lower.contains("luna")
+            || mid_lower.contains("atria")
+        {
             "🟡 ~0.8s"
         } else {
             "🟢 ~0.2s"
@@ -604,7 +650,7 @@ pub fn model_picker_card(
     };
 
     format!(
-"⚡ <b>HERMES ROUTER // MODEL SELECTOR</b>
+        "⚡ <b>HERMES ROUTER // MODEL SELECTOR</b>
 <pre>
 PROVIDER : {}
 GATEWAY  : 🟢 ~0.1s (9Router Oracle)
@@ -625,11 +671,7 @@ pub fn handle_clear() -> String {
 }
 
 /// Format confirmation for manual /compress and /compact command
-pub fn handle_compress(
-    pre_count: usize,
-    post_count: usize,
-    tokens_saved: usize,
-) -> String {
+pub fn handle_compress(pre_count: usize, post_count: usize, tokens_saved: usize) -> String {
     format!(
         "🗜️ Context compacted: {} messages → {} messages ({} tokens saved).",
         pre_count, post_count, tokens_saved
@@ -652,7 +694,9 @@ pub fn handle_command(
         SlashCommand::Whoami => handle_whoami(ctx),
         SlashCommand::Profile => handle_profile(ctx),
         SlashCommand::Diff(arg) => handle_diff(&arg),
-        SlashCommand::Compress(_) => handle_compress(ctx.transcript_count, 1.min(ctx.transcript_count), 0),
+        SlashCommand::Compress(_) => {
+            handle_compress(ctx.transcript_count, 1.min(ctx.transcript_count), 0)
+        }
     }
 }
 
@@ -684,7 +728,10 @@ mod tests {
         assert_eq!(parse_command("  /help  "), Some(SlashCommand::Help));
         assert_eq!(parse_command("/commands"), Some(SlashCommand::Help));
         assert_eq!(parse_command("/status"), Some(SlashCommand::Status));
-        assert_eq!(parse_command("/status@HermesBot"), Some(SlashCommand::Status));
+        assert_eq!(
+            parse_command("/status@HermesBot"),
+            Some(SlashCommand::Status)
+        );
         assert_eq!(parse_command("/model"), Some(SlashCommand::Model(None)));
         assert_eq!(
             parse_command("/model ag/gemini-3.8-flash"),
@@ -692,7 +739,9 @@ mod tests {
         );
         assert_eq!(
             parse_command("/model   freet/claude-5-sonnet  "),
-            Some(SlashCommand::Model(Some("freet/claude-5-sonnet".to_string())))
+            Some(SlashCommand::Model(Some(
+                "freet/claude-5-sonnet".to_string()
+            )))
         );
         assert_eq!(parse_command("/clear"), Some(SlashCommand::Clear));
         assert_eq!(parse_command("/reset"), Some(SlashCommand::Clear));
@@ -718,8 +767,14 @@ mod tests {
         assert_eq!(SlashCommand::Whoami.busy_policy(), BusyPolicy::Dispatch);
         assert_eq!(SlashCommand::Profile.busy_policy(), BusyPolicy::Dispatch);
         assert_eq!(SlashCommand::Diff(None).busy_policy(), BusyPolicy::Dispatch);
-        assert_eq!(SlashCommand::Stop.busy_policy(), BusyPolicy::InterruptThenDispatch);
-        assert_eq!(SlashCommand::Clear.busy_policy(), BusyPolicy::InterruptThenDispatch);
+        assert_eq!(
+            SlashCommand::Stop.busy_policy(),
+            BusyPolicy::InterruptThenDispatch
+        );
+        assert_eq!(
+            SlashCommand::Clear.busy_policy(),
+            BusyPolicy::InterruptThenDispatch
+        );
     }
 
     #[test]
@@ -752,12 +807,16 @@ mod tests {
 
         let start_res = handle_command(SlashCommand::Start, &ctx, |_| Ok(()));
         assert!(start_res.contains("Greetings!"));
-        assert!(start_res.contains("I am your Hermes Gateway assistant. All systems are operational."));
+        assert!(
+            start_res.contains("I am your Hermes Gateway assistant. All systems are operational.")
+        );
         assert!(start_res.contains("ag/gemini-3.8-flash"));
 
         let help_res = handle_command(SlashCommand::Help, &ctx, |_| Ok(()));
         assert!(help_res.contains("Greetings!"));
-        assert!(help_res.contains("I am your Hermes Gateway assistant. All systems are operational."));
+        assert!(
+            help_res.contains("I am your Hermes Gateway assistant. All systems are operational.")
+        );
         assert!(help_res.contains("/status"));
         assert!(help_res.contains("/context"));
         assert!(help_res.contains("/whoami"));
@@ -931,11 +990,9 @@ mod tests {
         assert!(switch_res.contains("ag/gemini-3.8-flash"));
 
         // Switch model empty failure
-        let fail_res = handle_command(
-            SlashCommand::Model(Some("   ".to_string())),
-            &ctx,
-            |_| Ok(()),
-        );
+        let fail_res = handle_command(SlashCommand::Model(Some("   ".to_string())), &ctx, |_| {
+            Ok(())
+        });
         assert!(fail_res.contains("Model name cannot be empty"));
     }
 
@@ -971,9 +1028,15 @@ mod tests {
 
         assert_eq!(keyboard.inline_keyboard.len(), 4);
         assert_eq!(keyboard.inline_keyboard[0][0].text, "⭐ 9Router Gateway");
-        assert_eq!(keyboard.inline_keyboard[0][0].callback_data.as_deref(), Some("mp:9router"));
+        assert_eq!(
+            keyboard.inline_keyboard[0][0].callback_data.as_deref(),
+            Some("mp:9router")
+        );
         assert_eq!(keyboard.inline_keyboard[0][1].text, "TokenHarbor");
-        assert_eq!(keyboard.inline_keyboard[0][1].callback_data.as_deref(), Some("mp:tokenharbor"));
+        assert_eq!(
+            keyboard.inline_keyboard[0][1].callback_data.as_deref(),
+            Some("mp:tokenharbor")
+        );
 
         // Action row
         let last_row = &keyboard.inline_keyboard[3];
@@ -993,7 +1056,10 @@ mod tests {
         // 8 model buttons + 1 nav row + 1 action row = 10 rows
         assert_eq!(keyboard.inline_keyboard.len(), 10);
         assert_eq!(keyboard.inline_keyboard[0][0].text, "⭐ model-1");
-        assert_eq!(keyboard.inline_keyboard[0][0].callback_data.as_deref(), Some("mm:model-1"));
+        assert_eq!(
+            keyboard.inline_keyboard[0][0].callback_data.as_deref(),
+            Some("mm:model-1")
+        );
 
         // Nav row
         let nav_row = &keyboard.inline_keyboard[8];
@@ -1012,22 +1078,36 @@ mod tests {
 
     #[test]
     fn test_parse_compress_commands() {
-        assert_eq!(parse_command("/compress"), Some(SlashCommand::Compress(None)));
-        assert_eq!(parse_command("/compact"), Some(SlashCommand::Compress(None)));
+        assert_eq!(
+            parse_command("/compress"),
+            Some(SlashCommand::Compress(None))
+        );
+        assert_eq!(
+            parse_command("/compact"),
+            Some(SlashCommand::Compress(None))
+        );
         assert_eq!(
             parse_command("/compress backend architecture"),
-            Some(SlashCommand::Compress(Some("backend architecture".to_string())))
+            Some(SlashCommand::Compress(Some(
+                "backend architecture".to_string()
+            )))
         );
         assert_eq!(
             parse_command("/compact memory-hygiene"),
             Some(SlashCommand::Compress(Some("memory-hygiene".to_string())))
         );
-        assert_eq!(SlashCommand::Compress(None).busy_policy(), BusyPolicy::Reject);
+        assert_eq!(
+            SlashCommand::Compress(None).busy_policy(),
+            BusyPolicy::Reject
+        );
     }
 
     #[test]
     fn test_handle_compress_formatting() {
         let text = handle_compress(24, 5, 12500);
-        assert_eq!(text, "🗜️ Context compacted: 24 messages → 5 messages (12500 tokens saved).");
+        assert_eq!(
+            text,
+            "🗜️ Context compacted: 24 messages → 5 messages (12500 tokens saved)."
+        );
     }
 }

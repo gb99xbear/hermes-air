@@ -87,10 +87,7 @@ impl PromptAssembler {
         let mut sections: Vec<String> = Vec::new();
 
         // 1. SOUL.md
-        let mut soul_candidates = vec![
-            hermes_dir.join("SOUL.md"),
-            cwd.join("SOUL.md"),
-        ];
+        let mut soul_candidates = vec![hermes_dir.join("SOUL.md"), cwd.join("SOUL.md")];
         if self.custom_hermes_dir.is_none() {
             soul_candidates.push(PathBuf::from("/home/ubuntu/.hermes/SOUL.md"));
         }
@@ -99,10 +96,7 @@ impl PromptAssembler {
         }
 
         // 2. AGENTS.md
-        let mut agents_candidates = vec![
-            cwd.join("AGENTS.md"),
-            hermes_dir.join("AGENTS.md"),
-        ];
+        let mut agents_candidates = vec![cwd.join("AGENTS.md"), hermes_dir.join("AGENTS.md")];
         if self.custom_cwd.is_none() {
             agents_candidates.push(PathBuf::from("/home/ubuntu/AGENTS.md"));
         }
@@ -137,10 +131,7 @@ impl PromptAssembler {
         }
 
         // 5. system.md
-        let mut system_candidates = vec![
-            cwd.join("system.md"),
-            hermes_dir.join("system.md"),
-        ];
+        let mut system_candidates = vec![cwd.join("system.md"), hermes_dir.join("system.md")];
         if self.custom_cwd.is_none() && self.custom_hermes_dir.is_none() {
             system_candidates.push(PathBuf::from("/home/ubuntu/system.md"));
         }

@@ -16,11 +16,11 @@
 //! - Deleting a symlinked directory, a skills root itself, or a path outside every
 //!   known skills root is refused (the rmtree-follows-symlink wipe class).
 
+use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use parking_lot::Mutex;
 
 /// Resolve the default skills directory: `HERMES_HOME/skills`, else `HOME/.hermes/skills`.
 pub fn default_skills_dir() -> PathBuf {
@@ -55,7 +55,14 @@ const NAME_RULE: &str = "Use lowercase letters, numbers, hyphens, dots, and unde
 const BATCH_OP_ACTIONS: [&str; 4] = ["create", "patch", "write_file", "remove_file"];
 
 /// Actions in the flat dispatch table.
-const ALL_ACTIONS: [&str; 6] = ["create", "edit", "patch", "delete", "write_file", "remove_file"];
+const ALL_ACTIONS: [&str; 6] = [
+    "create",
+    "edit",
+    "patch",
+    "delete",
+    "write_file",
+    "remove_file",
+];
 
 // ── Refusal helpers ────────────────────────────────────────────────────────
 
@@ -87,9 +94,7 @@ fn valid_name_re(value: &str) -> bool {
         Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {}
         _ => return false,
     }
-    chars.all(|c| {
-        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-'
-    })
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-')
 }
 
 fn check_identifier(value: &str, label: &str, invalid: &str) -> Option<String> {
@@ -205,9 +210,7 @@ pub fn validate_frontmatter(content: &str, new_skill: bool) -> Option<String> {
     };
     let obj = match parsed.as_object() {
         Some(o) => o,
-        None => {
-            return Some("Frontmatter must be a YAML mapping (key: value pairs).".to_string())
-        }
+        None => return Some("Frontmatter must be a YAML mapping (key: value pairs).".to_string()),
     };
     for field in ["name", "description"] {
         if !obj.contains_key(field) {
@@ -488,7 +491,11 @@ mod once_cell_lite {
 
 /// Refusal message if `name` is pinned or essential, else `None`. Pin only guards
 /// deletion; patches/edits stay allowed.
-pub fn pinned_guard(name: &str, essential: &HashSet<String>, pinned: &HashSet<String>) -> Option<String> {
+pub fn pinned_guard(
+    name: &str,
+    essential: &HashSet<String>,
+    pinned: &HashSet<String>,
+) -> Option<String> {
     if essential.contains(name) {
         return Some(format!(
             "Skill '{}' is essential to Hermes (the agent's own operating manual referenced by \
@@ -875,15 +882,9 @@ impl SkillManager {
         };
         let is_pinned = pinned.contains(name) || self.essential_skills.contains(name);
         if let Some(guard) = background_review_write_guard(
-            name,
-            action,
-            is_pinned,
+            name, action, is_pinned,
             false, // external dirs are not modelled as a separate root here
-            false,
-            false,
-            false,
-            true,
-            true,
+            false, false, false, true, true,
         ) {
             return Err(guard);
         }
@@ -972,13 +973,14 @@ impl SkillManager {
                 existing.display()
             )));
         }
-        let skill_dir = self
-            .create_root()
-            .join(category.unwrap_or(""))
-            .join(name);
+        let skill_dir = self.create_root().join(category.unwrap_or("")).join(name);
         let skill_md = skill_dir.join("SKILL.md");
         if let Err(e) = Self::atomic_write(&skill_md, content) {
-            return Err(refusal(&format!("Failed to write {}: {}", skill_md.display(), e)));
+            return Err(refusal(&format!(
+                "Failed to write {}: {}",
+                skill_md.display(),
+                e
+            )));
         }
         let root = self.skills_dir.clone();
         let display = skill_dir
@@ -987,7 +989,10 @@ impl SkillManager {
             .unwrap_or_else(|_| skill_dir.clone());
         let mut result = Map::new();
         result.insert("success".into(), json!(true));
-        result.insert("message".into(), json!(format!("Skill '{}' created.", name)));
+        result.insert(
+            "message".into(),
+            json!(format!("Skill '{}' created.", name)),
+        );
         result.insert("path".into(), json!(display.to_string_lossy()));
         result.insert("skill_md".into(), json!(skill_md.to_string_lossy()));
         if let Some(cat) = category {
@@ -1010,15 +1015,25 @@ impl SkillManager {
     }
 
     /// `edit`: replace the SKILL.md of an existing skill (full rewrite).
-    pub fn edit(&self, name: &str, content: &str, pinned: &HashSet<String>) -> Result<Value, Value> {
-        if let Some(err) =
-            validate_frontmatter(content, false).or_else(|| validate_content_size(content, "SKILL.md"))
+    pub fn edit(
+        &self,
+        name: &str,
+        content: &str,
+        pinned: &HashSet<String>,
+    ) -> Result<Value, Value> {
+        if let Some(err) = validate_frontmatter(content, false)
+            .or_else(|| validate_content_size(content, "SKILL.md"))
         {
             return Err(refusal(&err));
         }
         let skill_dir = self.locate_for_write(name, "edit", "", pinned)?;
-        if let Some(guard) = self.guarded_write(name, &skill_dir.join("SKILL.md"), "edit", "SKILL.md", content)
-        {
+        if let Some(guard) = self.guarded_write(
+            name,
+            &skill_dir.join("SKILL.md"),
+            "edit",
+            "SKILL.md",
+            content,
+        ) {
             return Err(guard);
         }
         Ok(json!({
@@ -1063,7 +1078,12 @@ impl SkillManager {
         // Same fuzzy engine as the file patch tool, so minor formatting
         // mismatches do not fail.
         let (new_content, match_count, _strategy, match_error) =
-            crate::fuzzy_match::fuzzy_find_and_replace(&content, old_string, new_string, replace_all);
+            crate::fuzzy_match::fuzzy_find_and_replace(
+                &content,
+                old_string,
+                new_string,
+                replace_all,
+            );
         if let Some(err) = match_error {
             return Err(refusal_with(
                 &err,
@@ -1081,8 +1101,7 @@ impl SkillManager {
                 )));
             }
         }
-        if let Some(guard) =
-            self.guarded_write(name, &target, "patch", target_label, &new_content)
+        if let Some(guard) = self.guarded_write(name, &target, "patch", target_label, &new_content)
         {
             return Err(guard);
         }
@@ -1111,7 +1130,9 @@ impl SkillManager {
         if let Some(msg) = pinned_guard(name, &self.essential_skills, pinned) {
             return Err(refusal(&msg));
         }
-        let absorbed_target = absorbed_into.map(|s| s.trim().to_string()).unwrap_or_default();
+        let absorbed_target = absorbed_into
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
         if !absorbed_target.is_empty() {
             if absorbed_target == name {
                 return Err(refusal(&format!(
@@ -1224,7 +1245,11 @@ impl SkillManager {
             return Err(guard);
         }
         if let Err(e) = std::fs::remove_file(&target) {
-            return Err(refusal(&format!("Failed to remove {}: {}", target.display(), e)));
+            return Err(refusal(&format!(
+                "Failed to remove {}: {}",
+                target.display(),
+                e
+            )));
         }
         if let Some(parent) = target.parent() {
             rmdir_if_empty(parent, &skill_dir);
@@ -1338,8 +1363,13 @@ impl SkillManager {
         for (i, op) in operations.iter().enumerate() {
             let act = op.get("action").and_then(|v| v.as_str()).unwrap_or("");
             let nm = &names[i];
-            let full_rewrite = act == "patch" && op.get("content").and_then(|v| v.as_str()).is_some();
-            let fp = op.get("file_path").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let full_rewrite =
+                act == "patch" && op.get("content").and_then(|v| v.as_str()).is_some();
+            let fp = op
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             let target = if act == "create" || full_rewrite || fp.is_empty() {
                 "SKILL.md".to_string()
             } else {
@@ -1370,10 +1400,7 @@ impl SkillManager {
                 .collect()
         };
 
-        let _locks: Vec<_> = unique_names
-            .iter()
-            .map(|n| self.skill_lock(n))
-            .collect();
+        let _locks: Vec<_> = unique_names.iter().map(|n| self.skill_lock(n)).collect();
         let _guards: Vec<_> = _locks.iter().map(|l| l.lock()).collect();
 
         // snapshot: name -> (pre_dir, Some(snapshot_dir))
@@ -1466,7 +1493,9 @@ impl SkillManager {
                     get("old_string").unwrap_or(""),
                     get("new_string").unwrap_or(""),
                     get("file_path"),
-                    op.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false),
+                    op.get("replace_all")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                     pinned,
                 )
             }
@@ -1494,8 +1523,7 @@ impl SkillManager {
                     "ROLLBACK FAILED for '{}' ({}){}",
                     nm,
                     e,
-                    snap
-                        .as_ref()
+                    snap.as_ref()
                         .map(|s| format!("; snapshot preserved at '{}'", s.display()))
                         .unwrap_or_default()
                 ));
@@ -1513,7 +1541,13 @@ impl SkillManager {
     /// Shared write gate. Returns `Some(response)` when the write must NOT proceed
     /// (blocked or staged), `None` to proceed. Skills are too large to review
     /// inline, so they always stage regardless of origin.
-    pub fn run_write_gate(&self, action: &str, _name: &str, gist: &str, payload: Value) -> Option<Value> {
+    pub fn run_write_gate(
+        &self,
+        action: &str,
+        _name: &str,
+        gist: &str,
+        payload: Value,
+    ) -> Option<Value> {
         if gate_bypassed() || !ALL_ACTIONS.contains(&action) {
             return None;
         }
@@ -1707,7 +1741,11 @@ fn misplaced_text_hint(action: &str, op: &Value) -> String {
 /// misplaced-text hint: a patch whose real problem is an unmatched old_string
 /// must not be steered to a full rewrite.
 fn op_shape_error(action: &str, op: &Value) -> Option<String> {
-    let missing = |k: &str| op.get(k).map(|v| v.is_null() || v.as_str() == Some("")).unwrap_or(true);
+    let missing = |k: &str| {
+        op.get(k)
+            .map(|v| v.is_null() || v.as_str() == Some(""))
+            .unwrap_or(true)
+    };
     let is_none = |k: &str| op.get(k).map(|v| v.is_null()).unwrap_or(true);
     match action {
         "create" | "edit" => {
@@ -1752,10 +1790,7 @@ fn op_shape_error(action: &str, op: &Value) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(|s| !s.is_empty())
                 .unwrap_or(false);
-            let new_present = op
-                .get("new_string")
-                .map(|v| !v.is_null())
-                .unwrap_or(false);
+            let new_present = op.get("new_string").map(|v| !v.is_null()).unwrap_or(false);
             if has_content && (has_old || new_present) {
                 return Some(PATCH_EITHER_OR.to_string());
             }
@@ -2062,7 +2097,10 @@ mod tests {
     #[test]
     fn new_skill_enforces_prompt_desc_limit_but_edit_does_not() {
         let long = "x".repeat(SKILL_PROMPT_DESC_LIMIT + 10);
-        let content = format!("---\nname: demo-skill\ndescription: {}\n---\n\nBody\n", long);
+        let content = format!(
+            "---\nname: demo-skill\ndescription: {}\n---\n\nBody\n",
+            long
+        );
         assert!(validate_frontmatter(&content, true).is_some());
         assert!(validate_frontmatter(&content, false).is_none());
     }
@@ -2119,7 +2157,9 @@ mod tests {
     #[test]
     fn create_rejects_bad_frontmatter() {
         let (mgr, _d) = temp_manager();
-        let err = mgr.create("demo-skill", "not frontmatter", None).unwrap_err();
+        let err = mgr
+            .create("demo-skill", "not frontmatter", None)
+            .unwrap_err();
         assert_eq!(err["success"], json!(false));
         assert!(!mgr.skills_dir().join("demo-skill").exists());
     }
@@ -2131,7 +2171,9 @@ mod tests {
         let updated = VALID.replace("Step one.", "Step two.");
         let out = mgr.edit("demo-skill", &updated, &no_pins()).unwrap();
         assert!(out["message"].as_str().unwrap().contains("full rewrite"));
-        let on_disk = std::fs::read_to_string(mgr.find_skill("demo-skill").unwrap().join("SKILL.md")).unwrap();
+        let on_disk =
+            std::fs::read_to_string(mgr.find_skill("demo-skill").unwrap().join("SKILL.md"))
+                .unwrap();
         assert!(on_disk.contains("Step two."));
     }
 
@@ -2140,10 +2182,19 @@ mod tests {
         let (mgr, _d) = temp_manager();
         mgr.create("demo-skill", VALID, None).unwrap();
         let out = mgr
-            .patch("demo-skill", "Step one.", "Step one, revised.", None, false, &no_pins())
+            .patch(
+                "demo-skill",
+                "Step one.",
+                "Step one, revised.",
+                None,
+                false,
+                &no_pins(),
+            )
             .unwrap();
         assert!(out["message"].as_str().unwrap().contains("1 replacement"));
-        let on_disk = std::fs::read_to_string(mgr.find_skill("demo-skill").unwrap().join("SKILL.md")).unwrap();
+        let on_disk =
+            std::fs::read_to_string(mgr.find_skill("demo-skill").unwrap().join("SKILL.md"))
+                .unwrap();
         assert!(on_disk.contains("Step one, revised."));
     }
 
@@ -2152,7 +2203,14 @@ mod tests {
         let (mgr, _d) = temp_manager();
         mgr.create("demo-skill", VALID, None).unwrap();
         let err = mgr
-            .patch("demo-skill", "not in the file", "x", None, false, &no_pins())
+            .patch(
+                "demo-skill",
+                "not in the file",
+                "x",
+                None,
+                false,
+                &no_pins(),
+            )
             .unwrap_err();
         assert_eq!(err["success"], json!(false));
         assert!(err["file_preview"].is_string());
@@ -2162,8 +2220,13 @@ mod tests {
     fn patch_empty_old_string_refused() {
         let (mgr, _d) = temp_manager();
         mgr.create("demo-skill", VALID, None).unwrap();
-        let err = mgr.patch("demo-skill", "", "x", None, false, &no_pins()).unwrap_err();
-        assert!(err["error"].as_str().unwrap().contains("old_string is required"));
+        let err = mgr
+            .patch("demo-skill", "", "x", None, false, &no_pins())
+            .unwrap_err();
+        assert!(err["error"]
+            .as_str()
+            .unwrap()
+            .contains("old_string is required"));
     }
 
     #[test]
@@ -2173,11 +2236,16 @@ mod tests {
         let out = mgr
             .write_file("demo-skill", "references/api.md", "# API\n", &no_pins())
             .unwrap();
-        assert!(out["message"].as_str().unwrap().contains("references/api.md"));
+        assert!(out["message"]
+            .as_str()
+            .unwrap()
+            .contains("references/api.md"));
         let dir = mgr.find_skill("demo-skill").unwrap();
         assert!(dir.join("references/api.md").exists());
 
-        let out = mgr.remove_file("demo-skill", "references/api.md", &no_pins()).unwrap();
+        let out = mgr
+            .remove_file("demo-skill", "references/api.md", &no_pins())
+            .unwrap();
         assert!(out["message"].as_str().unwrap().contains("removed"));
         assert!(!dir.join("references/api.md").exists());
         // Empty subdir is cleaned up.
@@ -2198,7 +2266,8 @@ mod tests {
     fn remove_file_missing_lists_available() {
         let (mgr, _d) = temp_manager();
         mgr.create("demo-skill", VALID, None).unwrap();
-        mgr.write_file("demo-skill", "references/one.md", "1", &no_pins()).unwrap();
+        mgr.write_file("demo-skill", "references/one.md", "1", &no_pins())
+            .unwrap();
         let err = mgr
             .remove_file("demo-skill", "references/two.md", &no_pins())
             .unwrap_err();
@@ -2227,10 +2296,14 @@ mod tests {
     fn delete_absorbed_into_must_exist() {
         let (mgr, _d) = temp_manager();
         mgr.create("demo-skill", VALID, None).unwrap();
-        let err = mgr.delete("demo-skill", Some("umbrella"), &no_pins()).unwrap_err();
+        let err = mgr
+            .delete("demo-skill", Some("umbrella"), &no_pins())
+            .unwrap_err();
         assert!(err["error"].as_str().unwrap().contains("does not exist"));
         // Self-reference refused.
-        let err = mgr.delete("demo-skill", Some("demo-skill"), &no_pins()).unwrap_err();
+        let err = mgr
+            .delete("demo-skill", Some("demo-skill"), &no_pins())
+            .unwrap_err();
         assert!(err["error"].as_str().unwrap().contains("cannot equal"));
     }
 
@@ -2244,7 +2317,9 @@ mod tests {
         let err = mgr.delete("demo-skill", None, &pinned).unwrap_err();
         assert!(err["error"].as_str().unwrap().contains("pinned"));
         // Patches stay allowed on pinned skills.
-        assert!(mgr.patch("demo-skill", "Step one.", "Step 1.", None, false, &pinned).is_ok());
+        assert!(mgr
+            .patch("demo-skill", "Step one.", "Step 1.", None, false, &pinned)
+            .is_ok());
     }
 
     #[test]
@@ -2304,7 +2379,9 @@ mod tests {
         // On: the write is staged, not applied.
         mgr.set_stage_writes(true);
         let payload = json!({"action": "delete", "name": "demo-skill"});
-        let staged = mgr.run_write_gate("delete", "demo-skill", "delete: demo-skill", payload).unwrap();
+        let staged = mgr
+            .run_write_gate("delete", "demo-skill", "delete: demo-skill", payload)
+            .unwrap();
         assert_eq!(staged["staged"], json!(true));
         assert!(staged["pending_id"].is_string());
         assert_eq!(mgr.staged_writes().len(), 1);
@@ -2321,7 +2398,10 @@ mod tests {
             .unwrap_err();
         set_background_review(false);
         assert_eq!(err["_read_before_write_required"], json!(true));
-        assert!(err["error"].as_str().unwrap().contains("has not been loaded"));
+        assert!(err["error"]
+            .as_str()
+            .unwrap()
+            .contains("has not been loaded"));
     }
 
     #[test]
@@ -2332,7 +2412,14 @@ mod tests {
         set_background_review(true);
         reset_background_review_read_marks();
         mark_background_review_skill_read(&target);
-        let ok = mgr.patch("demo-skill", "Step one.", "Step 1.", None, false, &no_pins());
+        let ok = mgr.patch(
+            "demo-skill",
+            "Step one.",
+            "Step 1.",
+            None,
+            false,
+            &no_pins(),
+        );
         set_background_review(false);
         assert!(ok.is_ok(), "{:?}", ok.err());
     }
@@ -2361,7 +2448,9 @@ mod tests {
         let out = mgr.apply_batch(&ops, None, &no_pins());
         assert_eq!(out["success"], json!(true));
         assert_eq!(out["operations_applied"], json!(2));
-        let on_disk = std::fs::read_to_string(mgr.find_skill("demo-skill").unwrap().join("SKILL.md")).unwrap();
+        let on_disk =
+            std::fs::read_to_string(mgr.find_skill("demo-skill").unwrap().join("SKILL.md"))
+                .unwrap();
         assert!(on_disk.contains("Step 1."));
     }
 
@@ -2379,7 +2468,9 @@ mod tests {
         assert_eq!(out["failed_index"], json!(1));
         assert!(out["error"].as_str().unwrap().contains("batch aborted"));
         // Rolled back: the first patch's change is gone.
-        let on_disk = std::fs::read_to_string(mgr.find_skill("demo-skill").unwrap().join("SKILL.md")).unwrap();
+        let on_disk =
+            std::fs::read_to_string(mgr.find_skill("demo-skill").unwrap().join("SKILL.md"))
+                .unwrap();
         assert!(on_disk.contains("Step one."));
         assert!(!on_disk.contains("Step 1."));
     }
@@ -2464,8 +2555,18 @@ mod tests {
     fn flat_patch_shape_error_before_any_effect() {
         let (mgr, _d) = temp_manager();
         let out = mgr.skill_manage(
-            Some("patch"), "demo-skill", Some("full rewrite"), None, None, None,
-            Some("old"), None, false, None, None, &no_pins(),
+            Some("patch"),
+            "demo-skill",
+            Some("full rewrite"),
+            None,
+            None,
+            None,
+            Some("old"),
+            None,
+            false,
+            None,
+            None,
+            &no_pins(),
         );
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["success"], json!(false));
@@ -2476,8 +2577,18 @@ mod tests {
     fn flat_unknown_action_refused() {
         let (mgr, _d) = temp_manager();
         let out = mgr.skill_manage(
-            Some("frobnicate"), "demo-skill", None, None, None, None, None, None,
-            false, None, None, &no_pins(),
+            Some("frobnicate"),
+            "demo-skill",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            &no_pins(),
         );
         let v: Value = serde_json::from_str(&out).unwrap();
         assert!(v["error"].as_str().unwrap().contains("Unknown action"));

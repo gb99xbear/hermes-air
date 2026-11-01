@@ -20,13 +20,13 @@ pub type Span = (usize, usize);
 pub const UNICODE_MAP: &[(&str, &str)] = &[
     ("\u{201c}", "\""), // smart double quotes
     ("\u{201d}", "\""),
-    ("\u{2018}", "'"),  // smart single quotes
+    ("\u{2018}", "'"), // smart single quotes
     ("\u{2019}", "'"),
     ("\u{2014}", "--"), // em/en dashes
     ("\u{2013}", "-"),
     ("\u{2026}", "..."), // ellipsis
-    ("\u{00a0}", " "),  // non-breaking space
-    ("\u{2212}", "-"),  // typographic minus (math/scientific docs)
+    ("\u{00a0}", " "),   // non-breaking space
+    ("\u{2212}", "-"),   // typographic minus (math/scientific docs)
     // Space-separator family (Zs)
     ("\u{2000}", " "),
     ("\u{2001}", " "),
@@ -96,13 +96,7 @@ impl<'a> SequenceMatcher<'a> {
         }
     }
 
-    pub fn find_longest_match(
-        &self,
-        alo: usize,
-        ahi: usize,
-        blo: usize,
-        bhi: usize,
-    ) -> MatchBlock {
+    pub fn find_longest_match(&self, alo: usize, ahi: usize, blo: usize, bhi: usize) -> MatchBlock {
         let mut besti = alo;
         let mut bestj = blo;
         let mut bestsize = 0;
@@ -129,10 +123,7 @@ impl<'a> SequenceMatcher<'a> {
             j2len = newj2len;
         }
 
-        while besti > alo
-            && bestj > blo
-            && self.a_chars[besti - 1] == self.b_chars[bestj - 1]
-        {
+        while besti > alo && bestj > blo && self.a_chars[besti - 1] == self.b_chars[bestj - 1] {
             besti -= 1;
             bestj -= 1;
             bestsize += 1;
@@ -214,11 +205,7 @@ impl<'a> SequenceMatcher<'a> {
         if total == 0 {
             return 1.0;
         }
-        let matches: usize = self
-            .get_matching_blocks()
-            .iter()
-            .map(|mb| mb.size)
-            .sum();
+        let matches: usize = self.get_matching_blocks().iter().map(|mb| mb.size).sum();
         (2.0 * matches as f64) / (total as f64)
     }
 
@@ -282,20 +269,12 @@ pub fn calculate_line_positions(
         .iter()
         .map(|l| l.len() + 1)
         .sum();
-    let sum_end: usize = content_lines[..end_line]
-        .iter()
-        .map(|l| l.len() + 1)
-        .sum();
+    let sum_end: usize = content_lines[..end_line].iter().map(|l| l.len() + 1).sum();
     let end_pos = if sum_end > 0 { sum_end - 1 } else { 0 };
     (start_pos, std::cmp::min(content_length, end_pos))
 }
 
-pub fn window_spans<F>(
-    content: &str,
-    content_lines: &[&str],
-    n: usize,
-    mut accept: F,
-) -> Vec<Span>
+pub fn window_spans<F>(content: &str, content_lines: &[&str], n: usize, mut accept: F) -> Vec<Span>
 where
     F: FnMut(usize) -> bool,
 {
@@ -399,8 +378,14 @@ fn map_positions_norm_to_orig(
             None => continue,
         };
         let orig_end_char = norm_end_to_orig(orig_to_norm, orig_start_char, norm_end);
-        let start_byte: usize = orig_chars[..orig_start_char].iter().map(|c| c.len_utf8()).sum();
-        let end_byte: usize = orig_chars[..orig_end_char].iter().map(|c| c.len_utf8()).sum();
+        let start_byte: usize = orig_chars[..orig_start_char]
+            .iter()
+            .map(|c| c.len_utf8())
+            .sum();
+        let end_byte: usize = orig_chars[..orig_end_char]
+            .iter()
+            .map(|c| c.len_utf8())
+            .sum();
         results.push((start_byte, end_byte));
     }
     results
@@ -601,7 +586,11 @@ pub fn strategy_block_anchor(content: &str, pattern: &str) -> Vec<Span> {
         }
     }
 
-    let threshold = if potential_matches.len() == 1 { 0.50 } else { 0.70 };
+    let threshold = if potential_matches.len() == 1 {
+        0.50
+    } else {
+        0.70
+    };
     let pattern_middle = pattern_lines[1..n - 1].join("\n");
 
     let content_lines: Vec<&str> = content.split('\n').collect();
@@ -829,7 +818,11 @@ fn reindent_replacement(file_region: &str, old_string: &str, new_string: &str) -
         } else if leading_whitespace(line).starts_with(old_indent) {
             out_lines.push(format!("{}{}", file_indent, &line[old_indent.len()..]));
         } else {
-            out_lines.push(format!("{}{}", file_indent, line.trim_start_matches(|c| c == ' ' || c == '\t')));
+            out_lines.push(format!(
+                "{}{}",
+                file_indent,
+                line.trim_start_matches(|c| c == ' ' || c == '\t')
+            ));
         }
     }
     out_lines.join("\n")
@@ -859,7 +852,9 @@ fn preserve_unicode_in_replacement(
             OpcodeTag::Equal => {
                 let orig_start_char = file_norm_to_orig.get(&op.i1).copied().unwrap_or(0);
                 let orig_end_char = norm_end_to_orig(&file_orig_to_norm, orig_start_char, op.i2);
-                let s: String = file_region_chars[orig_start_char..orig_end_char].iter().collect();
+                let s: String = file_region_chars[orig_start_char..orig_end_char]
+                    .iter()
+                    .collect();
                 result_parts.push(s);
             }
             OpcodeTag::Delete => {}
@@ -953,7 +948,10 @@ pub fn find_closest_lines(
 
     for &(_, line_idx) in &top {
         let start = line_idx.saturating_sub(context_lines);
-        let end = std::cmp::min(content_lines.len(), line_idx + old_lines.len() + context_lines);
+        let end = std::cmp::min(
+            content_lines.len(),
+            line_idx + old_lines.len() + context_lines,
+        );
         if seen_ranges.iter().any(|&(s, e)| s == start && e == end) {
             continue;
         }
@@ -972,8 +970,14 @@ pub fn find_closest_lines(
     let best_line = content_lines[top[0].1];
     if best_line.trim() == anchor && best_line != old_lines[0] {
         result.push_str("\n\nWhitespace difference detected (→ = tab, · = space):\n");
-        result.push_str(&format!("  file has: {}\n", visualize_whitespace(best_line)));
-        result.push_str(&format!("  you sent: {}\n", visualize_whitespace(old_lines[0])));
+        result.push_str(&format!(
+            "  file has: {}\n",
+            visualize_whitespace(best_line)
+        ));
+        result.push_str(&format!(
+            "  you sent: {}\n",
+            visualize_whitespace(old_lines[0])
+        ));
         result.push_str("Use the exact whitespace shown in 'file has'.");
     }
 
@@ -1082,7 +1086,10 @@ pub fn fuzzy_find_and_replace(
             );
         }
 
-        if replace_all && matches.len() > 1 && (strategy_name == "block_anchor" || strategy_name == "context_aware") {
+        if replace_all
+            && matches.len() > 1
+            && (strategy_name == "block_anchor" || strategy_name == "context_aware")
+        {
             return (
                 content.to_string(),
                 0,
@@ -1099,26 +1106,27 @@ pub fn fuzzy_find_and_replace(
         }
 
         if strategy_name != "exact" {
-            if let Some(drift_err) = detect_escape_drift(content, &matches, old_string, new_string) {
+            if let Some(drift_err) = detect_escape_drift(content, &matches, old_string, new_string)
+            {
                 return (content.to_string(), 0, None, Some(drift_err));
             }
         }
 
         let mut effective_new = maybe_unescape_new_string(new_string, content, &matches);
         if strategy_name == "unicode_normalized" {
-            effective_new = preserve_unicode_in_replacement(
-                content,
-                &matches,
-                old_string,
-                &effective_new,
-            );
+            effective_new =
+                preserve_unicode_in_replacement(content, &matches, old_string, &effective_new);
         }
 
         let new_content = apply_replacements(
             content,
             &matches,
             &effective_new,
-            if strategy_name != "exact" { Some(old_string) } else { None },
+            if strategy_name != "exact" {
+                Some(old_string)
+            } else {
+                None
+            },
         );
 
         return (

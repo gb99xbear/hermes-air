@@ -127,12 +127,9 @@ impl BrowserClient {
     /// List active browser targets
     pub async fn list_targets(&self) -> Result<Vec<CdpTarget>, ToolError> {
         let url = format!("{}/json/list", self.cdp_base_url);
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| ToolError::RequestError(format!("Failed to connect to CDP at {}: {}", url, e)))?;
+        let resp = self.client.get(&url).send().await.map_err(|e| {
+            ToolError::RequestError(format!("Failed to connect to CDP at {}: {}", url, e))
+        })?;
 
         let targets: Vec<CdpTarget> = resp
             .json()
@@ -159,12 +156,10 @@ impl BrowserClient {
     pub async fn new_tab(&self, target_url: &str) -> Result<CdpTarget, ToolError> {
         let encoded_url = urlencoding::encode(target_url);
         let url = format!("{}/json/new?{}", self.cdp_base_url, encoded_url);
-        let resp = self
-            .client
-            .put(&url)
-            .send()
-            .await
-            .map_err(|e| ToolError::RequestError(format!("Failed to create new CDP tab: {}", e)))?;
+        let resp =
+            self.client.put(&url).send().await.map_err(|e| {
+                ToolError::RequestError(format!("Failed to create new CDP tab: {}", e))
+            })?;
 
         let target: CdpTarget = resp
             .json()
@@ -183,7 +178,12 @@ impl BrowserClient {
 
     /// Execute JavaScript expression on the given page target via CDP session
     /// Send an arbitrary CDP method call over WebSocket and wait for result
-    pub async fn send_cdp_command(&self, target: &CdpTarget, method: &str, params: Value) -> Result<Value, ToolError> {
+    pub async fn send_cdp_command(
+        &self,
+        target: &CdpTarget,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, ToolError> {
         use futures::{SinkExt, StreamExt};
         use tokio_tungstenite::connect_async;
         use tungstenite::Message;
@@ -199,13 +199,16 @@ impl BrowserClient {
             }
         };
 
-        let (mut ws_stream, _) = tokio::time::timeout(
-            Duration::from_secs(5),
-            connect_async(&ws_url_str),
-        )
-        .await
-        .map_err(|_| ToolError::RequestError("WebSocket connect timed out".to_string()))?
-        .map_err(|e| ToolError::RequestError(format!("WebSocket connect failed to {}: {}", ws_url_str, e)))?;
+        let (mut ws_stream, _) =
+            tokio::time::timeout(Duration::from_secs(5), connect_async(&ws_url_str))
+                .await
+                .map_err(|_| ToolError::RequestError("WebSocket connect timed out".to_string()))?
+                .map_err(|e| {
+                    ToolError::RequestError(format!(
+                        "WebSocket connect failed to {}: {}",
+                        ws_url_str, e
+                    ))
+                })?;
 
         let req_id = 1;
         let cdp_msg = serde_json::json!({
@@ -221,7 +224,9 @@ impl BrowserClient {
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         while tokio::time::Instant::now() < deadline {
-            if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(2000), ws_stream.next()).await {
+            if let Ok(Some(msg)) =
+                tokio::time::timeout(Duration::from_millis(2000), ws_stream.next()).await
+            {
                 if let Ok(Message::Text(text)) = msg {
                     if let Ok(val) = serde_json::from_str::<Value>(&text) {
                         if val.get("id").and_then(|i| i.as_i64()) == Some(req_id) {
@@ -244,14 +249,21 @@ impl BrowserClient {
         }
 
         let _ = ws_stream.close(None).await;
-        Err(ToolError::ExecutionError(format!("CDP command {} timed out waiting for response", method)))
+        Err(ToolError::ExecutionError(format!(
+            "CDP command {} timed out waiting for response",
+            method
+        )))
     }
 
     pub async fn eval_js(&self, target: &CdpTarget, script: &str) -> Result<Value, ToolError> {
         self.eval_via_websocket(target, script).await
     }
 
-    async fn eval_via_websocket(&self, target: &CdpTarget, script: &str) -> Result<Value, ToolError> {
+    async fn eval_via_websocket(
+        &self,
+        target: &CdpTarget,
+        script: &str,
+    ) -> Result<Value, ToolError> {
         use futures::{SinkExt, StreamExt};
         use tokio_tungstenite::connect_async;
         use tungstenite::Message;
@@ -267,13 +279,16 @@ impl BrowserClient {
             }
         };
 
-        let (mut ws_stream, _) = tokio::time::timeout(
-            Duration::from_secs(5),
-            connect_async(&ws_url_str),
-        )
-        .await
-        .map_err(|_| ToolError::RequestError("WebSocket connect timed out".to_string()))?
-        .map_err(|e| ToolError::RequestError(format!("WebSocket connect failed to {}: {}", ws_url_str, e)))?;
+        let (mut ws_stream, _) =
+            tokio::time::timeout(Duration::from_secs(5), connect_async(&ws_url_str))
+                .await
+                .map_err(|_| ToolError::RequestError("WebSocket connect timed out".to_string()))?
+                .map_err(|e| {
+                    ToolError::RequestError(format!(
+                        "WebSocket connect failed to {}: {}",
+                        ws_url_str, e
+                    ))
+                })?;
 
         let req_id = 1;
         let cdp_msg = serde_json::json!({
@@ -293,7 +308,9 @@ impl BrowserClient {
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while tokio::time::Instant::now() < deadline {
-            if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(1500), ws_stream.next()).await {
+            if let Ok(Some(msg)) =
+                tokio::time::timeout(Duration::from_millis(1500), ws_stream.next()).await
+            {
                 if let Ok(Message::Text(text)) = msg {
                     if let Ok(val) = serde_json::from_str::<Value>(&text) {
                         if val.get("id").and_then(|i| i.as_i64()) == Some(req_id) {
@@ -333,13 +350,22 @@ impl BrowserClient {
         }
 
         let target = self.get_or_create_page_target().await?;
-        let script = format!("window.location.href = {};", serde_json::to_string(target_url).unwrap_or_default());
+        let script = format!(
+            "window.location.href = {};",
+            serde_json::to_string(target_url).unwrap_or_default()
+        );
         let _ = self.eval_js(&target, &script).await;
 
         tokio::time::sleep(Duration::from_millis(600)).await;
 
-        let title_val = self.eval_js(&target, "document.title").await.unwrap_or(Value::Null);
-        let title = title_val.as_str().map(|s| s.to_string()).unwrap_or_default();
+        let title_val = self
+            .eval_js(&target, "document.title")
+            .await
+            .unwrap_or(Value::Null);
+        let title = title_val
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
 
         Ok(NavigateResult {
             success: true,
@@ -367,7 +393,7 @@ impl BrowserClient {
         const tag = el.tagName.toLowerCase();
         const text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ');
         if (!text && tag !== 'input') continue;
-        
+
         let desc = `@e${idx++} [${tag}]`;
         if (el.id) desc += ` #${el.id}`;
         if (el.className && typeof el.className === 'string') {
@@ -400,7 +426,12 @@ impl BrowserClient {
     }
 
     /// Click element by CSS selector or coordinates
-    pub async fn click(&self, selector: Option<&str>, x: Option<f64>, y: Option<f64>) -> Result<ActionResult, ToolError> {
+    pub async fn click(
+        &self,
+        selector: Option<&str>,
+        x: Option<f64>,
+        y: Option<f64>,
+    ) -> Result<ActionResult, ToolError> {
         let target = self.get_or_create_page_target().await?;
 
         if let Some(sel) = selector {
@@ -421,7 +452,10 @@ impl BrowserClient {
 
             let res = self.eval_js(&target, &script).await?;
             if let Some(false) = res.get("found").and_then(|v| v.as_bool()) {
-                let err_msg = res.get("error").and_then(|e| e.as_str()).unwrap_or("Element not found");
+                let err_msg = res
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("Element not found");
                 return Ok(ActionResult {
                     success: false,
                     message: None,
@@ -457,7 +491,9 @@ impl BrowserClient {
                 error: None,
             })
         } else {
-            Err(ToolError::ExecutionError("Either selector or (x, y) coordinates must be provided".to_string()))
+            Err(ToolError::ExecutionError(
+                "Either selector or (x, y) coordinates must be provided".to_string(),
+            ))
         }
     }
 
@@ -490,7 +526,10 @@ impl BrowserClient {
 
         let res = self.eval_js(&target, &script).await?;
         if let Some(false) = res.get("found").and_then(|v| v.as_bool()) {
-            let err_msg = res.get("error").and_then(|e| e.as_str()).unwrap_or("Element not found");
+            let err_msg = res
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("Element not found");
             return Ok(ActionResult {
                 success: false,
                 message: None,
@@ -509,7 +548,7 @@ impl BrowserClient {
     pub async fn exec_script(&self, code: &str) -> Result<ExecResult, ToolError> {
         let target = self.get_or_create_page_target().await?;
         let res = self.eval_js(&target, code).await?;
-        
+
         let output_str = if let Some(s) = res.as_str() {
             s.to_string()
         } else {
@@ -524,7 +563,11 @@ impl BrowserClient {
     }
 
     /// Capture screenshot via CDP Page.captureScreenshot and save to disk
-    pub async fn take_screenshot(&self, format: Option<&str>, quality: Option<u32>) -> Result<ScreenshotResult, ToolError> {
+    pub async fn take_screenshot(
+        &self,
+        format: Option<&str>,
+        quality: Option<u32>,
+    ) -> Result<ScreenshotResult, ToolError> {
         use base64::Engine;
         use std::time::SystemTime;
 
@@ -544,19 +587,25 @@ impl BrowserClient {
             params["quality"] = serde_json::json!(q);
         }
 
-        let res = self.send_cdp_command(&target, "Page.captureScreenshot", params).await?;
+        let res = self
+            .send_cdp_command(&target, "Page.captureScreenshot", params)
+            .await?;
         let b64_data = res.get("data").and_then(|d| d.as_str()).ok_or_else(|| {
             ToolError::ExecutionError("CDP Page.captureScreenshot returned no data".to_string())
         })?;
 
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(b64_data)
-            .map_err(|e| ToolError::ParseError(format!("Failed to decode screenshot base64 data: {}", e)))?;
+            .map_err(|e| {
+                ToolError::ParseError(format!("Failed to decode screenshot base64 data: {}", e))
+            })?;
 
         let screenshots_dir = std::path::PathBuf::from("/tmp/hermes_browser_screenshots");
         tokio::fs::create_dir_all(&screenshots_dir)
             .await
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to create screenshots directory: {}", e)))?;
+            .map_err(|e| {
+                ToolError::ExecutionError(format!("Failed to create screenshots directory: {}", e))
+            })?;
 
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -567,9 +616,9 @@ impl BrowserClient {
         let file_path = screenshots_dir.join(format!("screenshot-{}.{}", timestamp, ext));
         let file_path_str = file_path.to_string_lossy().to_string();
 
-        tokio::fs::write(&file_path, bytes)
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to save screenshot file: {}", e)))?;
+        tokio::fs::write(&file_path, bytes).await.map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to save screenshot file: {}", e))
+        })?;
 
         let media_tag = format!("MEDIA:{}", file_path_str);
 
@@ -581,7 +630,6 @@ impl BrowserClient {
             error: None,
         })
     }
-
 }
 
 // Global convenience functions matching Python Hermes signatures
@@ -596,7 +644,11 @@ pub async fn browser_snapshot() -> Result<SnapshotResult, ToolError> {
     client.snapshot().await
 }
 
-pub async fn browser_click(selector: Option<&str>, x: Option<f64>, y: Option<f64>) -> Result<ActionResult, ToolError> {
+pub async fn browser_click(
+    selector: Option<&str>,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<ActionResult, ToolError> {
     let client = BrowserClient::default();
     client.click(selector, x, y).await
 }
@@ -611,11 +663,13 @@ pub async fn browser_exec(code: &str) -> Result<ExecResult, ToolError> {
     client.exec_script(code).await
 }
 
-pub async fn browser_take_screenshot(format: Option<&str>, quality: Option<u32>) -> Result<ScreenshotResult, ToolError> {
+pub async fn browser_take_screenshot(
+    format: Option<&str>,
+    quality: Option<u32>,
+) -> Result<ScreenshotResult, ToolError> {
     let client = BrowserClient::default();
     client.take_screenshot(format, quality).await
 }
-
 
 #[cfg(test)]
 mod tests {

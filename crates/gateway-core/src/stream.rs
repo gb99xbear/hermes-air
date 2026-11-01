@@ -49,7 +49,12 @@ impl GatewayStreamConsumer {
             if self.message_id.is_none() {
                 if !self.accumulated.trim().is_empty() {
                     match tg_adapter
-                        .send_chunk_with_fallback_and_thread(self.chat_id, self.thread_id, &self.accumulated, reply_to_id)
+                        .send_chunk_with_fallback_and_thread(
+                            self.chat_id,
+                            self.thread_id,
+                            &self.accumulated,
+                            reply_to_id,
+                        )
                         .await
                     {
                         Ok(sent) => {
@@ -100,7 +105,12 @@ impl GatewayStreamConsumer {
             }
         } else {
             let _ = tg_adapter
-                .send_chunk_with_fallback_and_thread(self.chat_id, self.thread_id, &self.accumulated, reply_to_id)
+                .send_chunk_with_fallback_and_thread(
+                    self.chat_id,
+                    self.thread_id,
+                    &self.accumulated,
+                    reply_to_id,
+                )
                 .await;
         }
 

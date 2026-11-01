@@ -1,21 +1,24 @@
 // hermes-platform-whatsapp - WhatsApp Cloud API adapter
-use hermes_platform_adapter::{PlatformAdapter, BaseAdapter, BasePlatformConfig};
-use hermes_protocol::{
-    Platform, PlatformEvent, PlatformError, DeliveryReceipt, DeliveryStatus,
-    IncomingMessage, OutgoingMessage, MessageId, MessageContent,
-};
 use async_trait::async_trait;
+use hermes_platform_adapter::{BaseAdapter, BasePlatformConfig, PlatformAdapter};
+use hermes_protocol::{
+    DeliveryReceipt, DeliveryStatus, IncomingMessage, MessageContent, MessageId, OutgoingMessage,
+    Platform, PlatformError, PlatformEvent,
+};
+use hex;
+use hmac::{Hmac, Mac};
+use reqwest::{
+    header::{AUTHORIZATION, CONTENT_TYPE},
+    Client,
+};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
-use reqwest::{Client, header::{AUTHORIZATION, CONTENT_TYPE}};
-use tracing::{info, warn, error};
-use uuid::Uuid;
 use time::OffsetDateTime;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use hex;
+use tokio::sync::{mpsc, RwLock};
+use tracing::{error, info, warn};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhatsAppConfig {
@@ -401,7 +404,8 @@ pub struct WhatsAppAdapter {
     client: Client,
     session_to_wa: Arc<dashmap::DashMap<Uuid, String>>,
     #[allow(dead_code)]
-    pending_messages: Arc<RwLock<HashMap<MessageId, (OutgoingMessage, mpsc::UnboundedSender<DeliveryReceipt>)>>>,
+    pending_messages:
+        Arc<RwLock<HashMap<MessageId, (OutgoingMessage, mpsc::UnboundedSender<DeliveryReceipt>)>>>,
 }
 
 impl WhatsAppAdapter {
@@ -416,12 +420,18 @@ impl WhatsAppAdapter {
 
     fn api_base_url(&self) -> String {
         let config = self.base.config.as_ref().expect("Not initialized");
-        format!("https://graph.facebook.com/{}/{}", config.api_version, config.phone_number_id)
+        format!(
+            "https://graph.facebook.com/{}/{}",
+            config.api_version, config.phone_number_id
+        )
     }
 
     fn media_url(&self) -> String {
         let config = self.base.config.as_ref().expect("Not initialized");
-        format!("https://graph.facebook.com/{}/{}", config.api_version, config.phone_number_id)
+        format!(
+            "https://graph.facebook.com/{}/{}",
+            config.api_version, config.phone_number_id
+        )
     }
 
     fn auth_header(&self) -> String {
@@ -429,11 +439,16 @@ impl WhatsAppAdapter {
         format!("Bearer {}", config.access_token)
     }
 
-    async fn make_request<T: for<'de> Deserialize<'de>>(&self, endpoint: &str, body: &impl Serialize) -> Result<T, PlatformError> {
+    async fn make_request<T: for<'de> Deserialize<'de>>(
+        &self,
+        endpoint: &str,
+        body: &impl Serialize,
+    ) -> Result<T, PlatformError> {
         let url = format!("{}/{}", self.api_base_url(), endpoint);
         let _config = self.base.config.as_ref().expect("Not initialized");
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header(AUTHORIZATION, self.auth_header())
             .header(CONTENT_TYPE, "application/json")
@@ -443,7 +458,9 @@ impl WhatsAppAdapter {
             .map_err(|e| PlatformError::Network(e.to_string()))?;
 
         let status = response.status();
-        let api_response: WhatsAppApiResponse = response.json().await
+        let api_response: WhatsAppApiResponse = response
+            .json()
+            .await
             .map_err(|e| PlatformError::Internal(e.to_string()))?;
 
         if !status.is_success() {
@@ -472,10 +489,18 @@ impl WhatsAppAdapter {
             }
         }
 
-        Err(PlatformError::Internal("Empty result from WhatsApp API".into()))
+        Err(PlatformError::Internal(
+            "Empty result from WhatsApp API".into(),
+        ))
     }
 
-    async fn upload_media(&self, media_type: &str, file_data: bytes::Bytes, mime_type: &str, filename: Option<&str>) -> Result<String, PlatformError> {
+    async fn upload_media(
+        &self,
+        media_type: &str,
+        file_data: bytes::Bytes,
+        mime_type: &str,
+        filename: Option<&str>,
+    ) -> Result<String, PlatformError> {
         let url = format!("{}/media", self.media_url());
         let _config = self.base.config.as_ref().expect("Not initialized");
 
@@ -498,7 +523,8 @@ impl WhatsAppAdapter {
             .text("type", media_type_owned)
             .part("file", part);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header(AUTHORIZATION, self.auth_header())
             .multipart(form)
@@ -507,7 +533,9 @@ impl WhatsAppAdapter {
             .map_err(|e| PlatformError::Network(e.to_string()))?;
 
         let status = response.status();
-        let upload_response: MediaUploadResponse = response.json().await
+        let upload_response: MediaUploadResponse = response
+            .json()
+            .await
             .map_err(|e| PlatformError::Internal(e.to_string()))?;
 
         if !status.is_success() {
@@ -524,7 +552,8 @@ impl WhatsAppAdapter {
         let url = format!("{}/{}", self.media_url(), media_id);
         let _config = self.base.config.as_ref().expect("Not initialized");
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .header(AUTHORIZATION, self.auth_header())
             .send()
@@ -532,7 +561,9 @@ impl WhatsAppAdapter {
             .map_err(|e| PlatformError::Network(e.to_string()))?;
 
         let status = response.status();
-        let media_response: MediaUrlResponse = response.json().await
+        let media_response: MediaUrlResponse = response
+            .json()
+            .await
             .map_err(|e| PlatformError::Internal(e.to_string()))?;
 
         if !status.is_success() {
@@ -548,7 +579,8 @@ impl WhatsAppAdapter {
     async fn download_media(&self, media_url: &str) -> Result<bytes::Bytes, PlatformError> {
         let _config = self.base.config.as_ref().expect("Not initialized");
 
-        let response = self.client
+        let response = self
+            .client
             .get(media_url)
             .header(AUTHORIZATION, self.auth_header())
             .send()
@@ -563,7 +595,9 @@ impl WhatsAppAdapter {
             });
         }
 
-        let bytes = response.bytes().await
+        let bytes = response
+            .bytes()
+            .await
             .map_err(|e| PlatformError::Internal(e.to_string()))?;
 
         Ok(bytes)
@@ -572,13 +606,13 @@ impl WhatsAppAdapter {
     #[allow(dead_code)]
     fn verify_webhook_signature(&self, payload: &[u8], signature: &str) -> bool {
         let config = self.base.config.as_ref().expect("Not initialized");
-        
+
         let mut mac = Hmac::<Sha256>::new_from_slice(config.app_secret.as_bytes())
             .expect("HMAC can take key of any size");
         mac.update(payload);
         let result = mac.finalize();
         let expected_signature = hex::encode(result.into_bytes());
-        
+
         // WhatsApp sends signature as "sha256=<hex>"
         signature == format!("sha256={}", expected_signature)
     }
@@ -596,13 +630,22 @@ impl WhatsAppAdapter {
         Uuid::from_bytes(uuid_bytes)
     }
 
-    fn convert_incoming_message(&self, msg: &WhatsAppMessage, _metadata: &WhatsAppMetadata) -> Result<IncomingMessage, PlatformError> {
+    fn convert_incoming_message(
+        &self,
+        msg: &WhatsAppMessage,
+        _metadata: &WhatsAppMetadata,
+    ) -> Result<IncomingMessage, PlatformError> {
         let session_id = self.session_id_from_wa_id(&msg.from);
         self.session_to_wa.insert(session_id, msg.from.clone());
         let content = self.convert_message_content(msg)?;
-        
-        let timestamp = msg.timestamp.parse::<i64>()
-            .map(|ts| OffsetDateTime::from_unix_timestamp(ts).unwrap_or_else(|_| OffsetDateTime::now_utc()))
+
+        let timestamp = msg
+            .timestamp
+            .parse::<i64>()
+            .map(|ts| {
+                OffsetDateTime::from_unix_timestamp(ts)
+                    .unwrap_or_else(|_| OffsetDateTime::now_utc())
+            })
             .unwrap_or_else(|_| OffsetDateTime::now_utc());
 
         Ok(IncomingMessage {
@@ -615,11 +658,16 @@ impl WhatsAppAdapter {
         })
     }
 
-    fn convert_message_content(&self, msg: &WhatsAppMessage) -> Result<MessageContent, PlatformError> {
+    fn convert_message_content(
+        &self,
+        msg: &WhatsAppMessage,
+    ) -> Result<MessageContent, PlatformError> {
         match msg.msg_type.as_str() {
             "text" => {
                 if let Some(text) = &msg.text {
-                    return Ok(MessageContent::Text { text: text.body.clone() });
+                    return Ok(MessageContent::Text {
+                        text: text.body.clone(),
+                    });
                 }
             }
             "image" => {
@@ -634,7 +682,10 @@ impl WhatsAppAdapter {
                 if let Some(doc) = &msg.document {
                     return Ok(MessageContent::File {
                         url: doc.id.clone(),
-                        filename: doc.filename.clone().unwrap_or_else(|| "document".to_string()),
+                        filename: doc
+                            .filename
+                            .clone()
+                            .unwrap_or_else(|| "document".to_string()),
                         mime_type: doc.mime_type.clone(),
                     });
                 }
@@ -667,7 +718,9 @@ impl WhatsAppAdapter {
                 if let Some(contacts) = &msg.contacts {
                     if let Some(contact) = contacts.first() {
                         let name = contact.name.formatted_name.clone();
-                        let phone = contact.phones.as_ref()
+                        let phone = contact
+                            .phones
+                            .as_ref()
                             .and_then(|p| p.first())
                             .map(|p| p.phone.clone())
                             .unwrap_or_default();
@@ -687,10 +740,15 @@ impl WhatsAppAdapter {
             _ => {}
         }
 
-        Ok(MessageContent::Unknown { data: serde_json::to_value(msg).unwrap_or_default() })
+        Ok(MessageContent::Unknown {
+            data: serde_json::to_value(msg).unwrap_or_default(),
+        })
     }
 
-    fn convert_outgoing_message(&self, msg: &OutgoingMessage) -> Result<serde_json::Value, PlatformError> {
+    fn convert_outgoing_message(
+        &self,
+        msg: &OutgoingMessage,
+    ) -> Result<serde_json::Value, PlatformError> {
         let _config = self.base.config.as_ref().expect("Not initialized");
         let to = self.wa_id_from_session(msg.session_id)?;
 
@@ -701,8 +759,8 @@ impl WhatsAppAdapter {
                     to,
                     msg_type: "text".to_string(),
                     text: WhatsAppText { body: text.clone() },
-                    context: msg.reply_to.map(|id| WhatsAppContextRef { 
-                        message_id: id.0.to_string() 
+                    context: msg.reply_to.map(|id| WhatsAppContextRef {
+                        message_id: id.0.to_string(),
                     }),
                 };
                 serde_json::to_value(req).map_err(|e| PlatformError::Internal(e.to_string()))
@@ -712,29 +770,39 @@ impl WhatsAppAdapter {
                     messaging_product: "whatsapp".to_string(),
                     to,
                     msg_type: "image".to_string(),
-                    image: Some(WhatsAppMediaRef { id: Some(url.clone()), link: None }),
+                    image: Some(WhatsAppMediaRef {
+                        id: Some(url.clone()),
+                        link: None,
+                    }),
                     document: None,
                     audio: None,
                     video: None,
                     caption: caption.clone(),
-                    context: msg.reply_to.map(|id| WhatsAppContextRef { 
-                        message_id: id.0.to_string() 
+                    context: msg.reply_to.map(|id| WhatsAppContextRef {
+                        message_id: id.0.to_string(),
                     }),
                 };
                 serde_json::to_value(req).map_err(|e| PlatformError::Internal(e.to_string()))
             }
-            MessageContent::File { url, filename, mime_type: _ } => {
+            MessageContent::File {
+                url,
+                filename,
+                mime_type: _,
+            } => {
                 let req = SendMediaRequest {
                     messaging_product: "whatsapp".to_string(),
                     to,
                     msg_type: "document".to_string(),
                     image: None,
-                    document: Some(WhatsAppMediaRef { id: Some(url.clone()), link: None }),
+                    document: Some(WhatsAppMediaRef {
+                        id: Some(url.clone()),
+                        link: None,
+                    }),
                     audio: None,
                     video: None,
                     caption: Some(filename.clone()),
-                    context: msg.reply_to.map(|id| WhatsAppContextRef { 
-                        message_id: id.0.to_string() 
+                    context: msg.reply_to.map(|id| WhatsAppContextRef {
+                        message_id: id.0.to_string(),
                     }),
                 };
                 serde_json::to_value(req).map_err(|e| PlatformError::Internal(e.to_string()))
@@ -746,11 +814,14 @@ impl WhatsAppAdapter {
                     msg_type: "audio".to_string(),
                     image: None,
                     document: None,
-                    audio: Some(WhatsAppMediaRef { id: Some(url.clone()), link: None }),
+                    audio: Some(WhatsAppMediaRef {
+                        id: Some(url.clone()),
+                        link: None,
+                    }),
                     video: None,
                     caption: None,
-                    context: msg.reply_to.map(|id| WhatsAppContextRef { 
-                        message_id: id.0.to_string() 
+                    context: msg.reply_to.map(|id| WhatsAppContextRef {
+                        message_id: id.0.to_string(),
                     }),
                 };
                 serde_json::to_value(req).map_err(|e| PlatformError::Internal(e.to_string()))
@@ -763,15 +834,21 @@ impl WhatsAppAdapter {
                     image: None,
                     document: None,
                     audio: None,
-                    video: Some(WhatsAppVideoRef { id: Some(url.clone()), link: None }),
+                    video: Some(WhatsAppVideoRef {
+                        id: Some(url.clone()),
+                        link: None,
+                    }),
                     caption: None,
-                    context: msg.reply_to.map(|id| WhatsAppContextRef { 
-                        message_id: id.0.to_string() 
+                    context: msg.reply_to.map(|id| WhatsAppContextRef {
+                        message_id: id.0.to_string(),
                     }),
                 };
                 serde_json::to_value(req).map_err(|e| PlatformError::Internal(e.to_string()))
             }
-            MessageContent::Location { latitude, longitude } => {
+            MessageContent::Location {
+                latitude,
+                longitude,
+            } => {
                 let req = SendLocationRequest {
                     messaging_product: "whatsapp".to_string(),
                     to,
@@ -782,8 +859,8 @@ impl WhatsAppAdapter {
                         name: None,
                         address: None,
                     },
-                    context: msg.reply_to.map(|id| WhatsAppContextRef { 
-                        message_id: id.0.to_string() 
+                    context: msg.reply_to.map(|id| WhatsAppContextRef {
+                        message_id: id.0.to_string(),
                     }),
                 };
                 serde_json::to_value(req).map_err(|e| PlatformError::Internal(e.to_string()))
@@ -812,8 +889,8 @@ impl WhatsAppAdapter {
                         org: None,
                         urls: None,
                     }],
-                    context: msg.reply_to.map(|id| WhatsAppContextRef { 
-                        message_id: id.0.to_string() 
+                    context: msg.reply_to.map(|id| WhatsAppContextRef {
+                        message_id: id.0.to_string(),
                     }),
                 };
                 serde_json::to_value(req).map_err(|e| PlatformError::Internal(e.to_string()))
@@ -827,16 +904,21 @@ impl WhatsAppAdapter {
                         to,
                         msg_type: "template".to_string(),
                         template,
-                        context: msg.reply_to.map(|id| WhatsAppContextRef { 
-                            message_id: id.0.to_string() 
+                        context: msg.reply_to.map(|id| WhatsAppContextRef {
+                            message_id: id.0.to_string(),
                         }),
                     };
                     serde_json::to_value(req).map_err(|e| PlatformError::Internal(e.to_string()))
                 } else {
-                    Err(PlatformError::UnsupportedContent("Template data missing".into()))
+                    Err(PlatformError::UnsupportedContent(
+                        "Template data missing".into(),
+                    ))
                 }
             }
-            _ => Err(PlatformError::UnsupportedContent(format!("Content type not supported for WhatsApp: {:?}", msg.content))),
+            _ => Err(PlatformError::UnsupportedContent(format!(
+                "Content type not supported for WhatsApp: {:?}",
+                msg.content
+            ))),
         }
     }
 
@@ -845,20 +927,34 @@ impl WhatsAppAdapter {
             return Ok(wa_id.clone());
         }
         let bytes = session_id.as_bytes();
-        let hash = u64::from_le_bytes(bytes[..8].try_into().map_err(|_| PlatformError::Internal("Invalid session ID".into()))?);
+        let hash = u64::from_le_bytes(
+            bytes[..8]
+                .try_into()
+                .map_err(|_| PlatformError::Internal("Invalid session ID".into()))?,
+        );
         Ok(format!("wa_id_{:x}", hash))
     }
 
     // Public methods for media handling
-    pub async fn upload_media_file(&self, media_type: &str, file_data: bytes::Bytes, mime_type: &str, filename: Option<&str>) -> Result<String, PlatformError> {
-        self.upload_media(media_type, file_data, mime_type, filename).await
+    pub async fn upload_media_file(
+        &self,
+        media_type: &str,
+        file_data: bytes::Bytes,
+        mime_type: &str,
+        filename: Option<&str>,
+    ) -> Result<String, PlatformError> {
+        self.upload_media(media_type, file_data, mime_type, filename)
+            .await
     }
 
     pub async fn get_media_download_url(&self, media_id: &str) -> Result<String, PlatformError> {
         self.get_media_url(media_id).await
     }
 
-    pub async fn download_media_file(&self, media_url: &str) -> Result<bytes::Bytes, PlatformError> {
+    pub async fn download_media_file(
+        &self,
+        media_url: &str,
+    ) -> Result<bytes::Bytes, PlatformError> {
         self.download_media(media_url).await
     }
 }
@@ -881,8 +977,13 @@ impl PlatformAdapter for WhatsAppAdapter {
         }
 
         // Verify credentials by calling the phone number info endpoint
-        let url = format!("{}/phone_numbers", self.api_base_url().replace(&format!("/{}", config.phone_number_id), ""));
-        let response = self.client
+        let url = format!(
+            "{}/phone_numbers",
+            self.api_base_url()
+                .replace(&format!("/{}", config.phone_number_id), "")
+        );
+        let response = self
+            .client
             .get(&url)
             .header(AUTHORIZATION, self.auth_header())
             .send()
@@ -890,25 +991,33 @@ impl PlatformAdapter for WhatsAppAdapter {
             .map_err(|e| PlatformError::Network(e.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(PlatformError::Auth("Invalid access token or phone number ID".into()));
+            return Err(PlatformError::Auth(
+                "Invalid access token or phone number ID".into(),
+            ));
         }
 
         // Set webhook if configured
         if let Some(webhook_url) = &config.webhook_url {
             let webhook_config = config.base.webhook.clone();
-            let app_config_url = format!("{}/webhook", self.api_base_url().replace(&format!("/{}", config.phone_number_id), "").replace("/phone_numbers", ""));
-            
+            let app_config_url = format!(
+                "{}/webhook",
+                self.api_base_url()
+                    .replace(&format!("/{}", config.phone_number_id), "")
+                    .replace("/phone_numbers", "")
+            );
+
             let mut params = serde_json::json!({
                 "url": webhook_url,
                 "verify_token": config.webhook_verify_token,
                 "fields": ["messages", "message_deliveries", "message_reads", "message_template_status_updates"]
             });
-            
+
             if let Some(secret) = webhook_config.and_then(|w| w.secret) {
                 params["app_secret"] = serde_json::Value::String(secret);
             }
 
-            let response = self.client
+            let response = self
+                .client
                 .post(&app_config_url)
                 .header(AUTHORIZATION, self.auth_header())
                 .json(&params)
@@ -923,11 +1032,17 @@ impl PlatformAdapter for WhatsAppAdapter {
             }
         }
 
-        info!("WhatsApp adapter initialized for phone_number_id: {}", config.phone_number_id);
+        info!(
+            "WhatsApp adapter initialized for phone_number_id: {}",
+            config.phone_number_id
+        );
         Ok(())
     }
 
-    async fn start(&mut self, sender: mpsc::UnboundedSender<PlatformEvent>) -> Result<(), PlatformError> {
+    async fn start(
+        &mut self,
+        sender: mpsc::UnboundedSender<PlatformEvent>,
+    ) -> Result<(), PlatformError> {
         self.base.set_sender(sender);
         self.base.started = true;
         info!("WhatsApp adapter started");
@@ -957,16 +1072,19 @@ impl PlatformAdapter for WhatsAppAdapter {
         })
     }
 
-    async fn handle_webhook(&self, payload: serde_json::Value) -> Result<Vec<IncomingMessage>, PlatformError> {
-        let webhook: WhatsAppWebhookPayload = serde_json::from_value(payload)
-            .map_err(|e| PlatformError::Internal(e.to_string()))?;
+    async fn handle_webhook(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<Vec<IncomingMessage>, PlatformError> {
+        let webhook: WhatsAppWebhookPayload =
+            serde_json::from_value(payload).map_err(|e| PlatformError::Internal(e.to_string()))?;
 
         let mut messages = Vec::new();
 
         for entry in webhook.entry {
             for change in entry.changes {
                 let value = change.value;
-                
+
                 // Handle incoming messages
                 if let Some(msgs) = value.messages {
                     for msg in msgs {
@@ -990,9 +1108,11 @@ impl PlatformAdapter for WhatsAppAdapter {
                                 "failed" => DeliveryStatus::Failed,
                                 _ => DeliveryStatus::Pending,
                             };
-                            
+
                             let _ = sender.send(PlatformEvent::Ack {
-                                message_id: MessageId(Uuid::parse_str(&status.id).unwrap_or_else(|_| Uuid::now_v7())),
+                                message_id: MessageId(
+                                    Uuid::parse_str(&status.id).unwrap_or_else(|_| Uuid::now_v7()),
+                                ),
                                 success: delivery_status != DeliveryStatus::Failed,
                             });
                         }
@@ -1006,8 +1126,13 @@ impl PlatformAdapter for WhatsAppAdapter {
 
     async fn health_check(&self) -> Result<(), PlatformError> {
         let config = self.base.config.as_ref().expect("Not initialized");
-        let url = format!("{}/phone_numbers", self.api_base_url().replace(&format!("/{}", config.phone_number_id), ""));
-        let response = self.client
+        let url = format!(
+            "{}/phone_numbers",
+            self.api_base_url()
+                .replace(&format!("/{}", config.phone_number_id), "")
+        );
+        let response = self
+            .client
             .get(&url)
             .header(AUTHORIZATION, self.auth_header())
             .send()
@@ -1052,7 +1177,8 @@ pub async fn verify_webhook_signature(
     signature_header: Option<&str>,
     app_secret: &str,
 ) -> Result<bool, PlatformError> {
-    let signature = signature_header.ok_or_else(|| PlatformError::Internal("Missing signature header".into()))?;
+    let signature = signature_header
+        .ok_or_else(|| PlatformError::Internal("Missing signature header".into()))?;
     let mut mac = Hmac::<Sha256>::new_from_slice(app_secret.as_bytes())
         .expect("HMAC can take key of any size");
     mac.update(payload);
@@ -1072,7 +1198,12 @@ mod tests {
 
         adapter.session_to_wa.insert(session_id, wa_id.clone());
 
-        let resolved = adapter.wa_id_from_session(session_id).expect("Session must resolve");
-        assert_eq!(resolved, wa_id, "WhatsApp session mapping must return the exact stored wa_id");
+        let resolved = adapter
+            .wa_id_from_session(session_id)
+            .expect("Session must resolve");
+        assert_eq!(
+            resolved, wa_id,
+            "WhatsApp session mapping must return the exact stored wa_id"
+        );
     }
 }

@@ -1,7 +1,6 @@
 // hermes-relay - WebSocket transport and message relay
-use hermes_protocol::{Platform, PlatformEvent, PlatformError, IncomingMessage, OutgoingMessage, DeliveryReceipt, MessageId, DeliveryStatus};
-use hermes_platform_adapter::{PlatformAdapter, DynPlatformAdapter, RateLimiter};
 use async_trait::async_trait;
+use axum::extract::ws::Message as AxumWsMessage;
 use axum::{
     extract::{ws::WebSocket, State, WebSocketUpgrade},
     response::Response,
@@ -9,35 +8,60 @@ use axum::{
     Router,
 };
 use futures::{SinkExt, StreamExt};
+use hermes_platform_adapter::{DynPlatformAdapter, PlatformAdapter, RateLimiter};
+use hermes_protocol::{
+    DeliveryReceipt, DeliveryStatus, IncomingMessage, MessageId, OutgoingMessage, Platform,
+    PlatformError, PlatformEvent,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as TungsteniteMessage};
-use axum::extract::ws::Message as AxumWsMessage;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 /// WebSocket message types for relay protocol
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RelayMessage {
-    Connect { session_id: Uuid, platform: Platform, profile: String },
-    Disconnect { session_id: Uuid },
+    Connect {
+        session_id: Uuid,
+        platform: Platform,
+        profile: String,
+    },
+    Disconnect {
+        session_id: Uuid,
+    },
     Incoming(IncomingMessage),
     Outgoing(OutgoingMessage),
-    Ack { message_id: MessageId, status: DeliveryStatus },
+    Ack {
+        message_id: MessageId,
+        status: DeliveryStatus,
+    },
     Ping,
     Pong,
-    Error { code: String, message: String },
+    Error {
+        code: String,
+        message: String,
+    },
 }
 
 /// Relay transport trait
 #[async_trait]
 pub trait RelayTransport: Send + Sync {
-    async fn connect(&mut self, session_id: Uuid, platform: Platform, profile: String) -> Result<(), RelayError>;
+    async fn connect(
+        &mut self,
+        session_id: Uuid,
+        platform: Platform,
+        profile: String,
+    ) -> Result<(), RelayError>;
     async fn disconnect(&mut self, session_id: Uuid) -> Result<(), RelayError>;
-    async fn send(&self, session_id: Uuid, msg: OutgoingMessage) -> Result<DeliveryReceipt, RelayError>;
+    async fn send(
+        &self,
+        session_id: Uuid,
+        msg: OutgoingMessage,
+    ) -> Result<DeliveryReceipt, RelayError>;
     async fn receive(&mut self) -> Result<Option<RelayMessage>, RelayError>;
     async fn health_check(&self) -> Result<(), RelayError>;
 }
@@ -114,16 +138,24 @@ impl WsRelayServer {
             .with_state(self);
 
         let addr = format!("{}:{}", config.host, config.port);
-        let listener = tokio::net::TcpListener::bind(&addr).await
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
             .map_err(|e| RelayError::Connection(e.to_string()))?;
-        
+
         info!("WebSocket relay listening on {}", addr);
-        axum::serve(listener, app).await
+        axum::serve(listener, app)
+            .await
             .map_err(|e| RelayError::Internal(e.to_string()))?;
         Ok(())
     }
 
-    async fn handle_connection(&self, ws: WebSocket, session_id: Uuid, platform: Platform, profile: String) {
+    async fn handle_connection(
+        &self,
+        ws: WebSocket,
+        session_id: Uuid,
+        platform: Platform,
+        profile: String,
+    ) {
         let (mut ws_sender, mut ws_receiver) = ws.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<RelayMessage>();
 
@@ -160,7 +192,7 @@ impl WsRelayServer {
         // Handle incoming messages
         let event_tx = self.event_tx.clone();
         let sessions_clone = self.sessions.clone();
-        
+
         let receiver_task = tokio::spawn(async move {
             while let Some(msg) = ws_receiver.next().await {
                 match msg {
@@ -172,7 +204,9 @@ impl WsRelayServer {
                                 }
                                 RelayMessage::Ping => {
                                     let _ = tx.send(RelayMessage::Pong);
-                                    if let Some(session) = sessions_clone.write().await.get_mut(&session_id) {
+                                    if let Some(session) =
+                                        sessions_clone.write().await.get_mut(&session_id)
+                                    {
                                         session.last_ping = time::OffsetDateTime::now_utc();
                                     }
                                 }
@@ -199,11 +233,17 @@ impl WsRelayServer {
         let _ = receiver_task.await;
     }
 
-    pub async fn send_to_session(&self, session_id: Uuid, msg: OutgoingMessage) -> Result<DeliveryReceipt, RelayError> {
+    pub async fn send_to_session(
+        &self,
+        session_id: Uuid,
+        msg: OutgoingMessage,
+    ) -> Result<DeliveryReceipt, RelayError> {
         let sessions = self.sessions.read().await;
         if let Some(session) = sessions.get(&session_id) {
             let relay_msg = RelayMessage::Outgoing(msg.clone());
-            session.sender.send(relay_msg)
+            session
+                .sender
+                .send(relay_msg)
                 .map_err(|_| RelayError::Closed)?;
             Ok(DeliveryReceipt {
                 message_id: msg.id,
@@ -217,12 +257,17 @@ impl WsRelayServer {
         }
     }
 
-    pub async fn broadcast(&self, msg: OutgoingMessage) -> Vec<Result<DeliveryReceipt, RelayError>> {
+    pub async fn broadcast(
+        &self,
+        msg: OutgoingMessage,
+    ) -> Vec<Result<DeliveryReceipt, RelayError>> {
         let sessions = self.sessions.read().await;
         let mut results = Vec::new();
         for (_key, session) in sessions.iter() {
             let relay_msg = RelayMessage::Outgoing(msg.clone());
-            let result = session.sender.send(relay_msg)
+            let result = session
+                .sender
+                .send(relay_msg)
                 .map(|_| DeliveryReceipt {
                     message_id: msg.id,
                     platform: msg.platform,
@@ -246,17 +291,52 @@ async fn ws_handler(
     State(server): State<Arc<WsRelayServer>>,
     axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    let session_id = params.get("session_id")
+    let session_id = params
+        .get("session_id")
         .and_then(|s| Uuid::parse_str(s).ok())
         .unwrap_or_else(Uuid::now_v7);
-    let platform = params.get("platform")
-        .and_then(|s| match s.to_lowercase().as_str() { "telegram" => Some(hermes_protocol::Platform::Telegram), "discord" => Some(hermes_protocol::Platform::Discord), "slack" => Some(hermes_protocol::Platform::Slack), "whatsapp" => Some(hermes_protocol::Platform::WhatsApp), "signal" => Some(hermes_protocol::Platform::Signal), "matrix" => Some(hermes_protocol::Platform::Matrix), "webhook" => Some(hermes_protocol::Platform::Webhook), "email" => Some(hermes_protocol::Platform::Email), "sms" => Some(hermes_protocol::Platform::Sms), "ntfy" => Some(hermes_protocol::Platform::Ntfy), "simplex" => Some(hermes_protocol::Platform::Simplex), "feishu" => Some(hermes_protocol::Platform::Feishu), "wecom" => Some(hermes_protocol::Platform::WeCom), "dingtalk" => Some(hermes_protocol::Platform::DingTalk), "teams" => Some(hermes_protocol::Platform::Teams), "google_chat" => Some(hermes_protocol::Platform::GoogleChat), "qqbot" => Some(hermes_protocol::Platform::QQBot), "weixin" => Some(hermes_protocol::Platform::Weixin), "a2a" => Some(hermes_protocol::Platform::A2A), "raft" => Some(hermes_protocol::Platform::Raft), "photon" => Some(hermes_protocol::Platform::Photon), "buzz" => Some(hermes_protocol::Platform::Buzz), "irc" => Some(hermes_protocol::Platform::Irc), "mattermost" => Some(hermes_protocol::Platform::Mattermost), "line" => Some(hermes_protocol::Platform::Line), "homeassistant" => Some(hermes_protocol::Platform::HomeAssistant), _ => None })
+    let platform = params
+        .get("platform")
+        .and_then(|s| match s.to_lowercase().as_str() {
+            "telegram" => Some(hermes_protocol::Platform::Telegram),
+            "discord" => Some(hermes_protocol::Platform::Discord),
+            "slack" => Some(hermes_protocol::Platform::Slack),
+            "whatsapp" => Some(hermes_protocol::Platform::WhatsApp),
+            "signal" => Some(hermes_protocol::Platform::Signal),
+            "matrix" => Some(hermes_protocol::Platform::Matrix),
+            "webhook" => Some(hermes_protocol::Platform::Webhook),
+            "email" => Some(hermes_protocol::Platform::Email),
+            "sms" => Some(hermes_protocol::Platform::Sms),
+            "ntfy" => Some(hermes_protocol::Platform::Ntfy),
+            "simplex" => Some(hermes_protocol::Platform::Simplex),
+            "feishu" => Some(hermes_protocol::Platform::Feishu),
+            "wecom" => Some(hermes_protocol::Platform::WeCom),
+            "dingtalk" => Some(hermes_protocol::Platform::DingTalk),
+            "teams" => Some(hermes_protocol::Platform::Teams),
+            "google_chat" => Some(hermes_protocol::Platform::GoogleChat),
+            "qqbot" => Some(hermes_protocol::Platform::QQBot),
+            "weixin" => Some(hermes_protocol::Platform::Weixin),
+            "a2a" => Some(hermes_protocol::Platform::A2A),
+            "raft" => Some(hermes_protocol::Platform::Raft),
+            "photon" => Some(hermes_protocol::Platform::Photon),
+            "buzz" => Some(hermes_protocol::Platform::Buzz),
+            "irc" => Some(hermes_protocol::Platform::Irc),
+            "mattermost" => Some(hermes_protocol::Platform::Mattermost),
+            "line" => Some(hermes_protocol::Platform::Line),
+            "homeassistant" => Some(hermes_protocol::Platform::HomeAssistant),
+            _ => None,
+        })
         .unwrap_or(Platform::Other(0));
-    let profile = params.get("profile").cloned().unwrap_or_else(|| "default".to_string());
+    let profile = params
+        .get("profile")
+        .cloned()
+        .unwrap_or_else(|| "default".to_string());
 
     let server = server.clone();
     ws.on_upgrade(move |socket| async move {
-        server.handle_connection(socket, session_id, platform, profile).await
+        server
+            .handle_connection(socket, session_id, platform, profile)
+            .await
     })
 }
 
@@ -272,16 +352,26 @@ pub struct WsRelayClient {
 
 impl WsRelayClient {
     pub fn new(url: String, session_id: Uuid, platform: Platform, profile: String) -> Self {
-        Self { url, session_id, platform, profile, sender: None, receiver: None }
+        Self {
+            url,
+            session_id,
+            platform,
+            profile,
+            sender: None,
+            receiver: None,
+        }
     }
 
     pub async fn connect(&mut self) -> Result<(), RelayError> {
-        let url = format!("{}?session_id={}&platform={}&profile={}", 
-            self.url, self.session_id, self.platform, self.profile);
-        
-        let (ws_stream, _) = connect_async(&url).await
+        let url = format!(
+            "{}?session_id={}&platform={}&profile={}",
+            self.url, self.session_id, self.platform, self.profile
+        );
+
+        let (ws_stream, _) = connect_async(&url)
+            .await
             .map_err(|e| RelayError::Connection(e.to_string()))?;
-        
+
         let (mut ws_sender, mut ws_receiver) = ws_stream.split();
         let (tx, rx) = mpsc::unbounded_channel();
         let (_out_tx, mut out_rx) = mpsc::unbounded_channel::<RelayMessage>();
@@ -296,7 +386,11 @@ impl WsRelayClient {
             platform: self.platform,
             profile: self.profile.clone(),
         };
-        ws_sender.send(TungsteniteMessage::Text(serde_json::to_string(&connect_msg).unwrap())).await
+        ws_sender
+            .send(TungsteniteMessage::Text(
+                serde_json::to_string(&connect_msg).unwrap(),
+            ))
+            .await
             .map_err(|e| RelayError::Connection(e.to_string()))?;
 
         // Spawn sender task
@@ -305,7 +399,11 @@ impl WsRelayClient {
         tokio::spawn(async move {
             while let Some(msg) = out_rx.recv().await {
                 let json = serde_json::to_string(&msg).unwrap();
-                if ws_sender.send(TungsteniteMessage::Text(json)).await.is_err() {
+                if ws_sender
+                    .send(TungsteniteMessage::Text(json))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -333,7 +431,8 @@ impl WsRelayClient {
 
     pub async fn send(&self, msg: OutgoingMessage) -> Result<(), RelayError> {
         if let Some(sender) = &self.sender {
-            sender.send(RelayMessage::Outgoing(msg))
+            sender
+                .send(RelayMessage::Outgoing(msg))
                 .map_err(|_| RelayError::Closed)?;
             Ok(())
         } else {
@@ -351,7 +450,9 @@ impl WsRelayClient {
 
     pub async fn disconnect(&mut self) -> Result<(), RelayError> {
         if let Some(sender) = &self.sender {
-            let _ = sender.send(RelayMessage::Disconnect { session_id: self.session_id });
+            let _ = sender.send(RelayMessage::Disconnect {
+                session_id: self.session_id,
+            });
         }
         self.sender = None;
         self.receiver = None;
@@ -377,7 +478,11 @@ impl EgressManager {
 
     pub async fn register_adapter<A>(&self, adapter: A)
     where
-        A: PlatformAdapter<Config = serde_json::Value, IncomingEvent = IncomingMessage, OutgoingMessage = OutgoingMessage> + 'static,
+        A: PlatformAdapter<
+                Config = serde_json::Value,
+                IncomingEvent = IncomingMessage,
+                OutgoingMessage = OutgoingMessage,
+            > + 'static,
     {
         let platform = adapter.platform();
         let mut adapters = self.adapters.write().await;
@@ -401,14 +506,17 @@ impl EgressManager {
 
         if let Some(adapter) = adapter {
             let receipt = adapter.send(msg.clone()).await?;
-            
+
             // Record in delivery ledger
             let mut ledger = self.delivery_ledger.write().await;
             ledger.insert(msg.id, receipt.clone());
-            
+
             Ok(receipt)
         } else {
-            Err(PlatformError::Internal(format!("No adapter for platform: {}", msg.platform)))
+            Err(PlatformError::Internal(format!(
+                "No adapter for platform: {}",
+                msg.platform
+            )))
         }
     }
 
