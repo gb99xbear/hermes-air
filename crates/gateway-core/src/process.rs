@@ -217,7 +217,11 @@ pub fn select_log_lines<'a>(
             let off = other.unwrap_or(0);
             let start = off.min(total);
             let stop = (off + limit).min(total);
-            let selected = if start < stop { lines[start..stop].to_vec() } else { Vec::new() };
+            let selected = if start < stop {
+                lines[start..stop].to_vec()
+            } else {
+                Vec::new()
+            };
             let observed = total == 0 || (!selected.is_empty() && stop == total);
             (selected, observed)
         }
@@ -265,8 +269,14 @@ pub struct WatcherRoute {
 }
 
 /// Keys of [`WatcherRoute`], in event-dict order.
-pub const WATCHER_ROUTE_KEYS: [&str; 6] =
-    ["platform", "chat_id", "user_id", "user_name", "thread_id", "message_id"];
+pub const WATCHER_ROUTE_KEYS: [&str; 6] = [
+    "platform",
+    "chat_id",
+    "user_id",
+    "user_name",
+    "thread_id",
+    "message_id",
+];
 
 impl WatcherRoute {
     pub fn get(&self, key: &str) -> &str {
@@ -1207,8 +1217,7 @@ impl ProcessRegistry {
         let s = handle.snapshot();
         let mut result = s.status_head();
         result["pid"] = json!(s.pid);
-        result["uptime_seconds"] =
-            json!((self.clock().now_secs() - s.started_at).floor() as i64);
+        result["uptime_seconds"] = json!((self.clock().now_secs() - s.started_at).floor() as i64);
         result["output_preview"] = json!(s.output_tail(POLL_PREVIEW_CHARS));
         if s.exited {
             if let Some(obj) = s.exit_fields().as_object() {
@@ -1263,12 +1272,15 @@ impl ProcessRegistry {
         // the tokio timer, so measuring the deadline with a clock that does not advance
         // alongside it would never expire (a frozen test clock spun here forever).
         // `Clock` stays for wall-clock display only (uptime, started_at).
-        let deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_secs(effective_timeout);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(effective_timeout);
 
         // Terminal state already reached?
         if let Some(mut r) = self.wait_ready(&handle, timeout_note.as_deref()) {
-            return { r["timeout_note"] = json!(timeout_note); r };
+            return {
+                r["timeout_note"] = json!(timeout_note);
+                r
+            };
         }
 
         loop {
@@ -1470,7 +1482,9 @@ impl ProcessRegistry {
             return self.pty.write(&child, data.as_bytes());
         }
         if s.pid.is_none() {
-            return Err("Process stdin not available (non-local backend or stdin closed)".to_string());
+            return Err(
+                "Process stdin not available (non-local backend or stdin closed)".to_string(),
+            );
         }
         self.host.write_stdin(&child, data.as_bytes())?;
         Ok(())
@@ -1669,7 +1683,11 @@ impl ProcessRegistry {
         );
         let text = serialize_checkpoint(&payload);
         if let Err(e) = self.checkpoint.write(&text) {
-            warn!("Failed to write checkpoint file {}: {}", self.checkpoint.path(), e);
+            warn!(
+                "Failed to write checkpoint file {}: {}",
+                self.checkpoint.path(),
+                e
+            );
         }
     }
 
@@ -1677,8 +1695,7 @@ impl ProcessRegistry {
     /// detached sessions. Returns how many were recovered.
     pub fn recover_from_checkpoint(&self) -> usize {
         use crate::process_checkpoint::{
-            entry_to_session, parse_checkpoint, pending_watcher_for, plan_recovery,
-            RecoverOutcome,
+            entry_to_session, parse_checkpoint, pending_watcher_for, plan_recovery, RecoverOutcome,
         };
         let Some(contents) = self.checkpoint.read() else {
             return 0;
@@ -1697,11 +1714,7 @@ impl ProcessRegistry {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let already = self
-                .inner
-                .lock()
-                .running
-                .contains_key(&sid);
+            let already = self.inner.lock().running.contains_key(&sid);
             let pid = entry.get("pid").and_then(|v| v.as_i64()).map(|v| v as i32);
             let expected_start = entry.get("host_start_time").and_then(|v| v.as_i64());
             // Alive AND still the process we spawned: the kernel recycles PIDs, so a
@@ -1786,7 +1799,6 @@ impl ProcessRegistry {
     pub fn set_output_sink(&self, sink: Option<crate::process_watch::OutputSink>) {
         self.watch.set_output_sink(sink);
     }
-
 }
 
 /// Profile-scoped checkpoint path: `<HERMES_HOME>/processes.json`.
@@ -1865,8 +1877,7 @@ pub fn definition() -> Value {
 }
 
 /// Actions that need a `session_id`.
-pub const SESSION_ACTIONS: [&str; 7] =
-    ["poll", "log", "wait", "kill", "write", "submit", "close"];
+pub const SESSION_ACTIONS: [&str; 7] = ["poll", "log", "wait", "kill", "write", "submit", "close"];
 
 /// Actions whose result is output-bearing and therefore transformed/redacted first.
 pub fn action_is_output_bearing(action: &str) -> bool {
@@ -2022,9 +2033,7 @@ mod tests {
     }
     impl FakeClock {
         fn new(t: f64) -> Arc<Self> {
-            Arc::new(Self {
-                t: Mutex::new(t),
-            })
+            Arc::new(Self { t: Mutex::new(t) })
         }
         fn advance(&self, secs: f64) {
             *self.t.lock() += secs;
@@ -2072,7 +2081,10 @@ mod tests {
             Some(None)
         }
         fn is_alive(&self, child: &ChildRef) -> bool {
-            child.pid.map(|p| self.alive.lock().contains(&p)).unwrap_or(false)
+            child
+                .pid
+                .map(|p| self.alive.lock().contains(&p))
+                .unwrap_or(false)
         }
         fn write_stdin(&self, _child: &ChildRef, data: &[u8]) -> Result<usize, String> {
             self.written.lock().extend_from_slice(data);
@@ -2192,7 +2204,9 @@ mod tests {
     // ── shell noise ──
     #[test]
     fn detects_shell_noise() {
-        assert!(is_shell_noise("bash: cannot set terminal process group (-1)"));
+        assert!(is_shell_noise(
+            "bash: cannot set terminal process group (-1)"
+        ));
         assert!(is_shell_noise("no job control in this shell"));
         assert!(!is_shell_noise("hello"));
     }
@@ -2241,7 +2255,9 @@ mod tests {
     fn clamp_reports_ceiling() {
         let (eff, note) = clamp_wait_timeout(Some(600), 180);
         assert_eq!(eff, 180);
-        assert!(note.unwrap().contains("clamped to configured limit of 180s"));
+        assert!(note
+            .unwrap()
+            .contains("clamped to configured limit of 180s"));
     }
 
     // ── log paging: the falsy-offset trap ──
@@ -2425,7 +2441,10 @@ mod tests {
         reg.register(s);
         let v = reg.poll("proc_det1");
         assert_eq!(v["detached"], true);
-        assert!(v["note"].as_str().unwrap().contains("recovered after restart"));
+        assert!(v["note"]
+            .as_str()
+            .unwrap()
+            .contains("recovered after restart"));
     }
 
     // ── read_log ──
@@ -2472,7 +2491,10 @@ mod tests {
         reg.register(session("proc_w0"));
         let v = reg.wait("proc_w0", Some(0), 180).await;
         assert_eq!(v["status"], "error");
-        assert!(v["error"].as_str().unwrap().contains("timeout must be positive"));
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("timeout must be positive"));
     }
 
     #[tokio::test]
@@ -2522,7 +2544,10 @@ mod tests {
         s.notify_on_complete = true;
         reg.register(s);
         let v = reg.wait("proc_wnotify", Some(1), 180).await;
-        assert!(v["timeout_note"].as_str().unwrap().contains("notify_on_complete is set"));
+        assert!(v["timeout_note"]
+            .as_str()
+            .unwrap()
+            .contains("notify_on_complete is set"));
     }
 
     // ── interrupt source ──
@@ -2557,7 +2582,10 @@ mod tests {
     #[test]
     fn kill_not_found() {
         let reg = registry_with(FakeClock::new(1000.0));
-        assert_eq!(reg.kill_process("proc_x", "process.kill", true)["status"], "not_found");
+        assert_eq!(
+            reg.kill_process("proc_x", "process.kill", true)["status"],
+            "not_found"
+        );
     }
 
     #[test]
@@ -2670,9 +2698,6 @@ mod tests {
         assert_eq!(reg.close_stdin("proc_c2")["status"], "already_exited");
     }
 
-
-
-
     // ── layer 3 wiring (registry <-> checkpoint) ──
     #[derive(Debug, Default)]
     struct FakeProbe {
@@ -2749,9 +2774,11 @@ mod tests {
     #[test]
     fn registry_recover_adopts_a_matching_live_pid() {
         let probe = FakeProbe::with(4242, 777);
-        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
-            r#"[{"session_id":"proc_rec1","pid":4242,"pid_scope":"host","host_start_time":777,"command":"sleep 9","started_at":900.0}]"#,
-        ));
+        let store = Arc::new(
+            crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+                r#"[{"session_id":"proc_rec1","pid":4242,"pid_scope":"host","host_start_time":777,"command":"sleep 9","started_at":900.0}]"#,
+            ),
+        );
         let reg = registry_with_checkpoint(probe, store);
         assert_eq!(reg.recover_from_checkpoint(), 1);
         let h = reg.get("proc_rec1").expect("adopted");
@@ -2768,9 +2795,11 @@ mod tests {
     fn registry_recover_skips_a_recycled_pid() {
         // Alive, but the kernel start time no longer matches.
         let probe = FakeProbe::with(4242, 999_999);
-        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
-            r#"[{"session_id":"proc_rec2","pid":4242,"pid_scope":"host","host_start_time":777}]"#,
-        ));
+        let store = Arc::new(
+            crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+                r#"[{"session_id":"proc_rec2","pid":4242,"pid_scope":"host","host_start_time":777}]"#,
+            ),
+        );
         let reg = registry_with_checkpoint(probe, store);
         assert_eq!(reg.recover_from_checkpoint(), 0);
         assert!(reg.get("proc_rec2").is_none());
@@ -2779,9 +2808,11 @@ mod tests {
     #[test]
     fn registry_recover_skips_a_dead_pid() {
         let probe = Arc::new(FakeProbe::default());
-        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
-            r#"[{"session_id":"proc_rec3","pid":4242,"pid_scope":"host","host_start_time":777}]"#,
-        ));
+        let store = Arc::new(
+            crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+                r#"[{"session_id":"proc_rec3","pid":4242,"pid_scope":"host","host_start_time":777}]"#,
+            ),
+        );
         let reg = registry_with_checkpoint(probe, store);
         assert_eq!(reg.recover_from_checkpoint(), 0);
     }
@@ -2789,9 +2820,11 @@ mod tests {
     #[test]
     fn registry_recover_skips_sandbox_scope() {
         let probe = FakeProbe::with(4242, 777);
-        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
-            r#"[{"session_id":"proc_rec4","pid":4242,"pid_scope":"sandbox","host_start_time":777}]"#,
-        ));
+        let store = Arc::new(
+            crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+                r#"[{"session_id":"proc_rec4","pid":4242,"pid_scope":"sandbox","host_start_time":777}]"#,
+            ),
+        );
         let reg = registry_with_checkpoint(probe, store);
         assert_eq!(reg.recover_from_checkpoint(), 0);
     }
@@ -2799,9 +2832,11 @@ mod tests {
     #[test]
     fn registry_recover_is_idempotent_for_already_tracked_sessions() {
         let probe = FakeProbe::with(4242, 777);
-        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
-            r#"[{"session_id":"proc_rec5","pid":4242,"pid_scope":"host","host_start_time":777}]"#,
-        ));
+        let store = Arc::new(
+            crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+                r#"[{"session_id":"proc_rec5","pid":4242,"pid_scope":"host","host_start_time":777}]"#,
+            ),
+        );
         let reg = registry_with_checkpoint(probe, store);
         assert_eq!(reg.recover_from_checkpoint(), 1);
         // A second pass must not adopt the same session twice.
@@ -2812,10 +2847,12 @@ mod tests {
     #[test]
     fn registry_recover_reenqueues_pending_watchers() {
         let probe = FakeProbe::with(4242, 777);
-        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
-            r#"[{"session_id":"proc_rec6","pid":4242,"pid_scope":"host","host_start_time":777,
+        let store = Arc::new(
+            crate::process_checkpoint::MemoryCheckpointStore::with_contents(
+                r#"[{"session_id":"proc_rec6","pid":4242,"pid_scope":"host","host_start_time":777,
                  "watcher_interval":30,"session_key":"sk","watcher_platform":"telegram"}]"#,
-        ));
+            ),
+        );
         let reg = registry_with_checkpoint(probe, store);
         assert_eq!(reg.recover_from_checkpoint(), 1);
         let watchers = reg.take_pending_watchers();
@@ -2838,9 +2875,9 @@ mod tests {
     #[test]
     fn registry_recover_tolerates_a_malformed_checkpoint() {
         let probe = Arc::new(FakeProbe::default());
-        let store = Arc::new(crate::process_checkpoint::MemoryCheckpointStore::with_contents(
-            "not json at all",
-        ));
+        let store = Arc::new(
+            crate::process_checkpoint::MemoryCheckpointStore::with_contents("not json at all"),
+        );
         let reg = registry_with_checkpoint(probe, store);
         assert_eq!(reg.recover_from_checkpoint(), 0);
     }
@@ -3032,7 +3069,10 @@ mod tests {
         assert_eq!(reg.submit_stdin("proc_nope", "x")["status"], "not_found");
         let h = reg.register(session("proc_subx"));
         h.finish(Some(0), "exited", "");
-        assert_eq!(reg.submit_stdin("proc_subx", "x")["status"], "already_exited");
+        assert_eq!(
+            reg.submit_stdin("proc_subx", "x")["status"],
+            "already_exited"
+        );
     }
 
     #[test]
@@ -3090,8 +3130,14 @@ mod tests {
         a.output_buffer = "y".repeat(500);
         reg.register(a);
         let out = reg.list_sessions(None, None, true);
-        assert_eq!(out[0]["command"].as_str().unwrap().chars().count(), LIST_COMMAND_CHARS);
-        assert_eq!(out[0]["output_preview"].as_str().unwrap().chars().count(), LIST_PREVIEW_CHARS);
+        assert_eq!(
+            out[0]["command"].as_str().unwrap().chars().count(),
+            LIST_COMMAND_CHARS
+        );
+        assert_eq!(
+            out[0]["output_preview"].as_str().unwrap().chars().count(),
+            LIST_PREVIEW_CHARS
+        );
     }
 
     #[test]
@@ -3274,10 +3320,18 @@ mod tests {
         assert!(!SESSION_ACTIONS.contains(&"list"));
         assert!(!SESSION_ACTIONS.contains(&"handoff"));
         for a in ["poll", "log", "wait", "kill"] {
-            assert!(action_is_output_bearing(a), "{} should be output-bearing", a);
+            assert!(
+                action_is_output_bearing(a),
+                "{} should be output-bearing",
+                a
+            );
         }
         for a in ["write", "submit", "close"] {
-            assert!(!action_is_output_bearing(a), "{} should not be output-bearing", a);
+            assert!(
+                !action_is_output_bearing(a),
+                "{} should not be output-bearing",
+                a
+            );
         }
     }
 
@@ -3288,8 +3342,14 @@ mod tests {
         let ctx = ProcessCtx::new(reg);
         let out = handle_process(&json!({"action": "frobnicate"}), &ctx).await;
         let v: Value = serde_json::from_str(&out).unwrap();
-        assert!(v["error"].as_str().unwrap().contains("Unknown process action: frobnicate"));
-        assert!(v["error"].as_str().unwrap().contains("list, poll, log, wait, kill, write, submit, close, handoff"));
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown process action: frobnicate"));
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("list, poll, log, wait, kill, write, submit, close, handoff"));
     }
 
     #[tokio::test]
@@ -3298,7 +3358,10 @@ mod tests {
         let ctx = ProcessCtx::new(reg);
         let out = handle_process(&json!({"action": "poll"}), &ctx).await;
         let v: Value = serde_json::from_str(&out).unwrap();
-        assert!(v["error"].as_str().unwrap().contains("session_id is required for poll"));
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("session_id is required for poll"));
     }
 
     #[tokio::test]
@@ -3339,9 +3402,16 @@ mod tests {
         let reg = registry_with(FakeClock::new(1000.0));
         reg.register(session("proc_ho1"));
         let ctx = ProcessCtx::new(reg);
-        let out = handle_process(&json!({"action": "handoff", "session_id": "proc_ho1"}), &ctx).await;
+        let out = handle_process(
+            &json!({"action": "handoff", "session_id": "proc_ho1"}),
+            &ctx,
+        )
+        .await;
         let v: Value = serde_json::from_str(&out).unwrap();
-        assert!(v["error"].as_str().unwrap().contains("handoff requires `data`"));
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("handoff requires `data`"));
 
         let out2 = handle_process(
             &json!({"action": "handoff", "session_id": "proc_ho1", "data": "build log"}),
@@ -3349,7 +3419,10 @@ mod tests {
         )
         .await;
         let v2: Value = serde_json::from_str(&out2).unwrap();
-        assert!(v2["error"].as_str().unwrap().contains("only available to a running subagent"));
+        assert!(v2["error"]
+            .as_str()
+            .unwrap()
+            .contains("only available to a running subagent"));
     }
 
     #[tokio::test]
@@ -3364,7 +3437,10 @@ mod tests {
         )
         .await;
         let v: Value = serde_json::from_str(&out).unwrap();
-        assert!(v["error"].as_str().unwrap().contains("read its result with poll/log"));
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("read its result with poll/log"));
     }
 
     #[tokio::test]
@@ -3373,7 +3449,10 @@ mod tests {
         let ctx = ProcessCtx::new(reg);
         let out = handle_process(&json!({"action": "handoff"}), &ctx).await;
         let v: Value = serde_json::from_str(&out).unwrap();
-        assert!(v["error"].as_str().unwrap().contains("session_id is required for handoff"));
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("session_id is required for handoff"));
     }
 
     #[tokio::test]
@@ -3433,8 +3512,7 @@ mod tests {
         let ctx = ProcessCtx::new(reg.clone());
         // `log` is output-bearing and its payload carries the "output" key the
         // transformer rewrites.
-        let out =
-            handle_process(&json!({"action": "log", "session_id": "proc_tr1"}), &ctx).await;
+        let out = handle_process(&json!({"action": "log", "session_id": "proc_tr1"}), &ctx).await;
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["output"], "HELLO");
         // `kill` is output-bearing too, but the process here is running, so read the

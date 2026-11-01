@@ -624,7 +624,10 @@ mod tests {
         // previous window dropped keeps the strike standing.
         let evs = check_watch_patterns(&mut s, "ERROR c", 1_020.0, &mut admit);
         assert_eq!(evs.len(), 1, "this window still delivers");
-        assert_eq!(s.watch_consecutive_strikes, 1, "strike stands until a clean window");
+        assert_eq!(
+            s.watch_consecutive_strikes, 1,
+            "strike stands until a clean window"
+        );
         // Now a genuinely clean delivered window (no drops in the window before it).
         let evs2 = check_watch_patterns(&mut s, "ERROR d", 1_040.0, &mut admit);
         assert_eq!(evs2.len(), 1);
@@ -652,7 +655,10 @@ mod tests {
             }
             t += step;
         }
-        assert!(s.watch_disabled, "watching should be disabled at the strike limit");
+        assert!(
+            s.watch_disabled,
+            "watching should be disabled at the strike limit"
+        );
         assert!(s.notify_on_complete, "must promote to notify_on_complete");
         assert_eq!(s.watch_consecutive_strikes, WATCH_STRIKE_LIMIT);
         assert!(saw_disabled, "a watch_disabled summary must be emitted");
@@ -698,7 +704,10 @@ mod tests {
                     evs.iter().any(|e| e["type"] == "watch_disabled"),
                     "the final match must also explain the coming silence"
                 );
-                assert!(evs[0]["type"] == "watch_match", "match first, then the notice");
+                assert!(
+                    evs[0]["type"] == "watch_match",
+                    "match first, then the notice"
+                );
             }
         }
         assert!(s.watch_disabled);
@@ -727,7 +736,10 @@ mod tests {
         let s = session_with(&["E"]);
         let lines: Vec<String> = (0..40).map(|i| format!("line {}", i)).collect();
         let ev = watch_match_event(&s, "E", &lines, 0);
-        assert_eq!(ev["output"].as_str().unwrap().lines().count(), MAX_WATCH_LINES);
+        assert_eq!(
+            ev["output"].as_str().unwrap().lines().count(),
+            MAX_WATCH_LINES
+        );
 
         let long: Vec<String> = vec!["x".repeat(5_000)];
         let ev2 = watch_match_event(&s, "E", &long, 0);
@@ -782,7 +794,7 @@ mod tests {
             b.admit(1_000.0 + (i as f64) * 0.01);
         }
         b.admit(1_000.5); // trips
-        // Two more hits inside the cooldown: dropped, no events.
+                          // Two more hits inside the cooldown: dropped, no events.
         let (ok1, e1) = b.admit(1_001.0);
         let (ok2, e2) = b.admit(1_002.0);
         assert!(!ok1 && !ok2);
@@ -953,7 +965,10 @@ mod tests {
         let h = handle_for(session_with(&[]));
         p.ingest_text(&h, "chunk one");
         p.ingest_text(&h, "chunk two");
-        assert_eq!(&*seen.lock(), &vec!["chunk one".to_string(), "chunk two".to_string()]);
+        assert_eq!(
+            &*seen.lock(),
+            &vec!["chunk one".to_string(), "chunk two".to_string()]
+        );
     }
 
     #[test]

@@ -18,9 +18,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::process::{
-    PidScope, ProcessSession, SessionHandle, WATCHER_ROUTE_KEYS,
-};
+use crate::process::{PidScope, ProcessSession, SessionHandle, WATCHER_ROUTE_KEYS};
 
 /// Session fields persisted verbatim in the checkpoint (plus `session_id`; `command` is
 /// redacted and `owner_task_id` defaulted on write).
@@ -142,7 +140,8 @@ impl CheckpointStore for FileCheckpointStore {
         ));
         {
             let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
-            f.write_all(contents.as_bytes()).map_err(|e| e.to_string())?;
+            f.write_all(contents.as_bytes())
+                .map_err(|e| e.to_string())?;
             f.sync_all().map_err(|e| e.to_string())?;
         }
         std::fs::rename(&tmp, &self.path).map_err(|e| {
@@ -298,7 +297,11 @@ where
     if !extra_entries.is_empty() {
         let tracked: std::collections::HashSet<String> = entries
             .iter()
-            .filter_map(|e| e.get("session_id").and_then(|v| v.as_str()).map(String::from))
+            .filter_map(|e| {
+                e.get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
             .collect();
         for item in extra_entries {
             let id = item
@@ -443,10 +446,7 @@ pub fn entry_to_session(entry: &Value, now: f64) -> ProcessSession {
     };
     s.host_start_time = entry.get("host_start_time").and_then(|v| v.as_i64());
     s.systemd_unit = str_field(entry, "systemd_unit");
-    s.cwd = entry
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .map(String::from);
+    s.cwd = entry.get("cwd").and_then(|v| v.as_str()).map(String::from);
     s.task_id = str_field(entry, "task_id");
     s.owner_task_id = {
         let owner = str_field(entry, "owner_task_id");
@@ -913,10 +913,22 @@ mod tests {
     fn checkpoint_fields_cover_the_python_set() {
         // Every field Python persists must be represented, or recovery silently drops it.
         for required in [
-            "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
-            "started_at", "task_id", "owner_task_id", "session_key", "watcher_interval",
-            "parent_session_id", "notify_on_complete", "completion_output_chars",
-            "watch_patterns", "heartbeat_seconds",
+            "command",
+            "pid",
+            "pid_scope",
+            "host_start_time",
+            "systemd_unit",
+            "cwd",
+            "started_at",
+            "task_id",
+            "owner_task_id",
+            "session_key",
+            "watcher_interval",
+            "parent_session_id",
+            "notify_on_complete",
+            "completion_output_chars",
+            "watch_patterns",
+            "heartbeat_seconds",
         ] {
             assert!(
                 CHECKPOINT_FIELDS.contains(&required),
