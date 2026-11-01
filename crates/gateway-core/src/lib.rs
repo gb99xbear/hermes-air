@@ -14,6 +14,7 @@ pub mod process_watch;
 pub mod prompt;
 pub mod providers;
 pub mod reflection;
+pub mod search_files;
 pub mod session_search;
 pub mod skill_manager;
 pub mod stream;

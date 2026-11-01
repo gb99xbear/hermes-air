@@ -1369,14 +1369,27 @@ impl ToolRegistry {
             }
             cmd.arg(&path_str);
 
-            match cmd.output().await {
-                Ok(output) => {
+            let all_files: Result<Vec<String>, String> = match cmd.output().await {
+                // rg exits 1 for "no matches" - a normal empty result.
+                Ok(output) if output.status.success() || output.status.code() == Some(1) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    let all_files: Vec<String> = stdout
+                    Ok(stdout
                         .lines()
                         .filter(|l| !l.trim().is_empty())
                         .map(|s| s.to_string())
-                        .collect();
+                        .collect())
+                }
+                // rg missing or broken: the in-process engine keeps the tool working.
+                Ok(_) | Err(_) => crate::search_files::search_file_names(
+                    &expanded_path,
+                    pattern,
+                    file_glob,
+                    order == "modified",
+                ),
+            };
+
+            match all_files {
+                Ok(all_files) => {
                     let total = all_files.len();
                     let paged_files: Vec<String> =
                         all_files.into_iter().skip(offset).take(limit).collect();
@@ -1421,7 +1434,7 @@ impl ToolRegistry {
             cmd.arg(&path_str);
 
             match cmd.output().await {
-                Ok(output) => {
+                Ok(output) if output.status.success() || output.status.code() == Some(1) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let lines: Vec<&str> =
                         stdout.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -1505,15 +1518,83 @@ impl ToolRegistry {
                         success: true,
                     }
                 }
-                Err(e) => ToolResult {
-                    tool_call_id: call.id.clone(),
-                    output: serde_json::json!({
-                        "error": format!("Search execution error: {}", e),
-                        "total_count": 0
-                    })
-                    .to_string(),
-                    success: false,
-                },
+                // rg missing or broken: run the in-process engine and format its
+                // matches into the same payload shapes the rg path produces.
+                Ok(_) | Err(_) => {
+                    match crate::search_files::search_contents(&expanded_path, pattern, file_glob) {
+                        Ok(found) => {
+                            if output_mode == "files_only" {
+                                let mut files: Vec<String> = Vec::new();
+                                for m in &found {
+                                    if !files.contains(&m.path) {
+                                        files.push(m.path.clone());
+                                    }
+                                }
+                                let total = files.len();
+                                let paged: Vec<String> =
+                                    files.into_iter().skip(offset).take(limit).collect();
+                                ToolResult {
+                                    tool_call_id: call.id.clone(),
+                                    output: serde_json::json!({
+                                        "total_count": total,
+                                        "files": paged,
+                                        "truncated": total > offset + limit
+                                    })
+                                    .to_string(),
+                                    success: true,
+                                }
+                            } else if output_mode == "count" {
+                                let mut counts: HashMap<String, usize> = HashMap::new();
+                                let mut total = 0usize;
+                                for m in &found {
+                                    *counts.entry(m.path.clone()).or_insert(0) += 1;
+                                    total += 1;
+                                }
+                                ToolResult {
+                                    tool_call_id: call.id.clone(),
+                                    output: serde_json::json!({
+                                        "total_count": total,
+                                        "counts": counts,
+                                        "truncated": false
+                                    })
+                                    .to_string(),
+                                    success: true,
+                                }
+                            } else {
+                                let matches: Vec<SearchMatch> = found
+                                    .into_iter()
+                                    .map(|m| SearchMatch {
+                                        path: m.path,
+                                        line: m.line,
+                                        content: m.content,
+                                    })
+                                    .collect();
+                                let total = matches.len();
+                                let paged: Vec<SearchMatch> =
+                                    matches.into_iter().skip(offset).take(limit).collect();
+                                ToolResult {
+                                    tool_call_id: call.id.clone(),
+                                    output: serde_json::json!({
+                                        "total_count": total,
+                                        "matches": paged,
+                                        "truncated": total > offset + limit
+                                    })
+                                    .to_string(),
+                                    success: true,
+                                }
+                            }
+                        }
+                        Err(e) => ToolResult {
+                            tool_call_id: call.id.clone(),
+                            output: serde_json::json!({
+                                "error": format!("Search execution error: {}", e),
+                                "total_count": 0
+                            })
+                            .to_string(),
+                            success: false,
+                        },
+                    }
+                }
             }
         }
     }
