@@ -1160,6 +1160,42 @@ impl ProcessRegistry {
         })
     }
 
+    /// Move a RUNNING process from one owner to another, under the registry lock.
+    ///
+    /// Ownership *is* `owner_task_id`: completion notices are stamped from it at
+    /// exit time and teardown kills by it, so flipping it here is the whole
+    /// transfer. Returns the updated session, or `None` when the process is
+    /// unknown, already exited, or not owned by `from_owner` - the caller must
+    /// never report a transfer that did not happen.
+    pub fn transfer_ownership(
+        &self,
+        session_id: &str,
+        from_owner: &str,
+        to_owner: &str,
+        to_task_id: &str,
+        to_session_key: &str,
+        note: &str,
+    ) -> Option<Arc<SessionHandle>> {
+        let handle = self.resolve_prefix(session_id)?;
+        // Hold `inner` across the mutation, then take the session lock - the same
+        // inner->session order every other accessor uses, so no new deadlock risk.
+        let _inner = self.inner.lock();
+        {
+            let session = handle.session.lock();
+            if session.exited || session.owner_task_id != from_owner {
+                return None;
+            }
+        }
+        {
+            let mut session = handle.session.lock();
+            session.owner_task_id = to_owner.to_string();
+            session.task_id = to_task_id.to_string();
+            session.session_key = to_session_key.to_string();
+            session.handoff_note = note.to_string();
+        }
+        Some(handle)
+    }
+
     pub fn running_owned_by(&self, owner_task_id: &str) -> Vec<Arc<SessionHandle>> {
         let mut v: Vec<Arc<SessionHandle>> = self
             .inner
@@ -1168,6 +1204,41 @@ impl ProcessRegistry {
             .values()
             .filter(|h| h.session.lock().owner_task_id == owner_task_id)
             .cloned()
+            .collect();
+        v.sort_by_key(|h| h.id());
+        v
+    }
+
+    /// Exited `notify_on_complete` processes of `owner_task_id` whose result nobody
+    /// read (no `wait`/`log`/`poll`).
+    ///
+    /// A child's completion notice is suppressed in the parent, so an unread exit is
+    /// otherwise lost silently: the child is gone, nobody saw the result, and the
+    /// parent never learns the work happened. Naming them on the child's result is
+    /// the only place that fact survives.
+    pub fn unread_completions_owned_by(&self, owner_task_id: &str) -> Vec<Arc<SessionHandle>> {
+        // Snapshot under one lock, then filter without holding it: a session lock is
+        // never taken while the registry lock is held elsewhere, and inverting that
+        // order here would invite a deadlock.
+        let (handles, read_ids) = {
+            let inner = self.inner.lock();
+            let ids: HashSet<String> = inner
+                .completion_consumed
+                .iter()
+                .chain(inner.poll_observed.iter())
+                .cloned()
+                .collect();
+            (inner.finished.values().cloned().collect::<Vec<_>>(), ids)
+        };
+
+        let mut v: Vec<Arc<SessionHandle>> = handles
+            .into_iter()
+            .filter(|h| {
+                let s = h.session.lock();
+                s.owner_task_id == owner_task_id
+                    && s.notify_on_complete
+                    && !read_ids.contains(&s.id)
+            })
             .collect();
         v.sort_by_key(|h| h.id());
         v
@@ -1899,6 +1970,78 @@ pub struct ProcessCtx {
     pub task_id: Option<String>,
     /// Wall-clock ceiling for `wait`, from `TERMINAL_TIMEOUT`.
     pub max_wait_timeout: u64,
+    /// Resolves the live parent of the *calling* subagent, for `handoff`.
+    ///
+    /// `handoff` is subagent-only: a process is moved to the parent so its
+    /// completion is delivered there, because a child's own notices are
+    /// suppressed and its teardown kills what it owns. The spawn tree lives in
+    /// the orchestrator, so this crate cannot look the parent up by itself -
+    /// the delegation layer installs this hook. Absent hook (or `None` for the
+    /// current task) means "not a running subagent", which is exactly the error
+    /// a top-level caller should get.
+    pub parent_lookup: Option<Arc<dyn ParentLookup>>,
+    /// Per-subagent handoff budget, shared across the calls a child makes.
+    pub handoff_book: Arc<HandoffBook>,
+    /// Notified when a handoff succeeds. Unset for a top-level caller.
+    pub handoff_sink: Option<Arc<dyn HandoffSink>>,
+}
+
+/// Live parent of a subagent, as `handoff` needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParentOwner {
+    /// Owner id completions are stamped with (`parent._current_task_id`).
+    pub owner: String,
+    /// Container task id the parent's processes are keyed under.
+    pub task_id: String,
+    /// Parent's gateway session key (reset protection).
+    pub session_key: String,
+}
+
+/// Resolves the parent of a subagent task. Implemented by the delegation layer.
+pub trait ParentLookup: Send + Sync {
+    fn parent_of(&self, task_id: &str) -> Option<ParentOwner>;
+}
+
+/// Notified when a `handoff` succeeds.
+///
+/// The registry moves ownership but does not remember what was moved; the
+/// delegation layer names the handed-off process on the child's result so the
+/// parent can see what it inherited. That record has to reach it from here.
+pub trait HandoffSink: Send + Sync {
+    /// `child_task_id` is the owner the process came from.
+    fn record(&self, child_task_id: &str, session_id: &str, command: &str, note: &str);
+}
+
+/// Per-task handoff counter, mirroring `child._handed_off_processes` in Python.
+#[derive(Default)]
+pub struct HandoffBook {
+    counts: Mutex<HashMap<String, usize>>,
+}
+
+impl HandoffBook {
+    /// Reserve one handoff slot for `task_id`; `None` when the cap is reached.
+    pub fn claim(&self, task_id: &str) -> Option<usize> {
+        let mut counts = self.counts.lock();
+        let entry = counts.entry(task_id.to_string()).or_insert(0);
+        if *entry >= MAX_HANDOFFS_PER_CHILD {
+            return None;
+        }
+        *entry += 1;
+        Some(*entry)
+    }
+
+    /// Hand a slot back when the transfer itself failed, so a rejected handoff
+    /// never eats into the child's budget.
+    pub fn release(&self, task_id: &str) {
+        let mut counts = self.counts.lock();
+        if let Some(entry) = counts.get_mut(task_id) {
+            *entry = entry.saturating_sub(1);
+        }
+    }
+
+    pub fn count(&self, task_id: &str) -> usize {
+        self.counts.lock().get(task_id).copied().unwrap_or_default()
+    }
 }
 
 impl ProcessCtx {
@@ -1911,6 +2054,9 @@ impl ProcessCtx {
             registry,
             task_id: None,
             max_wait_timeout,
+            parent_lookup: None,
+            handoff_book: Arc::new(HandoffBook::default()),
+            handoff_sink: None,
         }
     }
 
@@ -1919,8 +2065,38 @@ impl ProcessCtx {
         self
     }
 
+    /// Context for a delegated child's tool calls.
+    ///
+    /// A child owns the processes it spawns and may hand them to its parent; the
+    /// spawn tree lives in the delegation layer, so it supplies the parent lookup.
+    /// The handoff budget is per child, not per call, and is shared here.
+    pub fn for_child(
+        registry: Arc<ProcessRegistry>,
+        owner_task_id: String,
+        parent_lookup: Arc<dyn ParentLookup>,
+        handoff_book: Arc<HandoffBook>,
+    ) -> Self {
+        let mut ctx = Self::new(registry);
+        ctx.task_id = Some(owner_task_id);
+        ctx.parent_lookup = Some(parent_lookup);
+        ctx.handoff_book = handoff_book;
+        ctx
+    }
+
+    /// Install the sink that records successful handoffs, so the process a child
+    /// gave away can be named on the child's result.
+    pub fn with_handoff_sink(mut self, sink: Arc<dyn HandoffSink>) -> Self {
+        self.handoff_sink = Some(sink);
+        self
+    }
+
     pub fn with_max_wait_timeout(mut self, seconds: u64) -> Self {
         self.max_wait_timeout = seconds;
+        self
+    }
+
+    pub fn with_parent_lookup(mut self, lookup: Arc<dyn ParentLookup>) -> Self {
+        self.parent_lookup = Some(lookup);
         self
     }
 }
@@ -1944,32 +2120,79 @@ pub async fn handle_process(args: &Value, ctx: &ProcessCtx) -> String {
             if session_id.is_empty() {
                 return tool_error("session_id is required for handoff");
             }
-            // Ownership transfer lives in the handoff layer; this layer reports the
-            // process state so the caller can decide.
-            match reg.resolve_prefix(&session_id) {
-                None => tool_error(&format!(
-                    "cannot hand off {}: not a running process you own (already exited? read its result with poll/log and report it instead).",
-                    session_id
-                )),
-                Some(h) if h.is_exited() => tool_error(&format!(
-                    "cannot hand off {}: not a running process you own (already exited? read its result with poll/log and report it instead).",
-                    session_id
-                )),
-                Some(_) => {
-                    if args
-                        .get("data")
-                        .and_then(|d| d.as_str())
-                        .map(|d| d.trim())
-                        .unwrap_or("")
-                        .is_empty()
-                    {
-                        return tool_error(
-                            "handoff requires `data`: one sentence saying what the process is for and what the parent should do with its result.",
-                        );
-                    }
-                    tool_error(
+            let task_id = ctx.task_id.clone().unwrap_or_default();
+
+            // Resolve the live parent first: everything below is meaningless
+            // without one, and this is the check that keeps a top-level caller
+            // from believing it handed something off.
+            let parent = match ctx.parent_lookup.as_ref().and_then(|l| l.parent_of(&task_id)) {
+                Some(p) => p,
+                None => {
+                    return tool_error(
                         "handoff is only available to a running subagent with a live parent; you are not one.",
                     )
+                }
+            };
+            if parent.owner.is_empty() {
+                return tool_error(
+                    "parent has no process owner id yet; retry after the parent's turn has started.",
+                );
+            }
+
+            // Cap per subagent, checked before the transfer so a refused handoff
+            // cannot happen behind the caller's back.
+            let booked = ctx.handoff_book.claim(&task_id);
+            if booked.is_none() {
+                return tool_error(&format!(
+                    "handoff cap reached ({} per subagent); wait on or kill the rest yourself.",
+                    MAX_HANDOFFS_PER_CHILD
+                ));
+            }
+
+            let note = args
+                .get("data")
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if note.is_empty() {
+                ctx.handoff_book.release(&task_id);
+                return tool_error(
+                    "handoff requires `data`: one sentence saying what the process is for and what the parent should do with its result.",
+                );
+            }
+
+            match reg.transfer_ownership(
+                &session_id,
+                &task_id,
+                &parent.owner,
+                &parent.task_id,
+                &parent.session_key,
+                &note,
+            ) {
+                None => {
+                    // Transfer did not happen - give the slot back so the child
+                    // keeps its full budget, then report in the caller's terms.
+                    ctx.handoff_book.release(&task_id);
+                    tool_error(&format!(
+                        "cannot hand off {}: not a running process you own (already exited? read its result with poll/log and report it instead).",
+                        session_id
+                    ))
+                }
+                Some(handle) => {
+                    let session = handle.snapshot();
+                    // Record it where the child's result is assembled: the registry
+                    // moved ownership but does not keep a list of what moved.
+                    if let Some(sink) = ctx.handoff_sink.as_ref() {
+                        sink.record(&task_id, &session.id, &session.command, &session.handoff_note);
+                    }
+                    json!({
+                        "status": "handed_off",
+                        "session_id": session.id,
+                        "command": session.command,
+                        "note": "Your parent now owns this process and will receive its completion; you will not. Mention the handoff in your final answer.",
+                    })
+                    .to_string()
                 }
             }
         }
@@ -3397,13 +3620,99 @@ mod tests {
         assert_eq!(v["output"], "a\nb");
     }
 
+    // ── handoff ──
+    /// A resolvable parent, as the delegation layer would install it.
+    struct FakeParent {
+        owner: String,
+        task_id: String,
+        session_key: String,
+    }
+
+    struct FakeLookup(Option<FakeParent>);
+
+    impl ParentLookup for FakeLookup {
+        fn parent_of(&self, _task_id: &str) -> Option<ParentOwner> {
+            self.0.as_ref().map(|p| ParentOwner {
+                owner: p.owner.clone(),
+                task_id: p.task_id.clone(),
+                session_key: p.session_key.clone(),
+            })
+        }
+    }
+
+    fn parent_ctx(reg: Arc<ProcessRegistry>, owner: &str) -> ProcessCtx {
+        ProcessCtx::new(reg)
+            .with_task_id(Some("sa-child1".to_string()))
+            .with_parent_lookup(Arc::new(FakeLookup(Some(FakeParent {
+                owner: owner.to_string(),
+                task_id: format!("{}-container", owner),
+                session_key: "sk-parent".to_string(),
+            }))))
+    }
+
+    /// A non-subagent caller: no hook installed, so no live parent exists.
+    fn child_without_parent(reg: Arc<ProcessRegistry>) -> ProcessCtx {
+        ProcessCtx::new(reg).with_task_id(Some("sa-child1".to_string()))
+    }
+
     #[tokio::test]
-    async fn handler_handoff_requires_data_then_reports_no_parent() {
+    async fn handoff_without_a_live_parent_is_refused() {
         let reg = registry_with(FakeClock::new(1000.0));
         reg.register(session("proc_ho1"));
-        let ctx = ProcessCtx::new(reg);
+        let ctx = child_without_parent(reg);
         let out = handle_process(
-            &json!({"action": "handoff", "session_id": "proc_ho1"}),
+            &json!({"action": "handoff", "session_id": "proc_ho1", "data": "build log"}),
+            &ctx,
+        )
+        .await;
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("only available to a running subagent"));
+    }
+
+    #[tokio::test]
+    async fn handoff_transfers_ownership_and_reports_the_parent() {
+        let reg = registry_with(FakeClock::new(1000.0));
+        let mut s = session("proc_ho2");
+        s.task_id = "sa-child1".to_string();
+        s.owner_task_id = "sa-child1".to_string();
+        let h = reg.register(s);
+        let ctx = parent_ctx(reg.clone(), "task-parent");
+        let out = handle_process(
+            &json!({"action": "handoff", "session_id": "proc_ho2", "data": "runs the dev server"}),
+            &ctx,
+        )
+        .await;
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["status"], "handed_off");
+        assert_eq!(v["session_id"], "proc_ho2");
+        assert_eq!(v["command"], "echo hi");
+        assert!(v["note"].as_str().unwrap().contains("parent now owns"));
+
+        // The transfer actually happened: owner, container task and session key
+        // all follow the parent, and the note rides the session.
+        let snap = h.snapshot();
+        assert_eq!(snap.owner_task_id, "task-parent");
+        assert_eq!(snap.task_id, "task-parent-container");
+        assert_eq!(snap.session_key, "sk-parent");
+        assert_eq!(snap.handoff_note, "runs the dev server");
+
+        // And the parent now finds it by owner; the child no longer does.
+        assert_eq!(reg.running_owned_by("task-parent").len(), 1);
+        assert_eq!(reg.running_owned_by("sa-child1").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn handoff_requires_data() {
+        let reg = registry_with(FakeClock::new(1000.0));
+        let mut s = session("proc_ho3");
+        s.owner_task_id = "sa-child1".to_string();
+        reg.register(s);
+        let ctx = parent_ctx(reg, "task-parent");
+        let out = handle_process(
+            &json!({"action": "handoff", "session_id": "proc_ho3"}),
             &ctx,
         )
         .await;
@@ -3412,27 +3721,19 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("handoff requires `data`"));
-
-        let out2 = handle_process(
-            &json!({"action": "handoff", "session_id": "proc_ho1", "data": "build log"}),
-            &ctx,
-        )
-        .await;
-        let v2: Value = serde_json::from_str(&out2).unwrap();
-        assert!(v2["error"]
-            .as_str()
-            .unwrap()
-            .contains("only available to a running subagent"));
+        // A refused handoff must not consume the child's budget.
+        assert_eq!(ctx.handoff_book.count("sa-child1"), 0);
     }
 
     #[tokio::test]
-    async fn handler_handoff_exited_process_reports_recovery_path() {
+    async fn handoff_refuses_a_process_the_caller_does_not_own() {
         let reg = registry_with(FakeClock::new(1000.0));
-        let h = reg.register(session("proc_ho2"));
-        h.finish(Some(0), "exited", "");
-        let ctx = ProcessCtx::new(reg);
+        let mut s = session("proc_ho4");
+        s.owner_task_id = "sa-someone-else".to_string();
+        reg.register(s);
+        let ctx = parent_ctx(reg, "task-parent");
         let out = handle_process(
-            &json!({"action": "handoff", "session_id": "proc_ho2", "data": "note"}),
+            &json!({"action": "handoff", "session_id": "proc_ho4", "data": "note"}),
             &ctx,
         )
         .await;
@@ -3441,6 +3742,351 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("read its result with poll/log"));
+        assert_eq!(ctx.handoff_book.count("sa-child1"), 0);
+    }
+
+    #[tokio::test]
+    async fn handoff_exited_process_reports_recovery_path() {
+        let reg = registry_with(FakeClock::new(1000.0));
+        let mut s = session("proc_ho5");
+        s.owner_task_id = "sa-child1".to_string();
+        let h = reg.register(s);
+        h.finish(Some(0), "exited", "");
+        let ctx = parent_ctx(reg, "task-parent");
+        let out = handle_process(
+            &json!({"action": "handoff", "session_id": "proc_ho5", "data": "note"}),
+            &ctx,
+        )
+        .await;
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("read its result with poll/log"));
+    }
+
+    #[tokio::test]
+    async fn handoff_cap_blocks_the_fourth_transfer() {
+        let reg = registry_with(FakeClock::new(1000.0));
+        let ctx = parent_ctx(reg.clone(), "task-parent");
+        for i in 0..MAX_HANDOFFS_PER_CHILD {
+            let mut s = session(&format!("proc_cap{}", i));
+            s.owner_task_id = "sa-child1".to_string();
+            reg.register(s);
+            let out = handle_process(
+                &json!({"action": "handoff", "session_id": format!("proc_cap{}", i), "data": "note"}),
+                &ctx,
+            )
+            .await;
+            let v: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(v["status"], "handed_off", "handoff {} should succeed", i);
+        }
+
+        let mut extra = session("proc_cap_extra");
+        extra.owner_task_id = "sa-child1".to_string();
+        reg.register(extra);
+        let out = handle_process(
+            &json!({"action": "handoff", "session_id": "proc_cap_extra", "data": "note"}),
+            &ctx,
+        )
+        .await;
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("handoff cap reached ({}", MAX_HANDOFFS_PER_CHILD)));
+    }
+
+    #[test]
+    fn transfer_ownership_refuses_a_recycled_non_owner() {
+        let reg = registry_with(FakeClock::new(1000.0));
+        let mut s = session("proc_own1");
+        s.owner_task_id = "sa-child1".to_string();
+        reg.register(s);
+
+        // Wrong owner: no transfer, and nothing reported as moved.
+        assert!(reg
+            .transfer_ownership("proc_own1", "sa-other", "t", "t-c", "sk", "n")
+            .is_none());
+        assert_eq!(
+            reg.get("proc_own1").unwrap().snapshot().owner_task_id,
+            "sa-child1"
+        );
+
+        // Unknown session: same answer, never a silent success.
+        assert!(reg
+            .transfer_ownership("proc_nope", "sa-child1", "t", "t-c", "sk", "n")
+            .is_none());
+    }
+
+    #[test]
+    fn handoff_book_caps_and_releases() {
+        let book = HandoffBook::default();
+        for i in 1..=MAX_HANDOFFS_PER_CHILD {
+            assert_eq!(book.claim("sa-x"), Some(i));
+        }
+        assert_eq!(book.claim("sa-x"), None);
+        assert_eq!(book.count("sa-x"), MAX_HANDOFFS_PER_CHILD);
+
+        // Releasing one slot re-opens exactly one claim.
+        book.release("sa-x");
+        assert_eq!(book.count("sa-x"), MAX_HANDOFFS_PER_CHILD - 1);
+        assert_eq!(book.claim("sa-x"), Some(MAX_HANDOFFS_PER_CHILD));
+
+        // Budgets are per task, not global.
+        assert_eq!(book.claim("sa-y"), Some(1));
+    }
+
+    #[test]
+    fn unread_completions_names_exited_notify_processes_nobody_read() {
+        let reg = registry_with(FakeClock::new(1000.0));
+
+        // Exited with notify_on_complete and never read: the case this exists for.
+        let mut unread = session("proc_unread");
+        unread.owner_task_id = "sa-child1".to_string();
+        unread.notify_on_complete = true;
+        let h_unread = reg.register(unread);
+        h_unread.finish(Some(0), "exited", "");
+        reg.move_to_finished(&h_unread);
+
+        // Observed via poll(): the caller saw the status, so it is not lost.
+        let mut seen = session("proc_seen");
+        seen.owner_task_id = "sa-child1".to_string();
+        seen.notify_on_complete = true;
+        let h_seen = reg.register(seen);
+        h_seen.finish(Some(0), "exited", "");
+        reg.move_to_finished(&h_seen);
+        reg.mark_poll_observed("proc_seen");
+
+        // Consumed via wait()/log(): the result was actually read.
+        let mut consumed = session("proc_consumed");
+        consumed.owner_task_id = "sa-child1".to_string();
+        consumed.notify_on_complete = true;
+        let h_consumed = reg.register(consumed);
+        h_consumed.finish(Some(0), "exited", "");
+        reg.move_to_finished(&h_consumed);
+        reg.mark_completion_consumed("proc_consumed");
+
+        // Still running: not an unread completion, it is a possible orphan.
+        let mut live = session("proc_live");
+        live.owner_task_id = "sa-child1".to_string();
+        live.notify_on_complete = true;
+        reg.register(live);
+
+        // No notify_on_complete: nobody was ever going to be told.
+        let mut quiet = session("proc_quiet");
+        quiet.owner_task_id = "sa-child1".to_string();
+        let h_quiet = reg.register(quiet);
+        h_quiet.finish(Some(0), "exited", "");
+        reg.move_to_finished(&h_quiet);
+
+        // Another child's unread exit is not this child's business.
+        let mut other = session("proc_other");
+        other.owner_task_id = "sa-child2".to_string();
+        other.notify_on_complete = true;
+        let h_other = reg.register(other);
+        h_other.finish(Some(0), "exited", "");
+        reg.move_to_finished(&h_other);
+
+        let ids: Vec<String> = reg
+            .unread_completions_owned_by("sa-child1")
+            .into_iter()
+            .map(|h| h.id())
+            .collect();
+        assert_eq!(ids, vec!["proc_unread".to_string()]);
+    }
+
+    #[test]
+    fn running_and_finished_ownership_are_separated_by_owner() {
+        let reg = registry_with(FakeClock::new(1000.0));
+
+        let mut a = session("proc_a");
+        a.owner_task_id = "sa-child1".to_string();
+        a.notify_on_complete = true;
+        let h_a = reg.register(a);
+
+        let mut b = session("proc_b");
+        b.owner_task_id = "sa-child2".to_string();
+        reg.register(b);
+
+        // Both running: each child sees only its own.
+        assert_eq!(reg.running_owned_by("sa-child1").len(), 1);
+        assert_eq!(reg.running_owned_by("sa-child2").len(), 1);
+        assert!(reg.running_owned_by("sa-child3").is_empty());
+
+        // Once it exits, child1's process moves from running to unread.
+        h_a.finish(Some(0), "exited", "");
+        reg.move_to_finished(&h_a);
+        assert!(reg.running_owned_by("sa-child1").is_empty());
+        assert_eq!(reg.unread_completions_owned_by("sa-child1").len(), 1);
+        assert!(reg.unread_completions_owned_by("sa-child2").is_empty());
+    }
+
+    #[test]
+    fn for_child_installs_owner_parent_lookup_and_budget() {
+        struct Parent;
+        impl ParentLookup for Parent {
+            fn parent_of(&self, _task_id: &str) -> Option<ParentOwner> {
+                Some(ParentOwner {
+                    owner: "parent-owner".to_string(),
+                    task_id: "parent-task".to_string(),
+                    session_key: "parent-session".to_string(),
+                })
+            }
+        }
+
+        let book = Arc::new(HandoffBook::default());
+        let ctx = ProcessCtx::for_child(
+            registry_with(FakeClock::new(1000.0)),
+            "sa-child1".to_string(),
+            Arc::new(Parent),
+            book.clone(),
+        );
+
+        // The child is the owner, so ownership checks use its own id.
+        assert_eq!(ctx.task_id.as_deref(), Some("sa-child1"));
+
+        // The parent is reachable, which is what makes handoff possible at all.
+        let parent = ctx
+            .parent_lookup
+            .as_ref()
+            .and_then(|l| l.parent_of("sa-child1"))
+            .unwrap();
+        assert_eq!(parent.owner, "parent-owner");
+        assert_eq!(parent.task_id, "parent-task");
+
+        // The budget is the shared one, so it survives across the child's calls.
+        assert!(Arc::ptr_eq(&ctx.handoff_book, &book));
+        assert_eq!(book.claim("sa-child1"), Some(1));
+    }
+
+    #[test]
+    fn top_level_ctx_is_not_a_subagent() {
+        // No task id and no parent lookup: exactly what a top-level caller has,
+        // and what makes `handoff` refuse instead of pretending.
+        let ctx = ProcessCtx::new(registry_with(FakeClock::new(1000.0)));
+        assert!(ctx.task_id.is_none());
+        assert!(ctx.parent_lookup.is_none());
+        assert!(ctx.handoff_sink.is_none());
+    }
+
+    #[tokio::test]
+    async fn handoff_reaches_the_sink_that_names_it() {
+        #[derive(Default)]
+        struct Recorder {
+            seen: std::sync::Mutex<Vec<(String, String, String, String)>>,
+        }
+        impl HandoffSink for Recorder {
+            fn record(&self, child: &str, session_id: &str, command: &str, note: &str) {
+                self.seen.lock().unwrap().push((
+                    child.to_string(),
+                    session_id.to_string(),
+                    command.to_string(),
+                    note.to_string(),
+                ));
+            }
+        }
+
+        struct Parents;
+        impl ParentLookup for Parents {
+            fn parent_of(&self, _task_id: &str) -> Option<ParentOwner> {
+                Some(ParentOwner {
+                    owner: "parent-owner".to_string(),
+                    task_id: "parent-task".to_string(),
+                    session_key: "parent-session".to_string(),
+                })
+            }
+        }
+
+        let reg = registry_with(FakeClock::new(1000.0));
+        let mut s = session("proc_sink");
+        s.owner_task_id = "sa-child1".to_string();
+        reg.register(s);
+
+        let recorder = Arc::new(Recorder::default());
+        let ctx = ProcessCtx::for_child(
+            reg,
+            "sa-child1".to_string(),
+            Arc::new(Parents),
+            Arc::new(HandoffBook::default()),
+        )
+        .with_handoff_sink(recorder.clone());
+
+        let out = handle_process(
+            &json!({
+                "action": "handoff",
+                "session_id": "proc_sink",
+                "data": "watch the build"
+            }),
+            &ctx,
+        )
+        .await;
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["status"], "handed_off");
+
+        // The registry moved ownership; the sink is what lets the child's result
+        // name what it gave away.
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "sa-child1");
+        assert_eq!(seen[0].1, "proc_sink");
+        assert_eq!(seen[0].3, "watch the build");
+    }
+
+    #[tokio::test]
+    async fn a_refused_handoff_records_nothing() {
+        #[derive(Default)]
+        struct Recorder {
+            count: std::sync::atomic::AtomicUsize,
+        }
+        impl HandoffSink for Recorder {
+            fn record(&self, _c: &str, _s: &str, _cmd: &str, _n: &str) {
+                self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        struct Parents;
+        impl ParentLookup for Parents {
+            fn parent_of(&self, _task_id: &str) -> Option<ParentOwner> {
+                Some(ParentOwner {
+                    owner: "parent-owner".to_string(),
+                    task_id: "parent-task".to_string(),
+                    session_key: "parent-session".to_string(),
+                })
+            }
+        }
+
+        let reg = registry_with(FakeClock::new(1000.0));
+        let mut s = session("proc_not_mine");
+        s.owner_task_id = "sa-someone-else".to_string();
+        reg.register(s);
+
+        let recorder = Arc::new(Recorder::default());
+        let ctx = ProcessCtx::for_child(
+            reg,
+            "sa-child1".to_string(),
+            Arc::new(Parents),
+            Arc::new(HandoffBook::default()),
+        )
+        .with_handoff_sink(recorder.clone());
+
+        let out = handle_process(
+            &json!({
+                "action": "handoff",
+                "session_id": "proc_not_mine",
+                "data": "watch the build"
+            }),
+            &ctx,
+        )
+        .await;
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("not a running process you own"));
+
+        // A transfer that did not happen must never be reported as one.
+        assert_eq!(recorder.count.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

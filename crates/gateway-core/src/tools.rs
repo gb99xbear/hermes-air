@@ -783,6 +783,20 @@ impl ToolRegistry {
     }
 
     pub async fn execute_core(&self, call: &ToolCall) -> ToolResult {
+        self.execute_core_with(call, None).await
+    }
+
+    /// Core dispatch under an optional process context.
+    ///
+    /// A delegated child threads its own [`crate::process::ProcessCtx`] through
+    /// here so its `process_manage` calls run under the child's ownership - the
+    /// only way `handoff` can know who "the parent" is. Every other tool ignores
+    /// the context, so a top-level caller passing `None` loses nothing.
+    pub async fn execute_core_with(
+        &self,
+        call: &ToolCall,
+        ctx: Option<&crate::process::ProcessCtx>,
+    ) -> ToolResult {
         match call.name.as_str() {
             "terminal" => self.execute_terminal(call).await,
             "read_file" => self.execute_read_file(call).await,
@@ -807,7 +821,7 @@ impl ToolRegistry {
             "skill_manage" => self.execute_skill_manage(call).await,
             "clarify" => self.execute_clarify(call).await,
             "x_search" => self.execute_x_search(call).await,
-            "process_manage" => self.execute_process_manage(call).await,
+            "process_manage" => self.execute_process_manage_with(call, ctx).await,
             other => ToolResult {
                 tool_call_id: call.id.clone(),
                 output: format!("Unknown core tool: {}", other),
@@ -2011,6 +2025,20 @@ impl ToolRegistry {
     /// `process_manage` — poll/wait/log/kill/write/submit/close/list/handoff over the
     /// background-process registry.
     pub async fn execute_process_manage(&self, call: &ToolCall) -> ToolResult {
+        self.execute_process_manage_with(call, None).await
+    }
+
+    /// `process_manage` under an explicit context.
+    ///
+    /// A delegated child must run under ITS OWN context: its own owner id, its
+    /// parent lookup and its handoff budget. A top-level caller passes `None` and
+    /// gets the default context, which is deliberately not a subagent, so
+    /// `handoff` refuses instead of believing a claim it cannot verify.
+    pub async fn execute_process_manage_with(
+        &self,
+        call: &ToolCall,
+        ctx: Option<&crate::process::ProcessCtx>,
+    ) -> ToolResult {
         let Some(registry) = self.process_registry.clone() else {
             return ToolResult {
                 tool_call_id: call.id.clone(),
@@ -2020,8 +2048,15 @@ impl ToolRegistry {
                 success: false,
             };
         };
-        let ctx = crate::process::ProcessCtx::new(registry);
-        let output = crate::process::handle_process(&call.arguments, &ctx).await;
+        if let Some(ctx) = ctx {
+            return Self::run_process_manage(call, ctx).await;
+        }
+        let default_ctx = crate::process::ProcessCtx::new(registry);
+        Self::run_process_manage(call, &default_ctx).await
+    }
+
+    async fn run_process_manage(call: &ToolCall, ctx: &crate::process::ProcessCtx) -> ToolResult {
+        let output = crate::process::handle_process(&call.arguments, ctx).await;
         let failed = serde_json::from_str::<serde_json::Value>(&output)
             .ok()
             .map(|v| v.get("error").is_some() && v.get("status").is_none())
