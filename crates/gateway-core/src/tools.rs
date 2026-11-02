@@ -24,6 +24,12 @@ pub struct ToolResult {
     pub success: bool,
 }
 
+/// Foreground wait when `timeout` is not given, matching Python's default.
+const DEFAULT_FOREGROUND_TIMEOUT: u64 = 180;
+/// Above this a foreground request is handed to the background supervisor rather
+/// than silently capped.
+const FOREGROUND_MAX_TIMEOUT: u64 = 600;
+
 /// A child's completion notice never reaches its parent, so a background process
 /// it forgets is killed at teardown and nobody hears about it. Say what to do
 /// with the process at spawn time, while the child can still act on it.
@@ -224,21 +230,34 @@ impl ToolRegistry {
                             },
                             "timeout": {
                                 "type": "integer",
-                                "description": "Max seconds to wait (foreground). Returns INSTANTLY when the command finishes.",
+                                "description": "Max seconds to wait. Returns INSTANTLY when the command finishes, so set it generously. A foreground timeout above 600s hands the command to the background supervisor instead of capping it.",
                                 "minimum": 1
                             },
                             "workdir": {
                                 "type": "string",
-                                "description": "Working directory for this command (absolute). Defaults to the session working directory."
+                                "description": "Working directory for this command (absolute path). Defaults to the session working directory."
                             },
                             "background": {
                                 "type": "boolean",
                                 "description": "Run independently after this call returns and get a session_id. Only for work that genuinely outlives the call (servers, long builds).",
                                 "default": false
                             },
-                            "notify": {
+                            "pty": {
                                 "type": "boolean",
-                                "description": "With background=true, notify on exit. Use for bounded tasks (tests, builds, deploys); omit only for daemons that never exit."
+                                "description": "With background=true: run the child under a pseudo-terminal, for interactive CLI tools.",
+                                "default": false
+                            },
+                            "notify": {
+                                "description": "With background=true: notify=true fires one notification when the process exits (right for most bounded tasks); notify=['pattern', ...] instead fires when a line matches a pattern, for readiness signals on processes that never exit.",
+                                "anyOf": [
+                                    { "type": "boolean" },
+                                    { "type": "array", "items": { "type": "string" } }
+                                ]
+                            },
+                            "heartbeat": {
+                                "type": "integer",
+                                "description": "With background=true: also emit a progress notice every N seconds (minimum 30) for a long-running process.",
+                                "minimum": 1
                             }
                         },
                         "required": ["command"]
@@ -937,14 +956,33 @@ impl ToolRegistry {
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        if background {
+
+        // A `timeout` above the foreground cap is the signal to hand the work to the
+        // background supervisor, not to silently truncate it at the cap.
+        let requested_timeout = call.arguments.get("timeout").and_then(|v| v.as_u64());
+        let over_cap = requested_timeout
+            .map(|t| t > FOREGROUND_MAX_TIMEOUT)
+            .unwrap_or(false);
+        let force_notify = over_cap && !background;
+
+        if background || over_cap {
             return self
-                .execute_background_terminal(call, command_str, ctx)
+                .execute_background_terminal(call, command_str, ctx, force_notify)
                 .await;
         }
 
-        let timeout_duration = Duration::from_secs(60);
-        let command_fut = Command::new("sh").arg("-c").arg(command_str).output();
+        let workdir = call.arguments.get("workdir").and_then(|v| v.as_str());
+        let foreground_timeout = requested_timeout
+            .unwrap_or(DEFAULT_FOREGROUND_TIMEOUT)
+            .min(FOREGROUND_MAX_TIMEOUT);
+
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(command_str);
+        if let Some(dir) = workdir {
+            command.current_dir(dir);
+        }
+        let command_fut = command.output();
+        let timeout_duration = Duration::from_secs(foreground_timeout);
 
         match tokio::time::timeout(timeout_duration, command_fut).await {
             Ok(Ok(output)) => {
@@ -1001,6 +1039,7 @@ impl ToolRegistry {
         call: &ToolCall,
         command: &str,
         ctx: Option<&crate::process::ProcessCtx>,
+        force_notify: bool,
     ) -> ToolResult {
         let Some(ctx) = ctx else {
             return ToolResult {
@@ -1013,12 +1052,24 @@ impl ToolRegistry {
             };
         };
 
-        let notify = call
+        // `notify` accepts `true` or a list of watch patterns, exactly as in Python.
+        let notify_arg = call
             .arguments
             .get("notify")
-            .or_else(|| call.arguments.get("notify_on_complete"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            .or_else(|| call.arguments.get("notify_on_complete"));
+        let notify = force_notify
+            || notify_arg
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| notify_arg.and_then(|v| v.as_array()).is_some());
+        let watch_patterns: Vec<String> = notify_arg
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let heartbeat = call.arguments.get("heartbeat").and_then(|v| v.as_u64());
         let workdir = call
             .arguments
             .get("workdir")
@@ -1034,8 +1085,19 @@ impl ToolRegistry {
             .spawn_session(command, workdir, Vec::new(), owner)
         {
             Ok(handle) => {
-                if notify {
-                    handle.session.lock().notify_on_complete = true;
+                {
+                    let mut s = handle.session.lock();
+                    if notify {
+                        s.notify_on_complete = true;
+                    }
+                    if !watch_patterns.is_empty() {
+                        s.watch_patterns = watch_patterns;
+                    }
+                }
+                // Arm the heartbeat through the pipeline, never by writing the field
+                // directly, so the polling tick can actually see it.
+                if let Some(secs) = heartbeat {
+                    ctx.registry.arm_heartbeat(&handle.id(), secs);
                 }
                 let snapshot = handle.snapshot();
 
@@ -3399,6 +3461,115 @@ mod tests {
         fn parent_of(&self, _task_id: &str) -> Option<ParentOwner> {
             None
         }
+    }
+
+    /// A registry backed by the real local host, for tests that must run a command.
+    fn real_registry() -> Arc<ProcessRegistry> {
+        Arc::new(crate::process::ProcessRegistry::with_parts(
+            Arc::new(crate::process::LocalProcessHost::new()),
+            Arc::new(crate::process::PosixPtyHost::new()),
+            Arc::new(crate::process::NoScope),
+            Arc::new(crate::process::NoInterrupt),
+            Arc::new(crate::process::SystemClock),
+            Arc::new(crate::process::NoTransform),
+        ))
+    }
+
+    #[tokio::test]
+    async fn foreground_honours_workdir() {
+        // A foreground call must run where it was told, instead of always in the
+        // session directory.
+        let dir = std::env::temp_dir().join("hermes_l7_workdir");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let registry = real_registry();
+        let ctx = ProcessCtx::new(Arc::clone(&registry));
+        let tool_registry = ToolRegistry::new().with_process_registry(Arc::clone(&registry));
+
+        let out = tool_registry
+            .execute_terminal_with(
+                &terminal_call(serde_json::json!({
+                    "command": "pwd",
+                    "workdir": dir.to_string_lossy(),
+                    "timeout": 5
+                })),
+                Some(&ctx),
+            )
+            .await;
+
+        assert!(out.success, "terminal failed: {}", out.output);
+        assert!(
+            out.output.contains("hermes_l7_workdir"),
+            "workdir was ignored: {}",
+            out.output
+        );
+    }
+
+    #[tokio::test]
+    async fn a_notify_list_becomes_watch_patterns() {
+        // `notify` doubles as the watch-pattern list, the same overloading Python
+        // uses: a list both enables notification and sets what to watch for.
+        let registry = real_registry();
+        let ctx = ProcessCtx::new(Arc::clone(&registry));
+        let tool_registry = ToolRegistry::new().with_process_registry(Arc::clone(&registry));
+
+        let out = tool_registry
+            .execute_terminal_with(
+                &terminal_call(serde_json::json!({
+                    "command": "sleep 0.2",
+                    "background": true,
+                    "notify": ["READY", "ERROR"]
+                })),
+                Some(&ctx),
+            )
+            .await;
+        assert!(out.success, "spawn failed: {}", out.output);
+
+        let id = serde_json::from_str::<serde_json::Value>(&out.output).unwrap()["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let handle = registry.resolve_prefix(&id).expect("session");
+        let s = handle.session.lock();
+        assert!(
+            s.notify_on_complete,
+            "a notify list should enable notification"
+        );
+        assert_eq!(
+            s.watch_patterns,
+            vec!["READY".to_string(), "ERROR".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_background_heartbeat_is_armed_through_the_pipeline() {
+        // Writing heartbeat_seconds without arming it in the pipeline would satisfy a
+        // field check while the tick still could not see it; arming is the contract.
+        let registry = real_registry();
+        let ctx = ProcessCtx::new(Arc::clone(&registry));
+        let tool_registry = ToolRegistry::new().with_process_registry(Arc::clone(&registry));
+
+        let out = tool_registry
+            .execute_terminal_with(
+                &terminal_call(serde_json::json!({
+                    "command": "sleep 0.3",
+                    "background": true,
+                    "heartbeat": 60
+                })),
+                Some(&ctx),
+            )
+            .await;
+        assert!(out.success, "spawn failed: {}", out.output);
+
+        let id = serde_json::from_str::<serde_json::Value>(&out.output).unwrap()["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let handle = registry.resolve_prefix(&id).expect("session");
+        assert!(
+            handle.session.lock().heartbeat_seconds > 0,
+            "the heartbeat was never armed on the session"
+        );
     }
 
     #[tokio::test]

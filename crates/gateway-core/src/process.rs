@@ -422,7 +422,12 @@ impl ProcessSession {
     pub fn mark_exited(&mut self, exit_code: Option<i32>, reason: &str, source: &str) {
         self.exited = true;
         if self.completion_reason != "killed" {
-            self.exit_code = exit_code;
+            // A liveness-only probe reports exit without a status. Never let it erase
+            // an exit code another observer already learned - the two race, and the
+            // one that knows less must not win.
+            if exit_code.is_some() || self.exit_code.is_none() {
+                self.exit_code = exit_code;
+            }
             self.completion_reason = reason.to_string();
             if !source.is_empty() {
                 self.termination_source = source.to_string();
