@@ -1062,9 +1062,12 @@ impl ProcessRegistry {
         })));
     }
 
-    /// Spawn and register a background process.
+    /// Spawn a session under the given owner and start reaping it.
+    ///
+    /// Takes `&Arc<Self>` because the reaper thread has to keep the registry
+    /// alive to close the session out once the child exits.
     pub fn spawn_session(
-        &self,
+        self: &Arc<Self>,
         command: &str,
         cwd: Option<String>,
         env: Vec<(String, String)>,
@@ -1091,7 +1094,65 @@ impl ProcessRegistry {
         }
         self.inner.lock().running.insert(id, Arc::clone(&handle));
         self.prune_if_needed();
+        self.spawn_reaper(Arc::clone(&handle));
         Ok(handle)
+    }
+
+    /// Close a spawned session out once its child exits.
+    ///
+    /// The host's own waiter marks the session `exited`, but only the registry can
+    /// move it to `finished` and stamp the exit code the host could not know. That
+    /// step is what makes an independently-exiting process observable at all: the
+    /// completion notice, the unread accounting and the crash-recovery probe all
+    /// read `finished`, and without it the session also keeps being reported as
+    /// still running.
+    fn spawn_reaper(self: &Arc<Self>, handle: Arc<SessionHandle>) {
+        let registry = Arc::clone(self);
+        let host = Arc::clone(&self.host);
+        let weak = Arc::downgrade(&handle);
+
+        std::thread::spawn(move || {
+            let child = {
+                let s = handle.session.lock();
+                ChildRef {
+                    id: format!("child_{}", s.pid.unwrap_or(0)),
+                    pid: s.pid,
+                    is_pty: s.is_pty,
+                }
+            };
+
+            loop {
+                match host.try_wait(&child) {
+                    // Exited, with a status the host's waiter could not report.
+                    Some(Some(code)) => {
+                        if let Some(h) = weak.upgrade() {
+                            {
+                                let mut s = h.session.lock();
+                                if s.exit_code.is_none() {
+                                    s.exit_code = Some(code);
+                                }
+                            }
+                            h.finish(Some(code), "exited", "");
+                            registry.move_to_finished(&h);
+                        }
+                        return;
+                    }
+                    Some(None) => {}
+                    None => {
+                        // The host cannot report a status (detached supervisor);
+                        // fall back to liveness so the session still closes.
+                        if !host.is_alive(&child) {
+                            if let Some(h) = weak.upgrade() {
+                                h.finish(None, "exited", "");
+                                registry.move_to_finished(&h);
+                            }
+                            return;
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        });
     }
 
     /// Look up a session by exact id.
@@ -4087,6 +4148,46 @@ mod tests {
 
         // A transfer that did not happen must never be reported as one.
         assert_eq!(recorder.count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_process_that_exits_on_its_own_is_reaped_and_counted() {
+        // The whole point of the reaper: the host marks a session exited, but only
+        // the registry can move it to `finished` and stamp the real exit code - so
+        // without it an independently-exiting process is reported as still running
+        // and its unread completion is invisible.
+        let reg = Arc::new(ProcessRegistry::with_parts(
+            Arc::new(LocalProcessHost::new()),
+            Arc::new(PosixPtyHost::new()),
+            Arc::new(NoScope),
+            Arc::new(NoInterrupt),
+            Arc::new(SystemClock),
+            Arc::new(NoTransform),
+        ));
+
+        let handle = reg
+            .spawn_session("exit 7", None, Vec::new(), Some("sa-child1".to_string()))
+            .expect("spawn");
+        handle.session.lock().notify_on_complete = true;
+        let id = handle.id();
+
+        // Wait for the reaper to close it out (bounded, not an open-ended sleep).
+        for _ in 0..60 {
+            if reg.running_owned_by("sa-child1").is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        assert!(
+            reg.running_owned_by("sa-child1").is_empty(),
+            "the reaper never moved the exited process out of running"
+        );
+
+        let unread = reg.unread_completions_owned_by("sa-child1");
+        assert_eq!(unread.len(), 1, "the unread completion was not visible");
+        assert_eq!(unread[0].id(), id);
+        assert_eq!(unread[0].snapshot().exit_code, Some(7));
     }
 
     #[tokio::test]
