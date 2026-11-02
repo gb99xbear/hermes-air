@@ -1127,7 +1127,7 @@ impl ProcessRegistry {
             };
 
             loop {
-                match host.try_wait(&child) {
+                let closed = match host.try_wait(&child) {
                     // Exited, with a status the host's waiter could not report.
                     Some(Some(code)) => {
                         if let Some(h) = weak.upgrade() {
@@ -1139,25 +1139,56 @@ impl ProcessRegistry {
                             }
                             h.finish(Some(code), "exited", "");
                             registry.move_to_finished(&h);
+                            Some((h, Some(code)))
+                        } else {
+                            None
                         }
-                        return;
                     }
-                    Some(None) => {}
-                    None => {
+                    Some(None) => None,
+                    Option::None => {
                         // The host cannot report a status (detached supervisor);
                         // fall back to liveness so the session still closes.
                         if !host.is_alive(&child) {
                             if let Some(h) = weak.upgrade() {
                                 h.finish(None, "exited", "");
                                 registry.move_to_finished(&h);
+                                Some((h, None))
+                            } else {
+                                None
                             }
-                            return;
+                        } else {
+                            None
                         }
                     }
+                };
+
+                if let Some((h, code)) = closed {
+                    registry.emit_completion_event(&h, code);
+                    return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
         });
+    }
+
+    /// Queue the completion notice for a process the reaper just closed.
+    ///
+    /// This is the only place a `completion` event can be born, and without it the
+    /// fact is attached to a session handle nobody re-reads: a process that finished
+    /// mid-turn simply vanished. Only a session that asked to be told is queued, and
+    /// the notice carries the same attribution keys the drain filters on.
+    fn emit_completion_event(&self, handle: &Arc<SessionHandle>, exit_code: Option<i32>) {
+        if !handle.session.lock().notify_on_complete {
+            return;
+        }
+        let s = handle.session.lock();
+        let mut evt = crate::process_watch::watch_event_base(&s);
+        evt["type"] = serde_json::json!("completion");
+        evt["exit_code"] = serde_json::json!(exit_code);
+        evt["output"] = serde_json::json!(s.output_tail(4000));
+        evt["status"] = serde_json::json!(s.status_str());
+        drop(s);
+        self.watch.events.push(evt);
     }
 
     /// Look up a session by exact id.
@@ -1925,6 +1956,32 @@ impl ProcessRegistry {
     /// Take every queued background event (watch matches, heartbeats, breaker notices).
     pub fn drain_events(&self) -> Vec<Value> {
         self.watch.drain()
+    }
+
+    /// Take the queued events owned by one session.
+    ///
+    /// The queue is ALWAYS drained, so an event nobody claims does not rot or
+    /// requeue-spin; events belonging to another owner are put back untouched.
+    /// The owner is matched on `owner_task_id`, the same field a completion notice
+    /// is attributed by.
+    pub fn take_events_for_owner(&self, owner: &str) -> Vec<Value> {
+        let mut mine = Vec::new();
+        let mut theirs = Vec::new();
+        for evt in self.watch.drain() {
+            let evt_owner = evt
+                .get("owner_task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if evt_owner == owner {
+                mine.push(evt);
+            } else {
+                theirs.push(evt);
+            }
+        }
+        for evt in theirs {
+            self.watch.events.push(evt);
+        }
+        mine
     }
 
     /// Inspect the queued events without consuming them.

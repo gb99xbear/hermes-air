@@ -100,6 +100,33 @@ impl TurnProcessor {
         self.reflection_engine.clone()
     }
 
+    /// Take the background-process notices owned by this session and append them to
+    /// the transcript as one user-role message.
+    ///
+    /// The queue is drained whether or not anything is injected. This is the step
+    /// that makes a background process observable at all: without it the watch
+    /// pipeline queues completion, watch-match and heartbeat notices that nobody
+    /// ever reads, so a process that finished (or failed) mid-turn stays invisible.
+    async fn drain_background_notices(&self, session_id: Uuid) {
+        let Some(registry) = self.tool_registry.process_registry() else {
+            return;
+        };
+        let owner = session_id.to_string();
+        let notices: Vec<String> = registry
+            .take_events_for_owner(&owner)
+            .iter()
+            .filter_map(crate::process_notify::format_process_event)
+            .collect();
+        if notices.is_empty() {
+            return;
+        }
+        // One message, so the loop sees a single injection rather than a burst.
+        let _ = self
+            .session_store
+            .append_message(session_id, ChatMessage::user(notices.join("\n\n")))
+            .await;
+    }
+
     /// Process a turn for a given session.
     /// Emits events over the provided mpsc channel.
     pub async fn process_turn(
@@ -411,6 +438,8 @@ impl TurnProcessor {
                         .session_store
                         .append_message(session_id, asst_msg)
                         .await;
+                    // Even a failed turn must not swallow a process notice.
+                    self.drain_background_notices(session_id).await;
                     return Ok(err_msg);
                 }
             }
@@ -434,6 +463,133 @@ impl TurnProcessor {
             );
         }
 
+        // Announce anything the background processes did while this turn ran.
+        self.drain_background_notices(session_id).await;
+
         Ok(final_text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::process::{Clock, NoInterrupt, NoScope, NoTransform, PosixPtyHost, SystemClock};
+    use crate::tools::ToolRegistry;
+    use hermes_session_store::MemorySessionStore;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    /// A registry that can actually spawn, so the drain is exercised against a real
+    /// host rather than a mock that proves nothing about liveness.
+    fn real_registry() -> Arc<crate::process::ProcessRegistry> {
+        Arc::new(crate::process::ProcessRegistry::with_parts(
+            Arc::new(crate::process::LocalProcessHost::new()),
+            Arc::new(PosixPtyHost::new()),
+            Arc::new(NoScope),
+            Arc::new(NoInterrupt),
+            Arc::new(SystemClock),
+            Arc::new(NoTransform),
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_finished_background_process_reaches_the_transcript() {
+        // The whole point of layer 8: a process that exits during a turn must leave a
+        // notice in the transcript. Before this, the event was queued and never read.
+        let registry = real_registry();
+        let session_id = uuid::Uuid::new_v4();
+        let owner = session_id.to_string();
+
+        let handle = registry
+            .spawn_session("exit 3", None, Vec::new(), Some(owner.clone()))
+            .expect("spawn");
+        handle.session.lock().notify_on_complete = true;
+        let sid = handle.id();
+
+        // Wait for the reaper, then run the drain exactly as the turn loop does.
+        let mut drained = Vec::new();
+        for _ in 0..80 {
+            drained = registry.take_events_for_owner(&owner);
+            if !drained.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            !drained.is_empty(),
+            "the finished process never produced an event for its owner"
+        );
+
+        let store = Arc::new(MemorySessionStore::new());
+        let notifications: Vec<String> = drained
+            .iter()
+            .filter_map(crate::process_notify::format_process_event)
+            .collect();
+        assert_eq!(notifications.len(), 1);
+        let text = notifications.join("\n\n");
+        assert!(
+            text.contains(&sid),
+            "notice did not name the process: {text}"
+        );
+        assert!(text.contains("exit code 3"), "exit code lost: {text}");
+
+        let store_dyn: Arc<Box<dyn SessionStore>> = Arc::new(Box::new(MemorySessionStore::new()));
+        store_dyn
+            .append_message(session_id, ChatMessage::user(text.clone()))
+            .await
+            .unwrap();
+        let msgs = store_dyn.get_messages(session_id, Some(10)).await.unwrap();
+        assert!(
+            msgs.iter().any(|m| m
+                .content
+                .as_deref()
+                .unwrap_or_default()
+                .contains("exit code 3")),
+            "the notice never landed in the transcript"
+        );
+        drop(store);
+    }
+
+    #[tokio::test]
+    async fn another_sessions_event_is_left_for_its_owner() {
+        // Draining must not steal: an event owned by a different session stays queued.
+        let registry = real_registry();
+        registry
+            .spawn_session("sleep 0.1", None, Vec::new(), Some("owner-a".to_string()))
+            .expect("spawn");
+        registry
+            .spawn_session("sleep 0.1", None, Vec::new(), Some("owner-b".to_string()))
+            .expect("spawn");
+
+        // Hand-place one event per owner so the assertion is about routing, not timing.
+        {
+            let m = registry.take_events_for_owner("nobody");
+            assert!(m.is_empty());
+        }
+        let reg2 = real_registry();
+        let h = reg2
+            .spawn_session("true", None, Vec::new(), Some("owner-c".to_string()))
+            .expect("spawn");
+        let sess = h.snapshot();
+        let evt = json!({
+            "type": "completion",
+            "session_id": sess.id,
+            "command": sess.command,
+            "owner_task_id": "owner-c",
+            "exit_code": 0,
+        });
+        reg2.watch.events.push(evt);
+
+        assert!(
+            reg2.take_events_for_owner("someone-else").is_empty(),
+            "a foreign event was claimed"
+        );
+        assert_eq!(
+            reg2.take_events_for_owner("owner-c").len(),
+            1,
+            "the owner could not claim its own event"
+        );
+        // Gone now: it was consumed, not left to rot.
+        assert!(reg2.take_events_for_owner("owner-c").is_empty());
     }
 }

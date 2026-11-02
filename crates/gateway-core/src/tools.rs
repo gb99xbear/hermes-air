@@ -930,6 +930,11 @@ impl ToolRegistry {
         self.execute_terminal_with(call, None).await
     }
 
+    /// The process registry this toolset was given, if any.
+    pub fn process_registry(&self) -> Option<Arc<crate::process::ProcessRegistry>> {
+        self.process_registry.clone()
+    }
+
     /// `terminal` under an optional process context.
     ///
     /// A delegated child runs here with its own context, so a background process

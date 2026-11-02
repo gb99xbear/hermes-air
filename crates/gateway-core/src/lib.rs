@@ -10,6 +10,7 @@ pub mod llm;
 pub mod memory;
 pub mod process;
 pub mod process_checkpoint;
+pub mod process_notify;
 pub mod process_watch;
 pub mod prompt;
 pub mod providers;
