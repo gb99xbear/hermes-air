@@ -24,6 +24,16 @@ pub struct ToolResult {
     pub success: bool,
 }
 
+/// A child's completion notice never reaches its parent, so a background process
+/// it forgets is killed at teardown and nobody hears about it. Say what to do
+/// with the process at spawn time, while the child can still act on it.
+const SUBAGENT_NOTIFY_NOTE: &str = "You are a subagent: this process's completion notice will NOT reach your parent, and the process is killed when you finish. Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For CI watchers prefer returning the fact (PR number, SHA) and letting the parent watch.";
+
+/// A silent background process is right only for servers/watchers. For a bounded
+/// task the agent almost always wanted a notification and forgot the flag, so
+/// nudge it rather than let the result arrive nowhere.
+const SILENT_BACKGROUND_HINT: &str = "background=true without notify_on_complete=true means this process runs SILENTLY - you will not be told when it exits. If this is a bounded task (test suite, build, CI poller, deploy, anything with a defined end), you almost certainly wanted notify_on_complete=true. Only ignore this for genuine long-lived processes that never exit (servers, watchers, daemons).";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchMatch {
     pub path: String,
@@ -204,13 +214,31 @@ impl ToolRegistry {
                 "type": "function",
                 "function": {
                     "name": "terminal",
-                    "description": "Execute a shell command using 'sh -c' with timeout and output capture.",
+                    "description": "Execute shell commands. Filesystem, current working directory, and exported environment variables persist between calls.\n\nDo NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), sed/awk (use patch), or echo/heredoc file creation (use write_file). Reserve terminal for: builds, installs, git, processes, scripts, network, package managers - anything that needs a shell.\n\nForeground (default): returns INSTANTLY when the command finishes. Set timeout generously for long builds and fixed waits.\nBackground: set background=true (returns a session_id) only for commands that must keep running independently after this tool call returns; add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. Do not start sleep, timers, cooldowns, delays, or polling loops with background=true - to wait a fixed time, run the wait as a normal foreground command with a high enough timeout. Manage with process_manage(action='poll'/'wait').\nWorkdir: use 'workdir' for per-command cwd.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "command": {
                                 "type": "string",
                                 "description": "The shell command to execute"
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "Max seconds to wait (foreground). Returns INSTANTLY when the command finishes.",
+                                "minimum": 1
+                            },
+                            "workdir": {
+                                "type": "string",
+                                "description": "Working directory for this command (absolute). Defaults to the session working directory."
+                            },
+                            "background": {
+                                "type": "boolean",
+                                "description": "Run independently after this call returns and get a session_id. Only for work that genuinely outlives the call (servers, long builds).",
+                                "default": false
+                            },
+                            "notify": {
+                                "type": "boolean",
+                                "description": "With background=true, notify on exit. Use for bounded tasks (tests, builds, deploys); omit only for daemons that never exit."
                             }
                         },
                         "required": ["command"]
@@ -798,7 +826,7 @@ impl ToolRegistry {
         ctx: Option<&crate::process::ProcessCtx>,
     ) -> ToolResult {
         match call.name.as_str() {
-            "terminal" => self.execute_terminal(call).await,
+            "terminal" => self.execute_terminal_with(call, ctx).await,
             "read_file" => self.execute_read_file(call).await,
             "write_file" => self.execute_write_file(call).await,
             "patch" => self.execute_patch(call).await,
@@ -880,6 +908,19 @@ impl ToolRegistry {
     }
 
     pub async fn execute_terminal(&self, call: &ToolCall) -> ToolResult {
+        self.execute_terminal_with(call, None).await
+    }
+
+    /// `terminal` under an optional process context.
+    ///
+    /// A delegated child runs here with its own context, so a background process
+    /// it starts is owned by the child - which is what makes `handoff` and the
+    /// end-of-child accounting able to see it at all.
+    pub async fn execute_terminal_with(
+        &self,
+        call: &ToolCall,
+        ctx: Option<&crate::process::ProcessCtx>,
+    ) -> ToolResult {
         let command_str = match call.arguments.get("command").and_then(|v| v.as_str()) {
             Some(cmd) => cmd,
             None => {
@@ -890,6 +931,17 @@ impl ToolRegistry {
                 };
             }
         };
+
+        let background = call
+            .arguments
+            .get("background")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if background {
+            return self
+                .execute_background_terminal(call, command_str, ctx)
+                .await;
+        }
 
         let timeout_duration = Duration::from_secs(60);
         let command_fut = Command::new("sh").arg("-c").arg(command_str).output();
@@ -936,6 +988,94 @@ impl ToolRegistry {
                     success: false,
                 }
             }
+        }
+    }
+
+    /// Spawn a tracked background process and return its session id.
+    ///
+    /// Never waits: the spawn detaches and returns immediately. A session that
+    /// cannot receive an async completion later is told so, and a child is warned
+    /// that its notice will not reach the parent - with the three ways out.
+    async fn execute_background_terminal(
+        &self,
+        call: &ToolCall,
+        command: &str,
+        ctx: Option<&crate::process::ProcessCtx>,
+    ) -> ToolResult {
+        let Some(ctx) = ctx else {
+            return ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "error": "background processes require a process context; none is attached here."
+                })
+                .to_string(),
+                success: false,
+            };
+        };
+
+        let notify = call
+            .arguments
+            .get("notify")
+            .or_else(|| call.arguments.get("notify_on_complete"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let workdir = call
+            .arguments
+            .get("workdir")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // The child's own id, so the process it starts is owned by the child and
+        // both `handoff` and the end-of-child accounting can see it.
+        let owner = ctx.task_id.clone();
+
+        match ctx
+            .registry
+            .spawn_session(command, workdir, Vec::new(), owner)
+        {
+            Ok(handle) => {
+                if notify {
+                    handle.session.lock().notify_on_complete = true;
+                }
+                let snapshot = handle.snapshot();
+
+                let mut payload = serde_json::json!({
+                    "output": "Background process started",
+                    "session_id": snapshot.id,
+                    "pid": snapshot.pid,
+                    "exit_code": 0,
+                    "error": serde_json::Value::Null,
+                });
+
+                if !notify {
+                    payload["hint"] = serde_json::json!(SILENT_BACKGROUND_HINT);
+                }
+
+                // A child's notice never reaches the parent, so the flag is
+                // reported as false and the child is told what to do instead.
+                if ctx.parent_lookup.is_some() {
+                    payload["notify_on_complete"] = serde_json::json!(false);
+                    payload["subagent_note"] = serde_json::json!(SUBAGENT_NOTIFY_NOTE);
+                } else if notify {
+                    payload["notify_on_complete"] = serde_json::json!(true);
+                }
+
+                ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: payload.to_string(),
+                    success: true,
+                }
+            }
+            Err(e) => ToolResult {
+                tool_call_id: call.id.clone(),
+                output: serde_json::json!({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": format!("Failed to start background process: {}", e),
+                })
+                .to_string(),
+                success: false,
+            },
         }
     }
 
@@ -3170,5 +3310,178 @@ impl ToolRegistry {
             output,
             success,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::process::{
+        ChildRef, Clock, HandoffBook, ParentLookup, ParentOwner, ProcessCtx, ProcessHost,
+        ProcessRegistry, SpawnRequest,
+    };
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct FakeClock(AtomicU64);
+    impl FakeClock {
+        fn new(t: u64) -> Self {
+            Self(AtomicU64::new(t))
+        }
+    }
+    impl Clock for FakeClock {
+        fn now_secs(&self) -> f64 {
+            self.0.load(Ordering::SeqCst) as f64
+        }
+        fn monotonic_secs(&self) -> f64 {
+            self.0.load(Ordering::SeqCst) as f64
+        }
+    }
+    /// Records that a spawn was attempted, then refuses it: the routing decision
+    /// is what these tests cover, never a real command.
+    #[derive(Default)]
+    struct RefusingHost {
+        spawned: std::sync::Mutex<Vec<String>>,
+    }
+    impl ProcessHost for RefusingHost {
+        fn spawn(&self, req: SpawnRequest) -> Result<ChildRef, String> {
+            self.spawned.lock().unwrap().push(req.command.clone());
+            Err("not spawned in test".to_string())
+        }
+        fn kill(&self, _child: &ChildRef) -> Result<(), String> {
+            Ok(())
+        }
+        fn try_wait(&self, _child: &ChildRef) -> Option<Option<i32>> {
+            Some(None)
+        }
+        fn is_alive(&self, _child: &ChildRef) -> bool {
+            false
+        }
+        fn write_stdin(&self, _child: &ChildRef, _data: &[u8]) -> Result<usize, String> {
+            Ok(0)
+        }
+        fn close_stdin(&self, _child: &ChildRef) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn registry_with(host: Arc<RefusingHost>) -> Arc<ProcessRegistry> {
+        Arc::new(ProcessRegistry::with_parts(
+            host,
+            Arc::new(crate::process::PosixPtyHost::new()),
+            Arc::new(crate::process::NoScope),
+            Arc::new(crate::process::NoInterrupt),
+            Arc::new(FakeClock::new(1000)),
+            Arc::new(crate::process::NoTransform),
+        ))
+    }
+
+    fn terminal_call(args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: "call_1".to_string(),
+            name: "terminal".to_string(),
+            arguments: args,
+        }
+    }
+
+    struct Subagent;
+    impl ParentLookup for Subagent {
+        fn parent_of(&self, _task_id: &str) -> Option<ParentOwner> {
+            Some(ParentOwner {
+                owner: "parent-owner".to_string(),
+                task_id: "parent-task".to_string(),
+                session_key: "parent-session".to_string(),
+            })
+        }
+    }
+
+    struct TopLevel;
+    impl ParentLookup for TopLevel {
+        fn parent_of(&self, _task_id: &str) -> Option<ParentOwner> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn background_terminal_without_a_context_is_refused() {
+        let registry = ToolRegistry::new();
+        let out = registry
+            .execute_terminal(&terminal_call(serde_json::json!({
+                "command": "sleep 900",
+                "background": true
+            })))
+            .await;
+        assert!(!out.success);
+        assert!(out.output.contains("process context"));
+    }
+
+    #[tokio::test]
+    async fn background_terminal_routes_the_spawn_with_the_caller_owner() {
+        let host = Arc::new(RefusingHost::default());
+        let registry = registry_with(host.clone());
+        let tool_registry = ToolRegistry::new().with_process_registry(registry.clone());
+
+        let ctx = ProcessCtx::for_child(
+            registry,
+            "sa-child1".to_string(),
+            Arc::new(Subagent),
+            Arc::new(HandoffBook::default()),
+        );
+
+        let out = tool_registry
+            .execute_terminal_with(
+                &terminal_call(serde_json::json!({
+                    "command": "sleep 900",
+                    "background": true,
+                    "notify": true
+                })),
+                Some(&ctx),
+            )
+            .await;
+
+        // The command reached the host: it was routed as a background spawn, not
+        // run inline and not dropped.
+        assert_eq!(host.spawned.lock().unwrap().len(), 1);
+        assert_eq!(host.spawned.lock().unwrap()[0], "sleep 900");
+        assert!(!out.success);
+        assert!(out.output.contains("Failed to start background process"));
+    }
+
+    #[tokio::test]
+    async fn foreground_terminal_is_untouched_by_the_context() {
+        let host = Arc::new(RefusingHost::default());
+        let registry = registry_with(host.clone());
+        let tool_registry = ToolRegistry::new().with_process_registry(registry);
+
+        let out = tool_registry
+            .execute_terminal(&terminal_call(serde_json::json!({
+                "command": "echo hello"
+            })))
+            .await;
+
+        // Foreground never touches the registry: it runs the shell directly.
+        assert!(host.spawned.lock().unwrap().is_empty());
+        assert!(out.success);
+        assert!(out.output.contains("hello"));
+    }
+
+    #[test]
+    fn a_child_flag_is_decided_by_the_parent_lookup() {
+        // The child note is the whole mechanism: a child not told its notice is
+        // suppressed will start a silent process and lose it at teardown.
+        assert!(SUBAGENT_NOTIFY_NOTE.contains("handoff"));
+        assert!(SUBAGENT_NOTIFY_NOTE.contains("NOT reach your parent"));
+        assert!(SILENT_BACKGROUND_HINT.contains("SILENTLY"));
+
+        let child = ProcessCtx::for_child(
+            registry_with(Arc::new(RefusingHost::default())),
+            "sa-child1".to_string(),
+            Arc::new(Subagent),
+            Arc::new(HandoffBook::default()),
+        );
+        assert!(child.parent_lookup.is_some());
+
+        let top = ProcessCtx::new(registry_with(Arc::new(RefusingHost::default())))
+            .with_parent_lookup(Arc::new(TopLevel));
+        assert!(top.parent_lookup.as_ref().unwrap().parent_of("x").is_none());
     }
 }
