@@ -49,6 +49,8 @@ pub struct TurnProcessor {
     compressor: Arc<tokio::sync::Mutex<ContextCompressor>>,
     reflection_engine: Arc<BackgroundReviewEngine>,
     profile: Option<ProfileConfig>,
+    /// Surface this processor serves (cli, telegram, ...); used for parity rows.
+    platform: String,
 }
 
 impl TurnProcessor {
@@ -74,6 +76,7 @@ impl TurnProcessor {
             compressor,
             reflection_engine,
             profile,
+            platform: "cli".to_string(),
         }
     }
 
@@ -82,6 +85,12 @@ impl TurnProcessor {
         reflection_engine: Arc<BackgroundReviewEngine>,
     ) -> Self {
         self.reflection_engine = reflection_engine;
+        self
+    }
+
+    /// Set the surface this processor serves (defaults to "cli").
+    pub fn with_platform(mut self, platform: &str) -> Self {
+        self.platform = platform.to_string();
         self
     }
 
@@ -162,13 +171,19 @@ impl TurnProcessor {
             .unwrap_or_else(|| default_model.to_string());
 
         // Parity instrumentation: one guard per turn. Auto-ends on drop.
-        let platform = self.profile.as_ref().map(|p| p.name.as_str()).unwrap_or("default");
+        // Records the real surface and the real provider (not the profile name).
+        let parity_platform = self.platform.clone();
+        let parity_provider = self
+            .profile
+            .as_ref()
+            .map(|p| p.model_provider.clone())
+            .unwrap_or_else(|| "unknown".to_string());
         let mut turn_guard = on_turn_start(
             Uuid::new_v4().to_string(),
             session_id.to_string(),
-            platform.to_string(),
+            parity_platform,
             active_model.clone(),
-            "hermes-air".to_string(),
+            parity_provider.clone(),
         );
 
         // Check for Slash Command
@@ -364,7 +379,7 @@ impl TurnProcessor {
             let api_started = std::time::Instant::now();
             match self
                 .llm_client
-                .chat_completion_with_tools(
+                .chat_completion_with_tools_usage(
                     &active_model,
                     &messages,
                     Some(tool_definitions.clone()),
@@ -383,7 +398,7 @@ impl TurnProcessor {
                         .unwrap_or((0, 0, 0));
                     on_api_response(
                         active_model.clone(),
-                        "hermes-air".to_string(),
+                        parity_provider.clone(),
                         inp_tokens, out_tokens, cache_tokens, latency_ms,
                     );
                     match response {

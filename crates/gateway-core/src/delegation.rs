@@ -647,7 +647,7 @@ impl DelegationManager {
                 .collect();
 
             let model = "default";
-            let (resp_msg, chat_resp, _usage) = match llm_client
+            let (resp_msg, chat_resp) = match llm_client
                 .chat_completion_with_tools(
                     model,
                     &messages,

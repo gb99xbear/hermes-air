@@ -133,6 +133,14 @@ pub struct MetricsConfig {
     pub enabled: bool,
     pub port: u16,
     pub path: String,
+    /// Opt-in parity instrumentation (off by default). When enabled, per-turn
+    /// JSONL metrics are written for the Python-vs-Air parity comparison.
+    #[serde(default)]
+    pub parity: bool,
+    /// Optional override for the parity output directory. Defaults to
+    /// $HERMES_HOME/logs/parity (or ~/.hermes/logs/parity).
+    #[serde(default)]
+    pub parity_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

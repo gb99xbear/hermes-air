@@ -47,6 +47,11 @@ max_files = 5
 enabled = false
 port = 9090
 path = "/metrics"
+# Opt-in parity instrumentation (default OFF). When true, one JSONL row per
+# turn is written for the Python-Hermes vs Hermes-Air parity comparison.
+parity = false
+# Optional override for the output dir (defaults to $HERMES_HOME/logs/parity).
+# parity_dir = "/var/log/hermes/parity"
 
 [dashboard]
 enabled = false

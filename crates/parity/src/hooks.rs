@@ -30,9 +30,11 @@ impl TurnGuard {
         model: String,
         provider: String,
     ) -> Self {
-        let _ = CURRENT_TURN.lock().map(|mut guard| {
-            *guard = Some(start_turn(turn_id.clone(), session_id.clone(), platform, model, provider));
-        });
+        if crate::is_enabled() {
+            let _ = CURRENT_TURN.lock().map(|mut guard| {
+                *guard = Some(start_turn(turn_id.clone(), session_id.clone(), platform, model, provider));
+            });
+        }
         Self {
             turn_id,
             session_id,
@@ -79,6 +81,9 @@ pub fn record_current_api_call(
     cache_tokens: u64,
     latency_ms: u64,
 ) {
+    if !crate::is_enabled() {
+        return;
+    }
     if let Ok(mut guard) = CURRENT_TURN.lock() {
         if let Some(ref mut metrics) = *guard {
             record_api_call(metrics, model, provider, input_tokens, output_tokens, cache_tokens, latency_ms);
@@ -88,6 +93,9 @@ pub fn record_current_api_call(
 
 /// Record a tool call for the current turn
 pub fn record_current_tool_call(tool_name: String) {
+    if !crate::is_enabled() {
+        return;
+    }
     if let Ok(mut guard) = CURRENT_TURN.lock() {
         if let Some(ref mut metrics) = *guard {
             record_tool_call(metrics, tool_name);
@@ -97,6 +105,9 @@ pub fn record_current_tool_call(tool_name: String) {
 
 /// Record a compression event for the current turn
 pub fn record_current_compression(compression_type: String) {
+    if !crate::is_enabled() {
+        return;
+    }
     if let Ok(mut guard) = CURRENT_TURN.lock() {
         if let Some(ref mut metrics) = *guard {
             record_compression(metrics, compression_type);
@@ -106,6 +117,9 @@ pub fn record_current_compression(compression_type: String) {
 
 /// Record an error for the current turn
 pub fn record_current_error(error: String) {
+    if !crate::is_enabled() {
+        return;
+    }
     if let Ok(mut guard) = CURRENT_TURN.lock() {
         if let Some(ref mut metrics) = *guard {
             record_error(metrics, error);
@@ -164,17 +178,17 @@ pub fn get_current_session_metrics(session_id: &str) -> Option<SessionMetrics> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{export_parity_report, init_parity};
+    use crate::export_parity_report;
     use std::fs;
 
     #[test]
     fn test_parity_init() {
-        init_parity().unwrap();
+        crate::test_enable_parity();
     }
 
     #[test]
     fn test_turn_guard() {
-        init_parity().unwrap();
+        crate::test_enable_parity();
 
         // Clean up any leftover session file from previous runs
         let state = crate::ParityState::get();
@@ -204,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_turn_lifecycle_report() {
-        init_parity().unwrap();
+        crate::test_enable_parity();
 
         let state = crate::ParityState::get();
         let _ = fs::remove_file(state.output_dir.join("session_session_hooks_456.json"));

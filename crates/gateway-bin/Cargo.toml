@@ -6,6 +6,7 @@ description = "Hermes Gateway - Main Binary"
 
 [dependencies]
 hermes-gateway-core = { path = "../gateway-core" }
+hermes-parity = { package = "hermes_parity", path = "../parity" }
 hermes-config = { path = "../config" }
 hermes-session-store = { path = "../session-store" }
 hermes-relay = { path = "../relay" }

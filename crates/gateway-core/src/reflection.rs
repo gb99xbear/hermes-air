@@ -295,7 +295,7 @@ impl BackgroundReviewEngine {
             .chat_completion_with_tools(model, &review_messages, None, None, 0.3, 2048)
             .await
         {
-            Ok((_raw_msg, response, _usage)) => {
+            Ok((_raw_msg, response)) => {
                 let text = match response {
                     ChatResponse::Text(t) => t,
                     ChatResponse::ToolCalls(_) => String::new(),

@@ -247,7 +247,28 @@ impl LlmClient {
         anyhow::bail!("LLM returned no choices in response");
     }
 
+    /// Back-compat 2-tuple form (usage dropped). Prefer
+    /// `chat_completion_with_tools_usage` when token accounting is needed.
     pub async fn chat_completion_with_tools(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        tools: Option<Vec<serde_json::Value>>,
+        tool_choice: Option<String>,
+        temperature: f32,
+        max_tokens: u32,
+    ) -> Result<(ChatResponseMessage, ChatResponse)> {
+        let (msg, resp, _usage) = self
+            .chat_completion_with_tools_usage(
+                model, messages, tools, tool_choice, temperature, max_tokens,
+            )
+            .await?;
+        Ok((msg, resp))
+    }
+
+    /// Same call as `chat_completion_with_tools`, plus the provider-reported
+    /// token `Usage` so callers can account for prompt/cache/output tokens.
+    pub async fn chat_completion_with_tools_usage(
         &self,
         model: &str,
         messages: &[ChatMessage],

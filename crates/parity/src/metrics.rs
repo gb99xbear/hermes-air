@@ -35,9 +35,9 @@ pub struct TurnMetrics {
     pub finish_reason: String,
     pub response_chars: u64,
 
-    // Internal tracking
+    // Internal tracking (epoch millis at construction)
     #[serde(skip)]
-    start_time_ns: u64,
+    start_epoch_ms: u64,
 }
 
 impl TurnMetrics {
@@ -78,7 +78,10 @@ impl TurnMetrics {
             errors: Vec::new(),
             finish_reason: String::new(),
             response_chars: 0,
-            start_time_ns: std::time::Instant::now().elapsed().as_nanos() as u64,
+            start_epoch_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
         }
     }
 
@@ -122,25 +125,34 @@ impl TurnMetrics {
     }
 
     pub fn finalize(mut self, finish_reason: String, response_chars: u64) -> FinalizedTurnMetrics {
-        let elapsed_ns = std::time::Instant::now().elapsed().as_nanos() as u64;
-        self.turn_duration_ms = (elapsed_ns.saturating_sub(self.start_time_ns)) / 1_000_000;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.turn_duration_ms = now_ms.saturating_sub(self.start_epoch_ms);
         self.finish_reason = finish_reason;
         self.response_chars = response_chars;
         FinalizedTurnMetrics(self)
     }
 
     pub fn persist(&self) -> anyhow::Result<()> {
+        if !crate::is_enabled() {
+            return Ok(());
+        }
         let state = ParityState::get();
+        // Best-effort: a read-only or missing home must never fail a turn.
+        if std::fs::create_dir_all(&state.output_dir).is_err() {
+            return Ok(());
+        }
         let date_str = chrono::Utc::now().format("%Y%m%d").to_string();
         let filepath = state.output_dir.join(format!("turns_{}.jsonl", date_str));
 
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(filepath)?;
+        let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(filepath) else {
+            return Ok(());
+        };
 
         use std::io::Write;
-        writeln!(file, "{}", serde_json::to_string(self)?)?;
+        let _ = writeln!(file, "{}", serde_json::to_string(self).unwrap_or_default());
         Ok(())
     }
 }

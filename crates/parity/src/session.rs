@@ -40,7 +40,11 @@ impl SessionMetrics {
     }
 
     pub fn update_from_turn(turn: &FinalizedTurnMetrics) -> Result<()> {
+        if !crate::is_enabled() {
+            return Ok(());
+        }
         let state = ParityState::get();
+        let _ = std::fs::create_dir_all(&state.output_dir);
         let filepath = state.output_dir.join(format!("session_{}.json", turn.session_id));
 
         let mut session = if filepath.exists() {
@@ -78,7 +82,10 @@ impl SessionMetrics {
             *session.tool_counts.entry(tool.clone()).or_insert(0) += 1;
         }
 
-        fs::write(filepath, serde_json::to_vec(&session)?)?;
+        // Best-effort: never fail a turn because a metrics file could not be written.
+        if let Ok(bytes) = serde_json::to_vec(&session) {
+            let _ = fs::write(filepath, bytes);
+        }
         Ok(())
     }
 

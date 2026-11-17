@@ -466,6 +466,12 @@ async fn main() -> anyhow::Result<()> {
     let config = ConfigLoader::load(&cli.config)?;
     init_logging(&config.logging, quiet_logging)?;
 
+    // Opt-in parity instrumentation ([metrics] parity = true). No-op when off.
+    let _ = hermes_parity::init_parity_with(
+        config.metrics.parity,
+        config.metrics.parity_dir.clone(),
+    );
+
     if cli.validate {
         println!("Configuration valid!");
         println!("Profiles: {}", config.profiles.len());
