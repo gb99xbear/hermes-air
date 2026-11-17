@@ -6,6 +6,7 @@ use crate::prompt::PromptAssembler;
 use crate::reflection::{BackgroundReviewConfig, BackgroundReviewEngine};
 use crate::tools::ToolRegistry;
 use hermes_config::ProfileConfig;
+use hermes_parity::hooks::{on_api_response, on_compression, on_error, on_tool_call, on_turn_start};
 use hermes_session_store::SessionStore;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -160,6 +161,16 @@ impl TurnProcessor {
             .or(session_override)
             .unwrap_or_else(|| default_model.to_string());
 
+        // Parity instrumentation: one guard per turn. Auto-ends on drop.
+        let platform = self.profile.as_ref().map(|p| p.name.as_str()).unwrap_or("default");
+        let mut turn_guard = on_turn_start(
+            Uuid::new_v4().to_string(),
+            session_id.to_string(),
+            platform.to_string(),
+            active_model.clone(),
+            "hermes-air".to_string(),
+        );
+
         // Check for Slash Command
         if let Some(cmd) = parse_command(input_trimmed) {
             info!("TurnProcessor executing slash command: {:?}", cmd);
@@ -237,6 +248,8 @@ impl TurnProcessor {
                         .await
                     {
                         Ok(res) => {
+                            // Parity: manual compression event
+                            on_compression("manual".to_string());
                             if res.compacted {
                                 format!(
                                     "Context compressed: {} -> {} messages (saved ~{} tokens)",
@@ -285,6 +298,8 @@ impl TurnProcessor {
         {
             let mut comp = self.compressor.lock().await;
             if comp.should_compress(current_tokens, context_window) {
+                // Parity: auto pre-flight compression event
+                on_compression("auto".to_string());
                 let _ = comp
                     .compress_session_with_todo(
                         session_id,
@@ -380,6 +395,12 @@ impl TurnProcessor {
                                 &active_model,
                             );
 
+                            // Parity: close out the turn
+                            on_api_response(active_model.clone(), "hermes-air".to_string(), 0, 0, 0, 0);
+                            turn_guard.set_finish_reason("stop".to_string());
+                            turn_guard.set_response_chars(text.len() as u64);
+                            let _ = turn_guard.end();
+
                             return Ok(text);
                         }
                         ChatResponse::ToolCalls(calls) => {
@@ -407,6 +428,9 @@ impl TurnProcessor {
                                         id: call.id.clone(),
                                     })
                                     .await;
+
+                                // Parity: record the tool call
+                                on_tool_call(call.name.clone());
 
                                 let result = self.tool_registry.execute(&call).await;
 
@@ -440,6 +464,13 @@ impl TurnProcessor {
                         .await;
                     // Even a failed turn must not swallow a process notice.
                     self.drain_background_notices(session_id).await;
+
+                    // Parity: record the error and close the turn
+                    on_error(err_msg.clone());
+                    turn_guard.set_finish_reason("error".to_string());
+                    turn_guard.set_response_chars(err_msg.len() as u64);
+                    let _ = turn_guard.end();
+
                     return Ok(err_msg);
                 }
             }
@@ -461,6 +492,11 @@ impl TurnProcessor {
                 &reflection_messages,
                 &active_model,
             );
+
+            // Parity: close the turn (max tool iterations reached)
+            turn_guard.set_finish_reason("max_iterations".to_string());
+            turn_guard.set_response_chars(final_text.len() as u64);
+            let _ = turn_guard.end();
         }
 
         // Announce anything the background processes did while this turn ran.

@@ -16,6 +16,7 @@ members = [
     "crates/plugin-host",
     "crates/skills",
     "crates/gateway-bin",
+    "crates/parity",
 ]
 
 [workspace.dependencies]

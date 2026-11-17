@@ -13,6 +13,7 @@ hermes-protocol = { path = "../protocol" }
 hermes-skills = { path = "../skills" }
 hermes-platform-telegram = { path = "../platform-telegram" }
 hermes-platform-adapter = { path = "../platform-adapter" }
+hermes_parity = { package = "hermes_parity", path = "../parity" }
 reqwest = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
