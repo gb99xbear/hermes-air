@@ -1326,7 +1326,7 @@ impl Gateway {
                     )
                     .await
                 {
-                    Ok((raw_msg, response)) => {
+                    Ok((raw_msg, response, _usage)) => {
                         match response {
                             ChatResponse::Text(text) => {
                                 final_text = text.clone();

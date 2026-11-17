@@ -43,10 +43,39 @@ pub struct ChatCompletionRequest {
     pub stream: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Usage {
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+    #[serde(default)]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+impl Usage {
+    /// (input_uncached, output, cache_read) - mirrors Python usage_pricing.normalize_usage.
+    pub fn parity_buckets(&self) -> (u64, u64, u64) {
+        let cache = self.prompt_tokens_details.as_ref().map(|d| d.cached_tokens).unwrap_or(0);
+        let input_uncached = self.prompt_tokens.saturating_sub(cache);
+        (input_uncached, self.completion_tokens, cache)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionResponse {
     #[serde(default)]
     pub choices: Vec<Choice>,
+    #[serde(default)]
+    pub usage: Option<Usage>,
     #[serde(default)]
     pub response: Option<UpstreamResponseWrapper>,
     #[serde(default)]
@@ -226,7 +255,7 @@ impl LlmClient {
         tool_choice: Option<String>,
         temperature: f32,
         max_tokens: u32,
-    ) -> Result<(ChatResponseMessage, ChatResponse)> {
+    ) -> Result<(ChatResponseMessage, ChatResponse, Option<Usage>)> {
         let req_body = ChatCompletionRequest {
             model: model.to_string(),
             messages: messages.to_vec(),
@@ -238,17 +267,18 @@ impl LlmClient {
         };
 
         let response = self.send_completion(&req_body).await?;
+        let usage = response.usage.clone();
         if let Some(choice) = response.choices.into_iter().next() {
             let msg = choice.message;
             if let Some(ref calls) = msg.tool_calls {
                 if !calls.is_empty() {
                     let parsed_calls = calls.iter().map(|c| c.to_tool_call()).collect();
-                    return Ok((msg, ChatResponse::ToolCalls(parsed_calls)));
+                    return Ok((msg, ChatResponse::ToolCalls(parsed_calls), usage));
                 }
             }
 
             let text = msg.content.clone().unwrap_or_default();
-            return Ok((msg, ChatResponse::Text(text)));
+            return Ok((msg, ChatResponse::Text(text), usage));
         }
 
         // Handle upstream promptFeedback (Google Gemini / 9Router safety filters)
@@ -268,7 +298,7 @@ impl LlmClient {
                     content: Some(refusal_text.clone()),
                     tool_calls: None,
                 };
-                return Ok((msg, ChatResponse::Text(refusal_text)));
+                return Ok((msg, ChatResponse::Text(refusal_text), usage));
             }
         }
 
@@ -284,7 +314,7 @@ impl LlmClient {
                     content: Some(err_text.clone()),
                     tool_calls: None,
                 };
-                return Ok((chat_msg, ChatResponse::Text(err_text)));
+                return Ok((chat_msg, ChatResponse::Text(err_text), usage));
             }
         }
 

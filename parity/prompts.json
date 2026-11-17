@@ -1,0 +1,75 @@
+[
+  {
+    "id": "p01_text_simple",
+    "category": "text",
+    "prompt": "Reply with exactly this text and nothing else: PARITY-OK"
+  },
+  {
+    "id": "p02_text_math",
+    "category": "text",
+    "prompt": "What is 17 * 23? Reply with only the number."
+  },
+  {
+    "id": "p03_tool_read",
+    "category": "tool",
+    "prompt": "Read the file /tmp/parity_probe.txt and tell me its exact contents."
+  },
+  {
+    "id": "p04_tool_terminal",
+    "category": "tool",
+    "prompt": "Use the terminal to run this command, then tell me the output: echo parity-probe-123"
+  },
+  {
+    "id": "p05_tool_write",
+    "category": "tool",
+    "prompt": "Create the file /tmp/parity_out.txt whose exact content is: hello-parity"
+  },
+  {
+    "id": "p06_tool_multi",
+    "category": "tool",
+    "prompt": "Do two steps with the terminal: (1) run: date +%s  (2) run: whoami  Then reply with both results."
+  },
+  {
+    "id": "p07_tool_error",
+    "category": "tool_error",
+    "prompt": "Read the file /nonexistent/parity_missing.txt and report exactly the error you receive."
+  },
+  {
+    "id": "p08_tool_search",
+    "category": "tool",
+    "prompt": "Search /tmp for files named parity_probe.txt and list the full paths you find."
+  },
+  {
+    "id": "p09_unicode",
+    "category": "text",
+    "prompt": "Reply with exactly this text: parity cafe"
+  },
+  {
+    "id": "p10_long_context",
+    "category": "long_context",
+    "prompt": "{{FIXTURE_LONG}}At the very end of your reply, output the single word: LONG-OK"
+  },
+  {
+    "id": "p11_slash_model",
+    "category": "slash_no_llm",
+    "prompt": "/model"
+  },
+  {
+    "id": "p12_slash_status",
+    "category": "slash_no_llm",
+    "prompt": "/status"
+  },
+  {
+    "id": "p13_multi_turn",
+    "category": "multi_turn",
+    "messages": [
+      "Remember the number 4242. Reply with just: OK",
+      "What number did I ask you to remember? Reply with just the number."
+    ]
+  },
+  {
+    "id": "p14_compression",
+    "category": "compression",
+    "prompt": "{{FIXTURE_LONG}}{{FIXTURE_LONG}}Then reply with the single word: COMP-LONG-OK"
+  }
+]

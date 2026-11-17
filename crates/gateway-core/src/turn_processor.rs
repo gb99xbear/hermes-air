@@ -361,6 +361,7 @@ impl TurnProcessor {
 
             iteration += 1;
 
+            let api_started = std::time::Instant::now();
             match self
                 .llm_client
                 .chat_completion_with_tools(
@@ -373,7 +374,18 @@ impl TurnProcessor {
                 )
                 .await
             {
-                Ok((raw_msg, response)) => {
+                Ok((raw_msg, response, usage)) => {
+                    // Parity: record this API call with real usage + latency
+                    let latency_ms = api_started.elapsed().as_millis() as u64;
+                    let (inp_tokens, out_tokens, cache_tokens) = usage
+                        .as_ref()
+                        .map(|u| u.parity_buckets())
+                        .unwrap_or((0, 0, 0));
+                    on_api_response(
+                        active_model.clone(),
+                        "hermes-air".to_string(),
+                        inp_tokens, out_tokens, cache_tokens, latency_ms,
+                    );
                     match response {
                         ChatResponse::Text(text) => {
                             let asst_msg = ChatMessage::assistant(text.clone());
@@ -396,7 +408,6 @@ impl TurnProcessor {
                             );
 
                             // Parity: close out the turn
-                            on_api_response(active_model.clone(), "hermes-air".to_string(), 0, 0, 0, 0);
                             turn_guard.set_finish_reason("stop".to_string());
                             turn_guard.set_response_chars(text.len() as u64);
                             let _ = turn_guard.end();
