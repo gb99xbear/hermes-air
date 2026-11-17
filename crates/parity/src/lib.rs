@@ -3,14 +3,14 @@
 //! Compatible with Python Hermes `agent.parity` module.
 //! Produces identical JSONL output for automated comparison.
 
-pub mod metrics;
-pub mod session;
 pub mod export;
 pub mod hooks;
+pub mod metrics;
+pub mod session;
 
+pub use crate::hooks::TurnGuard;
 pub use crate::metrics::TurnMetrics;
 pub use crate::session::SessionMetrics;
-pub use crate::hooks::TurnGuard;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -51,7 +51,9 @@ impl ParityState {
     /// Never panics: falls back to the default dir. Directory creation is
     /// best-effort at write time, so a read-only home simply drops records.
     pub fn get() -> &'static Self {
-        PARITY_STATE.get_or_init(|| ParityState { output_dir: default_parity_dir() })
+        PARITY_STATE.get_or_init(|| ParityState {
+            output_dir: default_parity_dir(),
+        })
     }
 }
 
@@ -102,7 +104,14 @@ pub fn record_api_call(
     cache_tokens: u64,
     latency_ms: u64,
 ) {
-    metrics.record_api_call(model, provider, input_tokens, output_tokens, cache_tokens, latency_ms);
+    metrics.record_api_call(
+        model,
+        provider,
+        input_tokens,
+        output_tokens,
+        cache_tokens,
+        latency_ms,
+    );
 }
 
 /// Record a tool call within the current turn

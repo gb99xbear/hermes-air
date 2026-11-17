@@ -6,7 +6,6 @@ use anyhow::Result;
 
 use crate::metrics::FinalizedTurnMetrics;
 use crate::session::SessionMetrics;
-use crate::ParityState;
 
 /// Generate a human-readable parity report for a session
 pub fn generate_report(session_id: &str) -> Result<std::path::PathBuf> {
@@ -39,11 +38,26 @@ pub fn generate_report(session_id: &str) -> Result<std::path::PathBuf> {
     lines.push(format!("**Start:** {}", session.start_time));
     lines.push(format!("**Total Turns:** {}", session.total_turns));
     lines.push(format!("**Total API Calls:** {}", session.total_api_calls));
-    lines.push(format!("**Total Tool Calls:** {}", session.total_tool_calls));
-    lines.push(format!("**Total Input Tokens (uncached):** {}", session.total_input_tokens));
-    lines.push(format!("**Total Prompt Tokens (input + cache):** {}", session.total_prompt_tokens));
-    lines.push(format!("**Total Output Tokens:** {}", session.total_output_tokens));
-    lines.push(format!("**Avg Latency/Call:** {:.0}ms", session.avg_latency_per_call()));
+    lines.push(format!(
+        "**Total Tool Calls:** {}",
+        session.total_tool_calls
+    ));
+    lines.push(format!(
+        "**Total Input Tokens (uncached):** {}",
+        session.total_input_tokens
+    ));
+    lines.push(format!(
+        "**Total Prompt Tokens (input + cache):** {}",
+        session.total_prompt_tokens
+    ));
+    lines.push(format!(
+        "**Total Output Tokens:** {}",
+        session.total_output_tokens
+    ));
+    lines.push(format!(
+        "**Avg Latency/Call:** {:.0}ms",
+        session.avg_latency_per_call()
+    ));
     lines.push(format!("**Compressions:** {}", session.compressions));
     lines.push(format!("**Errors:** {}", session.errors));
     lines.push(String::new());
@@ -67,7 +81,11 @@ pub fn generate_report(session_id: &str) -> Result<std::path::PathBuf> {
             turn.output_tokens,
             turn.latency_ms,
             turn.turn_duration_ms,
-            if turn.compression_type.is_empty() { "-" } else { &turn.compression_type }
+            if turn.compression_type.is_empty() {
+                "-"
+            } else {
+                &turn.compression_type
+            }
         ));
     }
 
@@ -81,27 +99,38 @@ pub fn generate_report(session_id: &str) -> Result<std::path::PathBuf> {
 
     let report = lines.join("\n");
 
-    let output_path = state.output_dir.join(format!("parity_report_{}.md", session_id));
+    let output_path = state
+        .output_dir
+        .join(format!("parity_report_{}.md", session_id));
     fs::write(&output_path, report)?;
 
     Ok(output_path)
 }
 
 /// Compare two parity reports (Python vs Air) and generate a diff summary
-pub fn compare_reports(
-    python_session_id: &str,
-    air_session_id: &str,
-) -> Result<ComparisonReport> {
+pub fn compare_reports(python_session_id: &str, air_session_id: &str) -> Result<ComparisonReport> {
     let python_session = SessionMetrics::load(python_session_id)
         .ok_or_else(|| anyhow::anyhow!("No Python session metrics for {}", python_session_id))?;
     let air_session = SessionMetrics::load(air_session_id)
         .ok_or_else(|| anyhow::anyhow!("No Air session metrics for {}", air_session_id))?;
 
     let api_calls_diff = percent_diff(python_session.total_api_calls, air_session.total_api_calls);
-    let tool_calls_diff = percent_diff(python_session.total_tool_calls, air_session.total_tool_calls);
-    let prompt_tokens_diff = percent_diff(python_session.total_prompt_tokens, air_session.total_prompt_tokens);
-    let output_tokens_diff = percent_diff(python_session.total_output_tokens, air_session.total_output_tokens);
-    let latency_diff = percent_diff(python_session.total_latency_ms, air_session.total_latency_ms);
+    let tool_calls_diff = percent_diff(
+        python_session.total_tool_calls,
+        air_session.total_tool_calls,
+    );
+    let prompt_tokens_diff = percent_diff(
+        python_session.total_prompt_tokens,
+        air_session.total_prompt_tokens,
+    );
+    let output_tokens_diff = percent_diff(
+        python_session.total_output_tokens,
+        air_session.total_output_tokens,
+    );
+    let latency_diff = percent_diff(
+        python_session.total_latency_ms,
+        air_session.total_latency_ms,
+    );
     let compressions_diff = percent_diff(python_session.compressions, air_session.compressions);
 
     Ok(ComparisonReport {
@@ -171,7 +200,11 @@ impl ComparisonReport {
         lines.push(String::new());
         lines.push(format!(
             "**Overall:** {}",
-            if self.within_tolerance { "WITHIN TOLERANCE (+/-10%)" } else { "OUTSIDE TOLERANCE" }
+            if self.within_tolerance {
+                "WITHIN TOLERANCE (+/-10%)"
+            } else {
+                "OUTSIDE TOLERANCE"
+            }
         ));
 
         lines.join("\n")

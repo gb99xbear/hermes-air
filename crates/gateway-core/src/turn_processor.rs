@@ -6,7 +6,9 @@ use crate::prompt::PromptAssembler;
 use crate::reflection::{BackgroundReviewConfig, BackgroundReviewEngine};
 use crate::tools::ToolRegistry;
 use hermes_config::ProfileConfig;
-use hermes_parity::hooks::{on_api_response, on_compression, on_error, on_tool_call, on_turn_start};
+use hermes_parity::hooks::{
+    on_api_response, on_compression, on_error, on_tool_call, on_turn_start,
+};
 use hermes_session_store::SessionStore;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -399,7 +401,10 @@ impl TurnProcessor {
                     on_api_response(
                         active_model.clone(),
                         parity_provider.clone(),
-                        inp_tokens, out_tokens, cache_tokens, latency_ms,
+                        inp_tokens,
+                        out_tokens,
+                        cache_tokens,
+                        latency_ms,
                     );
                     match response {
                         ChatResponse::Text(text) => {

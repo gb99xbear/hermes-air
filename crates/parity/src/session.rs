@@ -45,7 +45,9 @@ impl SessionMetrics {
         }
         let state = ParityState::get();
         let _ = std::fs::create_dir_all(&state.output_dir);
-        let filepath = state.output_dir.join(format!("session_{}.json", turn.session_id));
+        let filepath = state
+            .output_dir
+            .join(format!("session_{}.json", turn.session_id));
 
         let mut session = if filepath.exists() {
             let content = fs::read_to_string(&filepath)?;
@@ -91,7 +93,9 @@ impl SessionMetrics {
 
     pub fn load(session_id: &str) -> Option<Self> {
         let state = ParityState::get();
-        let filepath = state.output_dir.join(format!("session_{}.json", session_id));
+        let filepath = state
+            .output_dir
+            .join(format!("session_{}.json", session_id));
         if !filepath.exists() {
             return None;
         }
@@ -108,7 +112,11 @@ impl SessionMetrics {
     }
 
     pub fn tool_usage(&self) -> Vec<(String, u64)> {
-        let mut usage: Vec<_> = self.tool_counts.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let mut usage: Vec<_> = self
+            .tool_counts
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
         usage.sort_by(|a, b| b.1.cmp(&a.1));
         usage
     }

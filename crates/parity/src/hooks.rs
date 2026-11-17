@@ -6,13 +6,16 @@ use std::sync::Mutex;
 
 use crate::metrics::TurnMetrics;
 use crate::session::SessionMetrics;
-use crate::{record_api_call, record_compression, record_error, record_tool_call, start_turn, end_turn};
+use crate::{
+    end_turn, record_api_call, record_compression, record_error, record_tool_call, start_turn,
+};
 
 lazy_static::lazy_static! {
     static ref CURRENT_TURN: Mutex<Option<TurnMetrics>> = Mutex::new(None);
 }
 
 /// RAII guard for a turn - automatically ends the turn on drop
+#[allow(dead_code)] // turn_id/session_id kept for debugging; end() uses the live metrics
 pub struct TurnGuard {
     turn_id: String,
     session_id: String,
@@ -32,7 +35,13 @@ impl TurnGuard {
     ) -> Self {
         if crate::is_enabled() {
             let _ = CURRENT_TURN.lock().map(|mut guard| {
-                *guard = Some(start_turn(turn_id.clone(), session_id.clone(), platform, model, provider));
+                *guard = Some(start_turn(
+                    turn_id.clone(),
+                    session_id.clone(),
+                    platform,
+                    model,
+                    provider,
+                ));
             });
         }
         Self {
@@ -86,7 +95,15 @@ pub fn record_current_api_call(
     }
     if let Ok(mut guard) = CURRENT_TURN.lock() {
         if let Some(ref mut metrics) = *guard {
-            record_api_call(metrics, model, provider, input_tokens, output_tokens, cache_tokens, latency_ms);
+            record_api_call(
+                metrics,
+                model,
+                provider,
+                input_tokens,
+                output_tokens,
+                cache_tokens,
+                latency_ms,
+            );
         }
     }
 }
@@ -149,7 +166,14 @@ pub fn on_api_response(
     cache_tokens: u64,
     latency_ms: u64,
 ) {
-    record_current_api_call(Some(model), Some(provider), input_tokens, output_tokens, cache_tokens, latency_ms);
+    record_current_api_call(
+        Some(model),
+        Some(provider),
+        input_tokens,
+        output_tokens,
+        cache_tokens,
+        latency_ms,
+    );
 }
 
 /// Integration with tool execution

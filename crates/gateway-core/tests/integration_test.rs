@@ -749,6 +749,8 @@ async fn test_provider_profile_resolution_in_gateway() {
             enabled: false,
             port: 9090,
             path: "/metrics".to_string(),
+            parity: false,
+            parity_dir: None,
         },
         dashboard: DashboardConfig {
             enabled: false,

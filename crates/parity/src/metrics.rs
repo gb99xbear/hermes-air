@@ -147,7 +147,11 @@ impl TurnMetrics {
         let date_str = chrono::Utc::now().format("%Y%m%d").to_string();
         let filepath = state.output_dir.join(format!("turns_{}.jsonl", date_str));
 
-        let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(filepath) else {
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(filepath)
+        else {
             return Ok(());
         };
 

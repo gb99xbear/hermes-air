@@ -64,7 +64,11 @@ pub struct Usage {
 impl Usage {
     /// (input_uncached, output, cache_read) - mirrors Python usage_pricing.normalize_usage.
     pub fn parity_buckets(&self) -> (u64, u64, u64) {
-        let cache = self.prompt_tokens_details.as_ref().map(|d| d.cached_tokens).unwrap_or(0);
+        let cache = self
+            .prompt_tokens_details
+            .as_ref()
+            .map(|d| d.cached_tokens)
+            .unwrap_or(0);
         let input_uncached = self.prompt_tokens.saturating_sub(cache);
         (input_uncached, self.completion_tokens, cache)
     }
@@ -260,7 +264,12 @@ impl LlmClient {
     ) -> Result<(ChatResponseMessage, ChatResponse)> {
         let (msg, resp, _usage) = self
             .chat_completion_with_tools_usage(
-                model, messages, tools, tool_choice, temperature, max_tokens,
+                model,
+                messages,
+                tools,
+                tool_choice,
+                temperature,
+                max_tokens,
             )
             .await?;
         Ok((msg, resp))
