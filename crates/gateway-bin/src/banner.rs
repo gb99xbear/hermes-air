@@ -3,6 +3,13 @@
 
 use std::path::Path;
 
+/// Clip `s` to at most `n` characters. Slicing a &str by byte index panics when a
+/// multi-byte character straddles the cut (the banner uses '•'), so count
+/// characters instead of bytes.
+fn clip(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
 pub fn print_startup_banner(model_name: &str, cwd: &Path, session_id: &str) {
     let gold_bold = "\x1b[1;38;2;255;215;0m";
     let amber_box = "\x1b[38;2;205;127;50m";
@@ -105,7 +112,7 @@ pub fn print_startup_banner(model_name: &str, cwd: &Path, session_id: &str) {
 
         let l_cell = if i == 31 {
             let s = format!("{} • Nous Research", model_name);
-            let s_trimmed = if s.chars().count() > 44 { &s[..44] } else { &s };
+            let s_trimmed = clip(&s, 44);
             let pad_total = 44usize.saturating_sub(s_trimmed.chars().count());
             let pad_left = pad_total / 2;
             let pad_right = pad_total - pad_left;
@@ -117,11 +124,7 @@ pub fn print_startup_banner(model_name: &str, cwd: &Path, session_id: &str) {
             )
         } else if i == 32 {
             let cwd_str = cwd.to_string_lossy();
-            let s_trimmed = if cwd_str.chars().count() > 44 {
-                &cwd_str[..44]
-            } else {
-                &cwd_str
-            };
+            let s_trimmed = clip(&cwd_str, 44);
             let pad_total = 44usize.saturating_sub(s_trimmed.chars().count());
             let pad_left = pad_total / 2;
             let pad_right = pad_total - pad_left;
@@ -133,7 +136,7 @@ pub fn print_startup_banner(model_name: &str, cwd: &Path, session_id: &str) {
             )
         } else if i == 33 {
             let s = format!("Session: {}", session_id);
-            let s_trimmed = if s.chars().count() > 44 { &s[..44] } else { &s };
+            let s_trimmed = clip(&s, 44);
             let pad_total = 44usize.saturating_sub(s_trimmed.chars().count());
             let pad_left = pad_total / 2;
             let pad_right = pad_total - pad_left;
@@ -213,4 +216,29 @@ pub fn print_setup_header() {
         cyan, "\x1b[1m", reset
     );
     println!();
+}
+
+#[cfg(test)]
+mod banner_clip_tests {
+    use super::clip;
+
+    #[test]
+    fn clips_by_characters_not_bytes() {
+        // '•' is 3 bytes; byte 44 would land strictly inside it and panic.
+        let text = format!("{} • Nous Research", "x".repeat(40));
+        let out = clip(&text, 44);
+        assert_eq!(out.chars().count(), 44);
+        assert!(out.starts_with(&"x".repeat(40)));
+    }
+
+    #[test]
+    fn short_input_is_returned_whole() {
+        assert_eq!(clip("abc", 44), "abc");
+    }
+
+    #[test]
+    fn multibyte_only_input_is_safe() {
+        let out = clip(&"─".repeat(100), 10);
+        assert_eq!(out.chars().count(), 10);
+    }
 }

@@ -210,7 +210,7 @@ impl PromptAssembler {
                 sections.push(format!("# MEMORY & ESTATE RULES\n\n{}", memory));
             }
 
-            let mut user_candidates = vec![
+            let user_candidates = vec![
                 hermes_dir.join("memories").join("USER.md"),
                 hermes_dir.join("USER.md"),
                 cwd.join("USER.md"),

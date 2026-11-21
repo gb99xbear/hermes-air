@@ -1,0 +1,23 @@
+{
+  "/model": {
+    "output": " │                                                              │\n│                      :@@:                    │                                                              │\n│ river/deepseek-ai/DeepSeek-V4.1-Flash-1017 • │                                                              │\n│         /home/ubuntu/hermes-rust-dev         │                                                              │\n│ Session: 27f1db40-9ad5-4a6f-b0fd-5195550e644 │                                                              │\n╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────╯\n☤ river/deepseek-ai/DeepSeek-V4.1-Flash-1017 │ ctx -- │ [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] -- │ 33s\n\nWelcome to Hermes Air Agent! Type your message or /help for commands.\n\n\nHermes Air 🍃 > \n/model\n🤖 <b>Active Model Configuration</b>\n\n• <b>Current Model:</b> <code>river/deepseek-ai/DeepSeek-V4.1-Flash-1017</code>\n\nTo switch models dynamically for this gateway session, run:\n<code>/model &lt;model_name&gt;</code>\n\n<b>Examples:</b>\n• <code>/model ag/gemini-3.8-flash</code>\n• <code>/model freet/claude-3-7-sonnet</code>\n• <code>/model gpt-4o</code>\n\n\nHermes Air 🍃 > \n",
+    "rows": 1,
+    "api_calls": 0,
+    "prompt_tokens": 0,
+    "finish_reason": "unknown"
+  },
+  "/status": {
+    "output": "/status\n<b>Hermes Air Gateway Status</b>\n\n<b>Directives (One-Tap Copy):</b>\n<code>gateway: Hermes Air v0.1.0</code>\n<code>uptime: 3s</code>\n<code>profile: Alfred</code>\n<code>model: river/deepseek-ai/DeepSeek-V4.1-Flash-1017</code>\n<code>telegram: Disconnected</code>\n<code>ram: 70.9 MB RSS / 347.9 MB VIRT</code>\n\n<b>Diagnostic Overview:</b>\n• <b>Gateway:</b> <code>Hermes Air v0.1.0</code>\n• <b>Uptime:</b> <code>3s</code>\n• <b>Profile:</b> <code>Alfred</code>\n• <b>Model:</b> <code>river/deepseek-ai/DeepSeek-V4.1-Flash-1017</code>\n• <b>Telegram:</b> <code>Disconnected</code>\n• <b>Memory:</b> <code>70.9 MB RSS / 347.9 MB VIRT</code>\n\n<i>Status: Operational</i>\n\n\nHermes Air 🍃 > \n",
+    "rows": 1,
+    "api_calls": 0,
+    "prompt_tokens": 0,
+    "finish_reason": "unknown"
+  },
+  "/help": {
+    "output": "/help\n<b>Greetings!</b>\n\nI am your Hermes Gateway assistant. All systems are operational.\n\n<b>Active Model:</b> <code>river/deepseek-ai/DeepSeek-V4.1-Flash-1017</code>\n<b>Profile:</b> <code>Alfred</code>\n\n<b>Available Slash Commands:</b>\n• <code>/start</code> / <code>/help</code> — Show this greeting & command overview\n• <code>/status</code> — Display full system diagnostics, uptime & platform status\n• <code>/context</code> — Visual context window occupancy & token headroom bar\n• <code>/whoami</code> — Display user, chat, session UUID and platform scope\n• <code>/profile</code> — Display active agent profile configuration\n• <code>/diff</code> — Display recent git changes and file diffs\n• <code>/model</code> — View current active model & provider info\n• <code>/model &lt;name&gt;</code> — Dynamically switch active model (e.g. <code>/model ag/gemini-3.8-flash</code>)\n• <code>/stop</code> — Interrupt and cancel active running turn immediately\n• <code>/compress</code> / <code>/compact</code> [focus] — Compact conversation context into structured snapshot\n• <code>/clear</code> / <code>/reset</code> — Reset conversation turn memory & session\n\n\nHermes Air 🍃 > \n",
+    "rows": 1,
+    "api_calls": 0,
+    "prompt_tokens": 0,
+    "finish_reason": "unknown"
+  }
+}
