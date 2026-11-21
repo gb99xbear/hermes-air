@@ -143,6 +143,11 @@ impl LlmClient {
 
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
+            // 9Router closes an idle keep-alive connection after a few seconds.
+            // Reusing that stale socket fails the next POST with "connection closed
+            // before message completed" (seen after a slow tool call), so expire
+            // pooled connections before the server does.
+            .pool_idle_timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_default();
 
@@ -176,6 +181,11 @@ impl LlmClient {
 
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
+            // 9Router closes an idle keep-alive connection after a few seconds.
+            // Reusing that stale socket fails the next POST with "connection closed
+            // before message completed" (seen after a slow tool call), so expire
+            // pooled connections before the server does.
+            .pool_idle_timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_default();
 
@@ -485,16 +495,38 @@ impl LlmClient {
             "Sending chat completion to {} (model: {})",
             url, req_body.model
         );
-        let resp = request
-            .send()
-            .await
-            .with_context(|| {
-                if url.contains("127.0.0.1:20128") || url.contains("localhost:20128") {
-                    format!("Failed to connect to local 9Router endpoint at {}. If you do not have 9Router running locally, switch to an external provider (e.g. OpenRouter or OpenAI) in your config.toml or run `hermes-gateway setup`.", url)
-                } else {
-                    format!("Failed to send request to LLM endpoint: {}", url)
+        let connect_context = || {
+            if url.contains("127.0.0.1:20128") || url.contains("localhost:20128") {
+                format!("Failed to connect to local 9Router endpoint at {}. If you do not have 9Router running locally, switch to an external provider (e.g. OpenRouter or OpenAI) in your config.toml or run `hermes-gateway setup`.", url)
+            } else {
+                format!("Failed to send request to LLM endpoint: {}", url)
+            }
+        };
+
+        // A pooled connection can be closed by the server between turns (a slow
+        // tool call leaves the socket idle). The request never reached the model
+        // in that case, so one retry on a fresh connection is safe.
+        let mut attempt = 0u8;
+        let resp = loop {
+            let builder = request
+                .try_clone()
+                .ok_or_else(|| anyhow::anyhow!("chat completion request body is not retryable"))?;
+            match builder.send().await {
+                Ok(resp) => break resp,
+                Err(e) => {
+                    let retryable = e.is_connect() || e.is_request();
+                    if attempt == 0 && retryable {
+                        attempt += 1;
+                        tracing::warn!(
+                            "chat completion transport error, retrying once on a fresh connection: {}",
+                            e
+                        );
+                        continue;
+                    }
+                    return Err(e).with_context(connect_context);
                 }
-            })?;
+            }
+        };
 
         let status = resp.status();
         if !status.is_success() {

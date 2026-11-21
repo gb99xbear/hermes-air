@@ -499,7 +499,9 @@ impl TurnProcessor {
                 }
                 Err(e) => {
                     error!("LLM execution error: {}", e);
-                    let err_msg = format!("LLM error: {}. Use /model to switch models.", e);
+                    // {:#} prints the whole anyhow chain, so the underlying transport
+                    // cause is visible instead of just the outer context.
+                    let err_msg = format!("LLM error: {:#}. Use /model to switch models.", e);
                     let _ = event_tx.send(TurnEvent::Error(err_msg.clone())).await;
                     let asst_msg = ChatMessage::assistant(err_msg.clone());
                     let _ = self
