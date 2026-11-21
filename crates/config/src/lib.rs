@@ -19,6 +19,49 @@ pub struct GatewayConfig {
     pub dashboard: DashboardConfig,
     pub tui: TuiConfig,
     pub acp: AcpConfig,
+    /// System-prompt composition (memory snapshot + skills index injection).
+    #[serde(default)]
+    pub prompt: PromptConfig,
+}
+
+/// Controls what the PromptAssembler injects into the system prompt.
+///
+/// Defaults match Hermes' behaviour (push a memory snapshot and a compact
+/// skills index, pull skill bodies on demand). Set `skills_catalog = "off"` and
+/// `inject_memory = false` for the featherweight profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptConfig {
+    /// Inject the frozen memory-store snapshot (MEMORY/USER targets).
+    #[serde(default = "default_inject_memory")]
+    pub inject_memory: bool,
+    /// Skills index mode: `"full"` (name + description), `"names"`, or `"off"`.
+    #[serde(default = "default_skills_catalog")]
+    pub skills_catalog: String,
+    /// Max characters kept per skill description (Hermes uses 1024).
+    #[serde(default = "default_skill_description_budget")]
+    pub skill_description_budget: usize,
+}
+
+fn default_inject_memory() -> bool {
+    true
+}
+
+fn default_skills_catalog() -> String {
+    "full".to_string()
+}
+
+fn default_skill_description_budget() -> usize {
+    1024
+}
+
+impl Default for PromptConfig {
+    fn default() -> Self {
+        Self {
+            inject_memory: default_inject_memory(),
+            skills_catalog: default_skills_catalog(),
+            skill_description_budget: default_skill_description_budget(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

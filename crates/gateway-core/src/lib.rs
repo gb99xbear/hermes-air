@@ -208,7 +208,17 @@ impl Gateway {
                 .with_session_store(session_store_arc.clone())
                 .with_memory_store(memory_store.clone()),
         );
-        let prompt_assembler = Arc::new(PromptAssembler::new());
+        let prompt_settings = crate::prompt::PromptSettings {
+            inject_memory: config.prompt.inject_memory,
+            skills_catalog: crate::prompt::SkillsCatalogMode::parse(&config.prompt.skills_catalog),
+            skill_description_budget: config.prompt.skill_description_budget,
+        };
+        let prompt_assembler = Arc::new(
+            PromptAssembler::new()
+                .with_memory_store(memory_store.clone())
+                .with_skill_registry(tool_registry.skill_registry.clone())
+                .with_settings(prompt_settings),
+        );
 
         let active_turns = Arc::new(DashMap::new());
         let compressor = Arc::new(tokio::sync::Mutex::new(ContextCompressor::default()));

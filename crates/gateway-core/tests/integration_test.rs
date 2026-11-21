@@ -713,6 +713,7 @@ async fn test_provider_profile_resolution_in_gateway() {
     );
 
     let config = GatewayConfig {
+        prompt: Default::default(),
         gateway: GatewaySection {
             name: "test-gateway".to_string(),
             version: "0.1.0".to_string(),

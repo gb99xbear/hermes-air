@@ -336,7 +336,15 @@ impl TurnProcessor {
             .profile
             .as_ref()
             .and_then(|p| p.system_prompt.as_deref());
-        let active_system_prompt = self.prompt_assembler.build_system_prompt(sys_cfg).await;
+        let skills_filter = self
+            .profile
+            .as_ref()
+            .map(|p| p.skills.as_slice())
+            .filter(|s| !s.is_empty());
+        let active_system_prompt = self
+            .prompt_assembler
+            .build_system_prompt_with(sys_cfg, skills_filter)
+            .await;
 
         let temperature = self.profile.as_ref().map(|p| p.temperature).unwrap_or(0.7);
         let max_tokens = self.profile.as_ref().map(|p| p.max_tokens).unwrap_or(4096);
