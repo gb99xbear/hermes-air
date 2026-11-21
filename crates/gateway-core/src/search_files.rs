@@ -170,6 +170,9 @@ pub fn search_contents(
 
     let mut files: Vec<PathBuf> = Vec::new();
     collect_files(root, &mut files);
+    // Walk order is filesystem-dependent (readdir order), so sort for a stable,
+    // reproducible result order - callers and tests rely on it.
+    files.sort();
 
     let mut matches: Vec<NativeMatch> = Vec::new();
     for path in files {
