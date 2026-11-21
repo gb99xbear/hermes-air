@@ -140,3 +140,44 @@ Config gates: `[prompt] inject_memory`, `skills_catalog = full|names|off`,
 Note for existing users: with the personal-path fallbacks removed, the doctrine
 file is loaded from the working directory chain only - run the gateway from the
 directory that holds `AGENTS.md`.
+
+## STATUS - P5 parity re-run (after P1..P4)
+
+14 prompts, same model (`river/deepseek-ai/DeepSeek-V4.1-Flash-1017`), one-shot both
+sides, Air rebuilt from `f7596fb` with the full 19-tool profile and the parity gates on.
+
+**Structural match (api_calls + tool_calls + finish_reason): 8/14 - below the >=12 gate.**
+
+| metric | Python | Air | air/py |
+|---|---|---|---|
+| api_calls | 31 | 17 | 0.55 |
+| tool_calls | 23 | 7 | 0.30 |
+| prompt_tokens | 3,823,473 | 244,323 | 0.06 |
+| output_tokens | 6,585 | 1,107 | 0.17 |
+| latency_ms | 126,635 | 31,740 | 0.25 |
+| mean latency | 9,045 ms | 2,267 ms | - |
+
+### The six mismatches, by cause
+
+1. **p11 / p12 (slash commands) - harness artifact, not a divergence.**
+   `hermes -z "/model"` sends the text as a prompt (6-9 tool rounds); Air's `-q`
+   parses it as a slash command (0 API calls). One-shot is the wrong harness for
+   slash parity - needs a REPL/REPL-equivalent driver.
+2. **p08_tool_search - reproducible Air error.** Twice, the *second* API round failed:
+   `Failed to connect to local 9Router endpoint at http://127.0.0.1:20128/v1/chat/completions`.
+   The first round used the CLI `-m` override fine; the follow-up call resolved a
+   different (local) endpoint. This is a real bug in Air's post-tool-call call path,
+   not a transient blip - it reproduced on the re-run.
+3. **p02 / p03 / p07 - tool-loop depth.** Python takes more rounds for the same ask
+   (p03: 4 api / 3 tools vs 2 / 1; p07: 3 / 2 vs 2 / 1). Air reaches `stop` with a
+   shorter loop. Injected context does not change this: the loop depth follows the
+   model's choices against the tool descriptions and guidance text.
+
+### Conclusion
+
+P1-P4 closed the **context** gap (memory snapshot, skills index, AGENTS chain, real
+tool filtering) but **did not move structural parity**, and that is expected: the
+remaining differences are behavioural, not contextual. The next levers are
+(a) the p08 endpoint bug, (b) tool-description/guidance parity, (c) a slash-capable
+harness. Prompt-token ratio moved to 0.06 partly because P3 stopped loading a doctrine
+file that was outside the working-directory chain - correct parity, worth stating.
