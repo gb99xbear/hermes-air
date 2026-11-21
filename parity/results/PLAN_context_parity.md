@@ -114,3 +114,29 @@ Recommended: **B**, because Python is already a hybrid.
 1. Option A / B / C for the context model?
 2. Tool surface: keep Air minimal, or match Python's set for the parity profile?
 3. Default for the gates on a public clone: off (light) or on (parity)?
+
+## STATUS - P1..P4 landed
+
+- **P1 memory** - DONE. Memory was already injected via the raw file read; the
+  MemoryStore snapshot is now used instead (Hermes' header + char-usage format),
+  never both. Live delta: +100 prompt tokens.
+- **P2 skills index** - DONE. `## Skills` + per-category blocks, name + description
+  truncated at 1024 chars (Hermes' `MAX_DESCRIPTION_LENGTH`); bodies stay pull-only.
+  Live delta: +1,268 tokens with 15 skills on this host (Python's index is ~75k
+  tokens at 379 skills - `compact_categories` remains the lever there).
+- **P3 context files** - DONE. AGENTS.md is now a git-root -> cwd chain, per
+  directory the first non-empty of `AGENTS.override.md` / `AGENTS.md` / `agents.md`,
+  capped at `CONTEXT_FILE_MAX_CHARS = 20_000`. The hardcoded `/home/ubuntu/...`
+  fallbacks are gone (they were personal paths in a public repo).
+- **P4 tool surface** - DONE. `ProfileConfig.tools` was dead config (never read);
+  the schema list is now filtered by it, unknown names are logged, and the agent-level
+  `memory` tool - handled in dispatch but missing from the schema - is included.
+  Live delta: 3 tools 7,800 tokens vs 19 tools 12,755 tokens.
+
+Verified: 580 tests pass (10 new), fmt clean, live A/B on the built binary.
+Config gates: `[prompt] inject_memory`, `skills_catalog = full|names|off`,
+`skill_description_budget`.
+
+Note for existing users: with the personal-path fallbacks removed, the doctrine
+file is loaded from the working directory chain only - run the gateway from the
+directory that holds `AGENTS.md`.

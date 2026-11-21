@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info};
 
@@ -125,7 +125,7 @@ impl PromptAssembler {
         if let Ok(home) = std::env::var("HOME") {
             return PathBuf::from(home).join(".hermes");
         }
-        PathBuf::from("/home/ubuntu/.hermes")
+        PathBuf::from(".hermes")
     }
 
     fn resolve_cwd(&self) -> PathBuf {
@@ -184,20 +184,14 @@ impl PromptAssembler {
         let mut sections: Vec<String> = Vec::new();
 
         // 1. SOUL.md
-        let mut soul_candidates = vec![hermes_dir.join("SOUL.md"), cwd.join("SOUL.md")];
-        if self.custom_hermes_dir.is_none() {
-            soul_candidates.push(PathBuf::from("/home/ubuntu/.hermes/SOUL.md"));
-        }
+        let soul_candidates = vec![hermes_dir.join("SOUL.md"), cwd.join("SOUL.md")];
         if let Some(soul) = Self::read_first_existing(&soul_candidates).await {
             sections.push(format!("# SOUL\n\n{}", soul));
         }
 
-        // 2. AGENTS.md
-        let mut agents_candidates = vec![cwd.join("AGENTS.md"), hermes_dir.join("AGENTS.md")];
-        if self.custom_cwd.is_none() {
-            agents_candidates.push(PathBuf::from("/home/ubuntu/AGENTS.md"));
-        }
-        if let Some(agents) = Self::read_first_existing(&agents_candidates).await {
+        // 2. AGENTS.md - git root down to cwd, per directory the first non-empty
+        // of AGENTS.override.md / AGENTS.md / agents.md (Hermes' precedence).
+        if let Some(agents) = Self::read_agents_chain(&cwd).await {
             sections.push(format!("# OPERATIONAL DOCTRINE (AGENTS.md)\n\n{}", agents));
         }
 
@@ -212,9 +206,6 @@ impl PromptAssembler {
                 hermes_dir.join("MEMORY.md"),
                 cwd.join("MEMORY.md"),
             ];
-            if self.custom_hermes_dir.is_none() {
-                memory_candidates.push(PathBuf::from("/home/ubuntu/.hermes/memories/MEMORY.md"));
-            }
             if let Some(memory) = Self::read_first_existing(&memory_candidates).await {
                 sections.push(format!("# MEMORY & ESTATE RULES\n\n{}", memory));
             }
@@ -224,19 +215,13 @@ impl PromptAssembler {
                 hermes_dir.join("USER.md"),
                 cwd.join("USER.md"),
             ];
-            if self.custom_hermes_dir.is_none() {
-                user_candidates.push(PathBuf::from("/home/ubuntu/.hermes/memories/USER.md"));
-            }
             if let Some(user) = Self::read_first_existing(&user_candidates).await {
                 sections.push(format!("# USER PROFILE\n\n{}", user));
             }
         }
 
         // 5. system.md
-        let mut system_candidates = vec![cwd.join("system.md"), hermes_dir.join("system.md")];
-        if self.custom_cwd.is_none() && self.custom_hermes_dir.is_none() {
-            system_candidates.push(PathBuf::from("/home/ubuntu/system.md"));
-        }
+        let system_candidates = vec![cwd.join("system.md"), hermes_dir.join("system.md")];
         if let Some(sys_md) = Self::read_first_existing(&system_candidates).await {
             sections.push(format!("# SYSTEM INSTRUCTIONS\n\n{}", sys_md));
         }
@@ -280,7 +265,56 @@ impl PromptAssembler {
     }
 }
 
+/// Cap for every loaded context file (Hermes: `CONTEXT_FILE_MAX_CHARS`).
+pub const CONTEXT_FILE_MAX_CHARS: usize = 20_000;
+
+/// Truncate to `cap` characters, keeping a visible marker so a trimmed file is
+/// never mistaken for a complete one.
+fn cap_context_file(text: String, cap: usize) -> String {
+    if text.chars().count() <= cap {
+        return text;
+    }
+    let head: String = text.chars().take(cap).collect();
+    format!("{}\n\n[... truncated at {} characters ...]", head, cap)
+}
+
 impl PromptAssembler {
+    /// Directories to check for AGENTS.md: the git root first, `cwd` last
+    /// (deeper wins). `cwd` alone when no git root is found - walking further up
+    /// could pick up a file planted in /tmp or a home directory.
+    fn agents_md_dirs(cwd: &Path) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut cur: Option<PathBuf> = Some(cwd.to_path_buf());
+        while let Some(dir) = cur {
+            dirs.push(dir.clone());
+            if dir.join(".git").exists() {
+                break;
+            }
+            cur = dir.parent().map(|p| p.to_path_buf());
+        }
+        dirs.reverse();
+        dirs
+    }
+
+    /// Merged AGENTS.md chain for `cwd`, capped at [`CONTEXT_FILE_MAX_CHARS`].
+    async fn read_agents_chain(cwd: &Path) -> Option<String> {
+        const NAMES: [&str; 3] = ["AGENTS.override.md", "AGENTS.md", "agents.md"];
+        let mut parts: Vec<String> = Vec::new();
+        for dir in Self::agents_md_dirs(cwd) {
+            for name in NAMES {
+                let candidate = dir.join(name);
+                if let Some(text) = Self::read_first_existing(&[candidate]).await {
+                    parts.push(text);
+                    break;
+                }
+            }
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        Some(cap_context_file(parts.join("\n\n"), CONTEXT_FILE_MAX_CHARS))
+    }
+
     /// Compact skills index for the system prompt, in Hermes' shape: a `## Skills`
     /// header with load guidance, then one `### category` block per category with
     /// `- name: description` lines. Skill bodies are never inlined - the model
@@ -365,6 +399,54 @@ mod prompt_context_tests {
         let dir = std::env::temp_dir().join(format!("hermes-pa-{}-{}", tag, uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[tokio::test]
+    async fn agents_md_chain_merges_git_root_down_to_cwd() {
+        let tmp = temp_dir("agents");
+        fs::create_dir_all(tmp.join(".git")).unwrap();
+        fs::create_dir_all(tmp.join("sub")).unwrap();
+        write_file(&tmp.join("AGENTS.md"), "ROOT RULE");
+        write_file(&tmp.join("sub").join("AGENTS.md"), "SUB RULE");
+        let assembler = PromptAssembler::with_overrides(Some(tmp.clone()), Some(tmp.join("sub")));
+        let prompt = assembler.build_system_prompt(None).await;
+        assert!(prompt.contains("ROOT RULE"), "git-root AGENTS.md missing");
+        assert!(prompt.contains("SUB RULE"), "cwd AGENTS.md missing");
+        assert!(
+            prompt.find("ROOT RULE").unwrap() < prompt.find("SUB RULE").unwrap(),
+            "git root must precede cwd"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn agents_override_wins_over_agents_md() {
+        let tmp = temp_dir("override");
+        fs::create_dir_all(tmp.join(".git")).unwrap();
+        write_file(&tmp.join("AGENTS.md"), "PLAIN RULE");
+        write_file(&tmp.join("AGENTS.override.md"), "OVERRIDE RULE");
+        let assembler = PromptAssembler::with_overrides(Some(tmp.clone()), Some(tmp.clone()));
+        let prompt = assembler.build_system_prompt(None).await;
+        assert!(prompt.contains("OVERRIDE RULE"), "override must win");
+        assert!(
+            !prompt.contains("PLAIN RULE"),
+            "shadowed file must not load"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn oversized_context_file_is_capped() {
+        let tmp = temp_dir("cap");
+        fs::create_dir_all(tmp.join(".git")).unwrap();
+        write_file(
+            &tmp.join("AGENTS.md"),
+            &"x".repeat(CONTEXT_FILE_MAX_CHARS + 5_000),
+        );
+        let assembler = PromptAssembler::with_overrides(Some(tmp.clone()), Some(tmp.clone()));
+        let prompt = assembler.build_system_prompt(None).await;
+        assert!(prompt.contains("truncated at"), "cap marker missing");
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]

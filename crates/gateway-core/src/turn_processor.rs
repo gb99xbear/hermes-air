@@ -373,7 +373,12 @@ impl TurnProcessor {
             .append_message(session_id, new_user_msg)
             .await;
 
-        let tool_definitions = self.tool_registry.get_definitions();
+        let allowed_tools = self.profile.as_ref().map(|p| p.tools.as_slice());
+        let mut tool_definitions = self.tool_registry.get_definitions();
+        // The agent-level `memory` tool is handled in dispatch but had no schema in
+        // the static list, so the model could never call it.
+        tool_definitions.push(crate::memory::get_definition());
+        let tool_definitions = filter_tool_definitions(tool_definitions, allowed_tools);
         let max_tool_iterations = 10;
         let mut iteration = 0;
         let mut final_text = String::new();
@@ -666,5 +671,90 @@ mod tests {
         );
         // Gone now: it was consumed, not left to rot.
         assert!(reg2.take_events_for_owner("owner-c").is_empty());
+    }
+}
+
+/// Narrow the tool schemas sent to the model to `allow` (the profile's `tools`).
+///
+/// `None` and an empty list both mean "no restriction" and keep every tool: that
+/// preserves the historical behaviour and avoids silently sending zero tools to a
+/// profile that forgot to list any. Names that match no known tool are logged, so
+/// a typo in config is visible instead of silently dropping a capability.
+pub fn filter_tool_definitions(
+    defs: Vec<serde_json::Value>,
+    allow: Option<&[String]>,
+) -> Vec<serde_json::Value> {
+    let allow = match allow {
+        Some(list) if !list.is_empty() => list,
+        _ => return defs,
+    };
+
+    let known: Vec<String> = defs
+        .iter()
+        .filter_map(|d| {
+            d.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .map(String::from)
+        })
+        .collect();
+    for name in allow {
+        if !known.iter().any(|k| k == name) {
+            tracing::warn!("profile tools: unknown tool '{}' ignored", name);
+        }
+    }
+
+    defs.into_iter()
+        .filter(|d| {
+            d.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .map(|n| allow.iter().any(|want| want == n))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tool_filter_tests {
+    use super::filter_tool_definitions;
+    use serde_json::json;
+
+    fn defs() -> Vec<serde_json::Value> {
+        vec![
+            json!({"type": "function", "function": {"name": "terminal"}}),
+            json!({"type": "function", "function": {"name": "read_file"}}),
+            json!({"type": "function", "function": {"name": "memory"}}),
+        ]
+    }
+
+    fn names(defs: &[serde_json::Value]) -> Vec<String> {
+        defs.iter()
+            .filter_map(|d| d["function"]["name"].as_str().map(String::from))
+            .collect()
+    }
+
+    #[test]
+    fn none_keeps_every_tool() {
+        assert_eq!(names(&filter_tool_definitions(defs(), None)).len(), 3);
+    }
+
+    #[test]
+    fn empty_list_means_no_restriction() {
+        assert_eq!(names(&filter_tool_definitions(defs(), Some(&[]))).len(), 3);
+    }
+
+    #[test]
+    fn a_list_narrows_to_the_named_tools() {
+        let allow = vec!["terminal".to_string()];
+        let out = names(&filter_tool_definitions(defs(), Some(&allow)));
+        assert_eq!(out, vec!["terminal".to_string()]);
+    }
+
+    #[test]
+    fn unknown_names_are_dropped_without_panicking() {
+        let allow = vec!["terminal".to_string(), "not_a_tool".to_string()];
+        let out = names(&filter_tool_definitions(defs(), Some(&allow)));
+        assert_eq!(out, vec!["terminal".to_string()]);
     }
 }
