@@ -248,7 +248,14 @@ impl PromptAssembler {
             }
         }
 
-        // 8. Compact skills index (Hermes' tier-1 shape; bodies stay pull-only).
+        // 8. Agent guidance (memory vs skills routing). Only when the tooling it
+        // refers to is attached, matching Hermes' own gate - an assembler with no
+        // store and no registry must still produce an empty prompt.
+        if self.memory_store.is_some() || self.skill_registry.is_some() {
+            sections.push(MEMORY_SKILLS_GUIDANCE.to_string());
+        }
+
+        // 9. Compact skills index (Hermes' tier-1 shape; bodies stay pull-only).
         if let Some(registry) = self.skill_registry.as_ref() {
             if let Some(index) = self.build_skills_index(registry, skills_filter).await {
                 sections.push(index);
@@ -277,6 +284,10 @@ fn cap_context_file(text: String, cap: usize) -> String {
     let head: String = text.chars().take(cap).collect();
     format!("{}\n\n[... truncated at {} characters ...]", head, cap)
 }
+
+/// Agent guidance block: when a note belongs in memory versus a skill. Mirrors the
+/// routing Hermes states up front; without it the model writes neither.
+pub const MEMORY_SKILLS_GUIDANCE: &str = "You have persistent memory, carried across sessions and loaded into each new session's context; the memory tool's schema defines what belongs there. Skills come first: when you learn something while doing a task - a procedure, a pitfall, and the user's preferences and corrections for that kind of work - record it in the skill you used or built for the task, where it loads only when relevant. Memory is the narrow exception for facts that apply to EVERY session regardless of task (who the user is, environment facts, standing conventions with no task home); it has a hard character budget, so when it fills, replace or consolidate stale entries rather than skipping the save. Write entries as declarative facts, not instructions to yourself: 'User prefers concise responses' rather than 'Always respond concisely'.";
 
 impl PromptAssembler {
     /// Directories to check for AGENTS.md: the git root first, `cwd` last
